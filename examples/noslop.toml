@@ -1,0 +1,112 @@
+# noslop の設定ファイルの例。
+#
+# noslop はカレントディレクトリから親へ向かって `noslop.toml` (または `.noslop.toml`) を探し、
+# 最初に見つかった 1 つを使う。`--config <PATH>` で直接指定でき、`--no-config` で読まない。
+# コマンドラインのオプションは、このファイルの値より優先される。
+#
+# どの項目も省略でき、省略すると下に書いた既定値になる。
+
+# 文書のジャンル。閾値が切り替わり、ジャンルの慣習と衝突するルールが止まる。
+#   general  既定。どのジャンルにも偏らない保守的な閾値
+#   tech     技術文書・技術ブログ
+#   business ビジネス文書 (報告書・提案書・議事録)。別名 minutes
+#   essay    エッセイ・ブログ。別名 blog
+genre = "general"
+
+# 実験的なルール・語句 (未校正、または辞書なしの近似) をすべて有効にする。
+# 個別に有効にしたいときは、下の [rules.<ID>] に enabled = true を書く。
+experimental = false
+
+# この重大度以上の指摘があれば終了コード 1 にする。
+#   never (既定) / info / warning / error
+# noslop は疑いを示す道具なので、既定では件数でジョブを落とさない。
+fail_on = "never"
+
+# 段落内の改行の扱い。
+#   space    改行を文の区切りにしない (既定。Markdown の折り返しは見た目上の改行)
+#   sentence 改行を文の区切りにする (句点を打たずに一文一行で書く文書向け)
+line_breaks = "space"
+
+[files]
+# ディレクトリを渡したときに対象にする拡張子。直接指定したファイルは拡張子を問わない。
+extensions = ["md", "markdown", "txt"]
+
+# 対象から外すパス。.gitignore と同じ書式で、この設定ファイルのディレクトリを基準にする。
+# .gitignore・.ignore・.noslopignore に書かれたものは、ここに書かなくても外れる。
+exclude = [
+  "CHANGELOG.md",
+  "vendor/**",
+  "node_modules/**",
+]
+
+[scope]
+# 語句パターン系ルール (P) がどのブロックを見るか。
+# 校正は地の文 (段落) で行ったため、既定は段落だけ。広げるとスコアの前提が変わる。
+# リズム・統計系ルール (R) はこの設定に関わらず地の文だけで集計する。
+lists = false        # 箇条書きの項目
+tables = false       # 表のセル
+blockquotes = false  # 引用 (> で始まる部分)
+
+# ルールごとの設定。表の名前はルールの ID か名前 (例: [rules.AI_CONCLUSION])。
+# 共通の項目:
+#   enabled  = true / false   有効・無効を切り替える (実験的ルールの個別の有効化もこれ)
+#   severity = "info" / "warning" / "error"   重大度を変える
+# ルール固有の閾値は `noslop explain <ID>` に一覧がある。閾値は校正の前提を崩すので、
+# 変えるときは理由をコメントに残すこと。
+
+[rules.P04]
+# 冗長な動詞表現 (実験的)。「〜を行う」を多用する文書で見直したいときに有効にする。
+enabled = true
+
+[rules.P05]
+# ぼやけた修飾語 (実験的)。人間の文章にも多い語なので、既定では無効。
+enabled = false
+
+[rules.R01]
+# 文長の単調さ。地の文が min_sentences 文以上あるとき、burstiness が threshold 未満なら警告。
+# 文数が info_min_sentences 以上 min_sentences 未満のときは、info_threshold 未満で情報を出す。
+# severity を書くと、この 2 段の重大度がどちらもその値に置き換わる点に注意。
+threshold = -0.38
+min_sentences = 20
+info_threshold = -0.45
+info_min_sentences = 10
+
+[rules.R03]
+# 長すぎる一文 (読解負荷)。この文字数を超える文を指す。essay の既定は 110。
+max_chars = 90
+
+[rules.R05]
+# 否定→肯定の対比の反復。min_count 回以上あるとき、総文数に対する比率で重大度を決める。
+#   比率 < info_below          → info
+#   info_below 〜 error_above  → warning
+#   比率 >= error_above         → error (tech の既定は 0.045)
+min_count = 3
+info_below = 0.02
+error_above = 0.03
+
+[rules.S03]
+# 「まとめ」「おわりに」などの定型見出し (実験的)。
+enabled = false
+
+# チーム独自の禁止語・言い換え。何個でも書ける。
+# ID は組み込みルールと重ならないものにする (例: X01)。
+# 独自ルールの指摘は自然度スコアに入らない。
+[[custom]]
+id = "X01"
+name = "BANNED_HONORIFIC"
+# 探す文字列。regex = true なら正規表現 (Rust の regex 構文)。
+pattern = "ユーザー様"
+regex = false
+message = "「ユーザー様」ではなく「利用者」と書く"
+hint = "用字用語集の表記に合わせてください"
+severity = "warning"   # info / warning / error
+lane = "custom"        # custom (既定) / slop / readability
+
+[[custom]]
+id = "X02"
+name = "VAGUE_SCHEDULE"
+pattern = "(近日|早急に|速やかに)(対応|実施|公開)"
+regex = true
+message = "期日の分からない言い方です"
+hint = "日付か、何が済んだら着手するかを書いてください"
+severity = "info"
