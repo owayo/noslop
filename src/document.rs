@@ -427,7 +427,8 @@ impl Document {
             .filter(|s| s.japanese && self.blocks[s.block].is_prose())
     }
 
-    /// 原文の文字数 (Markdown 記法・改行込み)。スコアの正規化に使う。
+    /// 原文の文字数 (Markdown 記法・改行込み)。構造系のルールが 1000 字あたりの密度を測るのと、
+    /// JSON の `characters` に使う。
     pub fn char_count(&self) -> usize {
         self.source.chars().count()
     }
