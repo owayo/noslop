@@ -43,9 +43,19 @@ fn options() -> Options {
 /// 番号は「1.」「(1)」「１．」の形で、直後が数字なら小数 (「3.5 倍」) とみなして外す。
 static ITEM_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^(?:[・•●○◦▪■□◆◇※★☆◎▶▷►➤→✓✔]|[①-⑳]|[⑴-⒇]|[（(]\d{1,3}[)）]|\d{1,3}[.)．）](?:[^\d.．]|$)|[０-９]{1,3}[．）](?:[^０-９]|$))",
+        r"^(?:[・･•●○◯◉◦▪■□◆◇♦※★☆◎▲△▼▽▶▷►➤➡➔→⇒✓✔✅☑☐✗✕]|[①-⑳]|[⑴-⒇]|[（(]\d{1,3}[)）]|\d{1,3}[.)．）](?:[^\d.．]|$)|[０-９]{1,3}[．）](?:[^０-９]|$))",
     )
     .expect("item line regex")
+});
+
+/// 短い見出しと全角のコロンで始まる行 (「特長（Advantage）：〜」)。
+static LABEL_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[^\s。、，．：:]{1,20}：").expect("label line regex"));
+
+/// 丁寧体の文末 (句点を打たずに 1 行 1 文で書いた文の終わり)。
+static POLITE_END: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:です|ます|ました|でした|ません|ましょう|でしょう|ください)$")
+        .expect("polite end regex")
 });
 
 /// 段落の中の改行が、書式から文の区切りと分かるか (1 行 1 項目で書いた箇条書きとラベルの行)。
@@ -54,21 +64,55 @@ static ITEM_LINE: LazyLock<Regex> = LazyLock::new(|| {
 /// 書き方は、これらに当たらないのでつないだままにする。
 ///
 /// - 次の行が、Markdown の記法にない箇条書きの記号か番号で始まる (「・項目」「①項目」)
+/// - 次の行が、短い見出しと全角のコロンで始まる (「特長：〜」)
 /// - 直前の行がコロンで終わる (「目的:」)
-/// - 直前の行が【】で囲んだ見出し風の行である
-fn breaks_sentence(source: &str, range: &Range<usize>) -> bool {
-    /// 引用の記号・字下げ・太字の記号を外した行。
-    fn bare(line: &str) -> &str {
+/// - 直前の行が【】で囲んだ見出し風の行か、太字だけの行である
+/// - 直前の行が日本語を含まない英文で `.` `!` `?` で終わり、次の行が日本語で始まる
+/// - ハード改行 (行末の空白 2 つ・バックスラッシュ) の直前が、文末記号・読点・ひらがなのどれでも
+///   ない (見出し風の行の後の改行。ひらがなや読点で終わる行は、文の途中の折り返しとみなす)
+/// - 直前の行が丁寧体の文末 (「です」「ます」「ください」など) で終わり、次の行が括弧で始まらない
+///   (句点を打たずに 1 行 1 文で書いた文)
+fn breaks_sentence(source: &str, range: &Range<usize>, hard: bool) -> bool {
+    /// 引用の記号・字下げを外した行。
+    fn unquoted(line: &str) -> &str {
         line.trim_start_matches(|c: char| c == '>' || c.is_whitespace())
-            .trim_matches(|c: char| c == '*' || c == '_' || c.is_whitespace())
+            .trim_end_matches(|c: char| c == '\\' || c.is_whitespace())
+    }
+    /// 太字の記号も外した行。
+    fn bare(line: &str) -> &str {
+        unquoted(line).trim_matches(|c: char| c == '*' || c == '_' || c.is_whitespace())
     }
     let before = &source[..range.start];
-    let prev = bare(&before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+    let prev_line = unquoted(&before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+    let prev = bare(prev_line);
     let after = &source[range.end..];
     let next = bare(&after[..after.find('\n').unwrap_or(after.len())]);
+    let bold_line = ["**", "__"].iter().any(|m| {
+        prev_line.len() > 2 * m.len() && prev_line.starts_with(m) && prev_line.ends_with(m)
+    });
+    let english_line = prev.ends_with(['.', '!', '?'])
+        && !prev.chars().any(text::is_japanese)
+        && next.chars().next().is_some_and(text::is_japanese);
+    // 長音符はカタカナ語の終わり (「サーバー」) にも付くので、ひらがなとみなさない
+    let hard_after_label = hard
+        && prev.chars().next_back().is_some_and(|c| {
+            !(text::is_sentence_ender(c)
+                || matches!(c, '\u{3041}'..='\u{309F}' | '、' | '，' | ','))
+        });
+    // 次の行が括弧で始まるなら、同じ文の補足 (「〜します\n(既定は〜)。」) とみなしてつなぐ
+    let polite_end = POLITE_END.is_match(prev)
+        && !next
+            .chars()
+            .next()
+            .is_some_and(|c| text::closing_bracket(c).is_some());
     ITEM_LINE.is_match(next)
+        || LABEL_LINE.is_match(next)
         || prev.ends_with([':', '：'])
         || (prev.starts_with('【') && prev.ends_with('】'))
+        || bold_line
+        || english_line
+        || hard_after_label
+        || polite_end
 }
 
 /// Markdown の原文をブロックと抑制コメントに分ける。
@@ -362,7 +406,8 @@ impl<'a> Builder<'a> {
                 if !self.skipping()
                     && let Some(cur) = self.current.as_mut()
                 {
-                    let sentence = breaks_sentence(self.source, &range);
+                    let hard = matches!(event, Event::HardBreak);
+                    let sentence = breaks_sentence(self.source, &range, hard);
                     cur.line_break(range, sentence);
                 }
             }
@@ -637,6 +682,51 @@ mod tests {
         // 引用の中でも同じ
         let src = "> 手順:\n> ・保存する\n";
         assert_eq!(sentence_break_heads(src), ["・保存"]);
+    }
+
+    #[test]
+    fn more_item_markers_and_label_lines_break_sentences() {
+        // 大きな丸などの記号、短い見出しと全角コロンで始まる行
+        let src =
+            "振り返り\n◯計画どおりに進んだ\n▲見積もりが甘かった\n特長（速さ）：待たずに済む\n";
+        assert_eq!(sentence_break_heads(src), ["◯計画", "▲見積", "特長（"]);
+        // 太字だけの行のあと
+        let src = "**確かめる質問**\n何を優先するかを聞く。\n";
+        assert_eq!(sentence_break_heads(src), ["何を優"]);
+    }
+
+    #[test]
+    fn english_lines_and_hard_breaks_after_labels_break_sentences() {
+        // 英文の行の文末と、次の行の日本語
+        let src = "Released under the MIT License.\nこの節は利用条件を述べる。\n";
+        assert_eq!(sentence_break_heads(src), ["この節"]);
+        // 見出し風の行のあとのハード改行 (行末の空白 2 つ、バックスラッシュ)
+        let src = "**手順の概要（初回だけ）**  \n設定を開いて保存する。\n";
+        assert_eq!(sentence_break_heads(src), ["設定を"]);
+        let src = "作業の記録 ref-12\\\n次の作業に移る。\n";
+        assert_eq!(sentence_break_heads(src), ["次の作"]);
+        let src = "対象のサーバー  \n夜間に止める。\n";
+        assert_eq!(sentence_break_heads(src), ["夜間に"]);
+    }
+
+    #[test]
+    fn polite_sentence_ends_without_periods_break_sentences() {
+        // 句点を打たずに 1 行 1 文で書いたメモ
+        let src = "画面の説明を書いてください\n手順は短くまとめます\n図も入れたいです\n";
+        assert_eq!(sentence_break_heads(src), ["手順は", "図も入"]);
+        // 次の行が括弧で始まるなら、同じ文の補足としてつなぐ
+        let src = "設定は起動時に読みます\n(既定は現在のディレクトリ)。\n";
+        assert!(sentence_break_heads(src).is_empty());
+    }
+
+    #[test]
+    fn hard_breaks_inside_sentences_and_mixed_lines_keep_sentences() {
+        // ひらがな・読点で終わる行のハード改行は、文の途中の折り返し
+        let src = "結果を利用者に  \n知らせるための表示で、  \nすぐ消える。\n";
+        assert!(sentence_break_heads(src).is_empty());
+        // 日本語を含む行の末尾の英字の略語や、英文どうしの折り返しでは切らない
+        let src = "提供元は Example Inc.\nの子会社だ。\nIt runs fast.\nIt is small.\n";
+        assert!(sentence_break_heads(src).is_empty());
     }
 
     #[test]

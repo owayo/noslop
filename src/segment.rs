@@ -83,6 +83,15 @@ pub fn split(
         .collect()
 }
 
+/// 括弧の対応を見ずに、文末として働く文末記号で区切った区間の終わりの位置。
+///
+/// 文分割 ([`split`]) と同じ分割器の判定なので、URL の `?`、例外表の語 (`Yahoo!`)、小数点
+/// (`１．５`) では区切らない。直後の閉じ括弧は次の区間に入り、改行の字でも区切る
+/// (`Splitter::chunk_ends`)。R03 が括弧の中の文を断片に分けて長さを測るのに使う。
+pub fn chunk_ends(text: &str) -> Vec<usize> {
+    SPLITTER.chunk_ends(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

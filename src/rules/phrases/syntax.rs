@@ -30,7 +30,7 @@ static P13_META: RuleMeta = RuleMeta {
     summary: "「この事実は〜を示している」のような、無生物を主語にして他動詞で結ぶ直訳調の構文を指摘する",
     explanation: r"### 何を見るか
 
-「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「暗示する」「物語る」「浮き彫りにする」「後押しする」が来る文を探します。主語のあとで開いた括弧の中の述語 (「これは「〜と証明した」ものではない」) は、主語の述語ではないので数えません。
+「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「物語る」「浮き彫りにする」「後押しする」が来る文を探します。「暗示する」は実験的な述語で、`--experimental` か設定で有効にしたときだけ数えます。主語のあとで開いた括弧の中の述語 (「これは「〜と証明した」ものではない」) は、主語の述語ではないので数えません。
 
 ### なぜ問題か
 
@@ -47,7 +47,7 @@ static P13_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-人間とAIのコーパスで確かめた構文で、重大度は情報です。元の検出器は表層の正規表現と、品詞列で述語の原形を照合する版の 2 本立てでした。辞書を使わないため、述語は活用の語幹 (「示し」「もたらさ」など) で近似しています。原形が一致すれば活用を問わない元の定義の範囲に合わせて、未然形は「もたらさ」「示さ」と同じく「生み出さ」(「何も生み出さない」) も拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は元の述語の一覧にありませんが、元の表層の正規表現は「示す」を「暗示する」の中でも拾っていたため、校正の時点で数えられていた語として含めています。",
+人間とAIのコーパスで確かめた構文で、重大度は情報です。元の検出器は表層の正規表現と、品詞列で述語の原形を照合する版の 2 本立てでした。辞書を使わないため、述語は活用の語幹 (「示し」「もたらさ」など) で近似しています。原形が一致すれば活用を問わない元の定義の範囲に合わせて、未然形は「もたらさ」「示さ」と同じく「生み出さ」(「何も生み出さない」) も拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は元の述語の一覧になく (元の表層の正規表現は「示す」を「暗示する」の中でも拾っていました)、人の随筆にも出る語で、誤検知率を測っていないため実験的にしています。",
 };
 
 /// 抽象的な主語と主題・主格の助詞。長い候補を先に置く。
@@ -87,6 +87,9 @@ const P13_VERB_ITEMS: [(&str, &str); 11] = [
     ("後押し", "後押しする"),
 ];
 
+/// 実験的な述語 (終止形)。未校正なので `--experimental` か設定で有効にしたときだけ数える。
+const P13_EXPERIMENTAL_VERBS: [&str; 1] = ["暗示する"];
+
 /// 一致した他動詞 (活用形) の終止形。一覧にない形なら一致した形のまま返す。
 fn p13_verb_item(verb: &str) -> String {
     P13_VERB_ITEMS
@@ -95,11 +98,17 @@ fn p13_verb_item(verb: &str) -> String {
         .map_or_else(|| verb.to_string(), |(_, item)| (*item).to_string())
 }
 
+/// 実験的な述語か。
+fn p13_experimental_verb(verb: &str) -> bool {
+    P13_EXPERIMENTAL_VERBS.contains(&p13_verb_item(verb).as_str())
+}
+
 pub(super) struct InanimateSubject;
 
 impl InanimateSubject {
     /// 文のテキストから (主語の開始〜述語の終わり, 主語, 述語) を探す。
-    fn find(text: &str) -> Vec<(Range<usize>, String, String)> {
+    /// `experimental` が偽なら、実験的な述語は述語とみなさない。
+    fn find(text: &str, experimental: bool) -> Vec<(Range<usize>, String, String)> {
         let mut out: Vec<(Range<usize>, String, String)> = Vec::new();
         for subject in SUBJECT_RE.find_iter(text) {
             // この事実は → 事実は のように同じ主語を二重に数えない
@@ -120,7 +129,9 @@ impl InanimateSubject {
                         .next_back()
                         .is_some_and(text::is_kanji);
                 // 主語のあとで開いた括弧の中の述語は、引用や名詞修飾の中の述語で主語の述語ではない
-                !compound && !opens_bracket(&text[subject.end()..start])
+                !compound
+                    && !opens_bracket(&text[subject.end()..start])
+                    && (experimental || !p13_experimental_verb(m.as_str()))
             });
             if let Some(verb) = verb {
                 let end = subject.end() + verb.end();
@@ -157,8 +168,13 @@ impl Rule for InanimateSubject {
         for (idx, block) in ctx.scoped_blocks() {
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
-                for (range, subject, verb) in Self::find(text) {
+                for (range, subject, verb) in Self::find(text, ctx.experimental) {
                     let matched = &text[range.clone()];
+                    let status = if p13_experimental_verb(&verb) {
+                        RuleStatus::Experimental
+                    } else {
+                        P13_META.status
+                    };
                     let abs =
                         (sentence.range.start + range.start)..(sentence.range.start + range.end);
                     let message = format!(
@@ -176,7 +192,7 @@ impl Rule for InanimateSubject {
                             message,
                             "人や状況を主語に戻すか、「〜から分かる」「〜になっている」のような述べ方に変えてください",
                             P13_META.default_severity,
-                            P13_META.status,
+                            status,
                         )
                         .with_metric("item", p13_verb_item(&verb)),
                     );
@@ -445,7 +461,7 @@ impl Rule for ColonContinuation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::testing::{matched, run};
+    use crate::rules::testing::{Options, matched, run, run_with};
 
     #[test]
     fn p13_flags_inanimate_subjects_with_conjugated_verbs() {
@@ -493,14 +509,26 @@ mod tests {
     }
 
     #[test]
-    fn p13_flags_anji_like_shisa() {
+    fn p13_anji_is_an_experimental_verb() {
+        // 「暗示する」は未校正なので、実験的な項目を有効にしたときだけ数える
         let md = "この事実は、需要が戻らないことを暗示している。\n";
-        let d = run(&InanimateSubject, md);
+        assert!(run(&InanimateSubject, md).is_empty());
+        let experimental = Options {
+            experimental: true,
+            ..Options::default()
+        };
+        let d = run_with(&InanimateSubject, md, experimental);
         assert_eq!(
             matched(md, &d),
             vec!["この事実は、需要が戻らないことを暗示し"]
         );
         assert_eq!(item(&d[0]), "暗示する");
+        assert_eq!(d[0].status, RuleStatus::Experimental);
+        // 実験的な述語が先にあっても、そのあとの校正済みの述語は既定で数える
+        let md = "これは変化を暗示し、需要の減少を示している。\n";
+        let d = run(&InanimateSubject, md);
+        assert_eq!(item(&d[0]), "示す");
+        assert_eq!(d[0].status, RuleStatus::Stable);
     }
 
     #[test]
