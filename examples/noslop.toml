@@ -47,6 +47,17 @@ lists = false        # 箇条書きの項目
 tables = false       # 表のセル
 blockquotes = false  # 引用 (> で始まる部分)
 
+[morphology]
+# 形態素解析の辞書 (hasami の .hsd)。あれば「の」の連鎖 (P16) と連続漢字 (P15) を品詞で判定する。
+# 辞書がなければ、これらも辞書なしの近似で判定する。
+#   auto     見つかれば使う (既定)
+#   required 必ず使う。見つからなければ設定の誤りにする (CI で判定の方式をそろえたいとき)
+#   off      使わない
+mode = "auto"
+# 辞書のファイル。相対パスはこの設定ファイルのディレクトリが基準で、~/ はホームディレクトリ。
+# 書かなければ HASAMI_DICT と ~/.local/share/hasami/*.hsd を探す。
+# dictionary = "~/.local/share/hasami/ipadic.hsd"
+
 # ルールごとの設定。表の名前はルールの ID か名前 (例: [rules.AI_CONCLUSION])。
 # 共通の項目:
 #   enabled  = true / false   有効・無効を切り替える (実験的ルールの個別の有効化もこれ)

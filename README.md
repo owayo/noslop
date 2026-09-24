@@ -1,7 +1,7 @@
 <h1 align="center">noslop</h1>
 
 <p align="center">
-  <strong>A fast, dictionary-free linter that flags AI-generated "slop" patterns in Japanese prose</strong>
+  <strong>A fast linter that flags AI-generated "slop" patterns in Japanese prose, with no dictionary required</strong>
 </p>
 
 <p align="center">
@@ -28,11 +28,11 @@ noslop points at the habits that LLM-written Japanese tends to show in minutes, 
 
 noslop is not a detector that decides "an AI wrote this". Writers rarely notice their own habits, and reading a long document by eye always misses some. noslop lists every suspicious spot deterministically; whether to fix or keep each one is the writer's call. When you decide to keep something, you can record the reason in a suppression comment.
 
-noslop does not load a morphological-analysis dictionary (zero-dictionary). It judges text by character classes, phrase patterns and sentence-length statistics, so it ships as a single binary, starts instantly and lints large repositories in parallel.
+noslop works without a morphological-analysis dictionary. It judges text by character classes, phrase patterns and sentence-length statistics, so it ships as a single binary, starts instantly and lints large repositories in parallel. When a dictionary for the morphological analyzer [hasami](https://github.com/owayo/hasami) is available, rules that count parts of speech (chains of 「の」 and kanji runs) are judged more precisely.
 
 ## Features
 
-- **No dictionary**: never loads Sudachi or MeCab dictionaries; everything lives in one binary
+- **Dictionary optional**: runs as a single binary without loading any dictionary; with a hasami dictionary (`.hsd`), chains of 「の」 (P16) and kanji runs (P15) are judged by part of speech ([Morphological-analysis dictionary](#morphological-analysis-dictionary-optional))
 - **Calibrated thresholds**: only phrases and thresholds whose false-positive rates were measured on human and model-generated documents (7 models) are enabled by default; uncalibrated checks run only when you opt in as experimental rules
 - **Two lanes**: AI "slop" (`slop`) and reading-load hints (`readability`) are reported separately; only calibrated slop rules feed the naturalness score
 - **Markdown-aware**: skips code blocks, inline code, URLs and front matter, and tells headings, lists, tables and quotes apart
@@ -147,6 +147,8 @@ When a directory is given, files with the extensions `md` / `markdown` / `txt` a
 | `--no-readability` | | Do not report the readability lane |
 | `--include <KINDS>` | | Also apply phrase rules to lists, tables and quotes: `lists` / `tables` / `quotes` / `all` (comma-separated) |
 | `--line-breaks <MODE>` | | How line breaks inside a paragraph are treated: `space` (default) / `sentence` |
+| `--dict <PATH>` | | Use this morphological-analysis dictionary (a hasami `.hsd`); it becomes required |
+| `--no-dict` | | Do not use a morphological-analysis dictionary; judge with the dictionary-free approximations |
 | `--color <WHEN>` | | Coloring: `auto` (default) / `always` / `never`; `NO_COLOR` is honored |
 | `--quiet` | `-q` | Hide files without findings and the summary |
 | `--brief-limit <N>` | | Maximum number of spots listed per rule in the `brief` format (default 5) |
@@ -155,7 +157,7 @@ When a directory is given, files with the extensions `md` / `markdown` / `txt` a
 
 ### `diff` Options
 
-`noslop diff <BEFORE> <AFTER>` accepts the same rule-selection and parsing options as `check` (`--genre`, `--ignore-rules`, `--enable-rules`, `--only-rules`, `--experimental`, `--no-readability`, `--include`, `--line-breaks`, `--config`, `--no-config`). Either side can be `-` to read from stdin.
+`noslop diff <BEFORE> <AFTER>` accepts the same rule-selection and parsing options as `check` (`--genre`, `--ignore-rules`, `--enable-rules`, `--only-rules`, `--experimental`, `--no-readability`, `--include`, `--line-breaks`, `--dict`, `--no-dict`, `--config`, `--no-config`). Either side can be `-` to read from stdin.
 
 | Option | Short | Description |
 |--------|-------|-------------|
@@ -266,6 +268,9 @@ exclude = ["CHANGELOG.md", "vendor/**"]
 [scope]
 lists = true            # also apply phrase rules to bullet items
 
+[morphology]
+mode = "required"       # always use a morphological-analysis dictionary (auto / required / off)
+
 [rules.P04]
 enabled = true          # enable a single experimental rule
 
@@ -332,7 +337,8 @@ Messages are in Japanese. Lines and columns are 1-based, and columns count chara
 
 A stable schema for machines. The essentials (the example below is the P01 finding extracted from the JSON of the same document as the text example above):
 
-- Top level: `schemaVersion`, `tool` (`name`, `version`), `columnUnit`, `settings` (`genre`, `experimental`, `failOn`), `files`, `summary`, `errors`
+- Top level: `schemaVersion`, `tool` (`name`, `version`), `columnUnit`, `settings` (`genre`, `experimental`, `failOn`, `morphology`), `files`, `summary`, `errors`
+- `settings.morphology` is the judging method: `requested` (`auto` / `required` / `off`), `method` (`dictionary` / `surface`), `dictionary` (the `name` and `path` of the dictionary used, or `null`) and `reason` (why no dictionary was used: `disabled` / `not-found` / `not-needed`)
 - Per file: `path`, `format` (`markdown` / `text`), `characters`, `sentences`, `score` (`value`, `band`, `label`, `formula`; `null` for documents under 100 characters), `diagnostics`, `warnings`
 - Per finding: `ruleId`, `ruleName`, `severity`, `lane`, `status`, `message`, `hint`, `range`, `context`, `excerpt`, `related`, `metrics`, `fingerprint`, `suppressed`
 - `range` and `context` have `start` and `end`, each with `line`, `column` (1-based, counted in Unicode scalar values as `columnUnit` says) and `offset` (UTF-8 byte offset)
@@ -433,7 +439,7 @@ The same brief comes as JSON for programs and as [TOON](https://github.com/toon-
 - `rules` — the rules with findings, in the order to look at them: `ruleId`, `ruleName`, `title`, `lane`, `maxSeverity`, `experimentalOnly`, `count`, `omittedCount` (findings beyond `--brief-limit`), `why` (why it looks suspicious) and `hint` (the direction of a fix)
 - `occurrences` — the locations, referring to `rules` by `ruleId`: `line`, `column` (1-based, counted in characters), `message` and `excerpt` (the sentence with the finding; `null` for findings without one)
 
-The top level also has `revisionRules`, `editorialQuestions`, `note` (a caveat when there are no findings), `cleanFiles`, `warnings` and `errors`. The naturalness score, metrics, fingerprints and suppressed findings are left out; use the full report to track findings. The schema version is `schemaVersion`, and `kind` is `brief`.
+The top level also has `settings` (`genre`, `experimental`, `method` — the judging method, `dictionary` or `surface` — and `dictionary`, the name of the dictionary used; local paths are left out), `revisionRules`, `editorialQuestions`, `note` (a caveat when there are no findings), `cleanFiles`, `warnings` and `errors`. The naturalness score, metrics, fingerprints and suppressed findings are left out; use the full report to track findings. The schema version is `schemaVersion`, and `kind` is `brief`.
 
 ```toon
 files[1]:
@@ -576,6 +582,55 @@ Legitimate conventions differ by genre. Setting `--genre` (or `genre` in the con
 | `business` | `minutes` | Turns off the bold, bullet, boilerplate-heading, numbered-stage, heading-template, structure-density and label-style rules (S01–S04, S07, S09, S10). Missing noun endings are judged from 3,000 characters. Repeated openings need 7 occurrences |
 | `essay` | `blog` | Overlong sentences start at 110 characters instead of 90. Missing noun endings are judged from 1,500 characters. Repeated openings need 5 occurrences |
 
+## Morphological-Analysis Dictionary (Optional)
+
+noslop works without a dictionary. When a dictionary (`.hsd`) for the morphological analyzer [hasami](https://github.com/owayo/hasami) is available, rules that count parts of speech are judged precisely, under the same conditions as the original calibration.
+
+| Rule | With a dictionary | Without a dictionary |
+|---|---|---|
+| P16 chains of 「の」 | Counts the case particle 「の」 and treats particles at most two morphemes apart as one chain | Counts only 「の」 between words made of kanji, katakana or alphanumerics, so it misses chains through words with hiragana (「の家の大きな犬の」) and chains that end in a hiragana word (「魂の安静のため」) |
+| P15 kanji runs | Excludes runs that contain proper nouns (era names, personal names and so on) by part of speech | Excludes only runs that end with common institution suffixes (委員会, 株式会社, ...) |
+
+Compared with the original detector, which counts with morphological analysis, on 382 local documents:
+
+| | Without | With (ipadic) |
+|---|---:|---:|
+| P16 share of the original's findings that were caught | 39% | 90% |
+| P16 agreement of the flagged spots | 0.38 | 0.84 |
+| P15 agreement of the flagged spots | 0.69 | 0.81 |
+
+Other rules do not change with a dictionary, and sentence splitting never uses one. Noun endings (R06) keep the dictionary-free estimate because the per-document verdicts were identical with and without a dictionary.
+
+### Installing a dictionary
+
+The hasami repository ships prebuilt dictionaries through Git LFS. `ipadic.hsd` (IPAdic only, 17 MB) is recommended. `ipadic-neologd.hsd` and `ipadic-neologd-sudachi.hsd` include NEologd and know more words, but they sometimes analyze common phrases such as 「どうでしょう」 and 「作りました」 as a single proper noun (hasami [#1](https://github.com/owayo/hasami/issues/1)–[#3](https://github.com/owayo/hasami/issues/3)).
+
+```bash
+git lfs install
+git clone https://github.com/owayo/hasami
+mkdir -p ~/.local/share/hasami
+cp hasami/dict/ipadic.hsd ~/.local/share/hasami/
+```
+
+A dictionary placed in `~/.local/share/hasami/` is used automatically (`HASAMI_DICT` can point to one directly). When several are present, `ipadic-neologd-sudachi`, `ipadic-neologd` and `ipadic` are preferred in that order, so set `dictionary` in the configuration to use ipadic.
+
+### Choosing how the dictionary is used
+
+| Setting | Behavior |
+|---|---|
+| `mode = "auto"` (default) | Use a dictionary when one is found; otherwise judge with the dictionary-free approximations |
+| `mode = "required"` | Always use one; a missing dictionary is a configuration error (exit code 2). Useful to keep CI runs consistent |
+| `mode = "off"` / `--no-dict` | Never use one |
+| `dictionary = "<path>"` / `--dict <path>` | Use this dictionary. `--dict` also implies `required`. A relative path in the configuration is resolved from the configuration file's directory |
+
+```toml
+[morphology]
+mode = "auto"
+dictionary = "~/.local/share/hasami/ipadic.hsd"
+```
+
+The method used appears on the text summary line (for example 「辞書あり (ipadic)」), in `settings.morphology` of the JSON report and in `settings.method` and `settings.dictionary` of the revision brief. When no rule that uses the dictionary runs (for example with `--no-readability`, or when `--only-rules` leaves them out), noslop does not look for a dictionary.
+
 ## How the Rules Were Calibrated
 
 The rules and thresholds enabled by default had their false-positive rates checked on human documents and documents generated by 7 models (71–103 human and 81–381 AI documents). The main decisions:
@@ -590,7 +645,7 @@ The rules and thresholds enabled by default had their false-positive rates check
 - **Structural habits (S01–S10)** — not quantitatively calibrated yet, so all are experimental.
 - **Rules added later (P18–P20, R11–R13)** — chat-reply leftovers, hype, self-answered questions, over-corrected uniformity and comma habits have provisional thresholds, so they are experimental.
 
-Dictionary-free approximations (estimating noun endings, detecting enumerations, ...) do not reproduce the original calibration conditions. Rules that rely on them stay experimental or info-level until they are recalibrated.
+Dictionary-free approximations (estimating noun endings, detecting enumerations, ...) do not reproduce the original calibration conditions. Rules that rely on them stay experimental or info-level until they are recalibrated. With a morphological-analysis dictionary, chains of 「の」 (P16) and kanji runs (P15) are counted by part of speech, as in the original calibration.
 
 To measure the rules on your own documents, run `noslop calibrate --human <human documents> --ai <generated documents>`. It reports each rule's false-positive and detection rates, the rates when a threshold moves, experimental rules that qualify for promotion and calibrated rules that need review (it never rewrites thresholds or statuses). How to collect a corpus, how to generate documents ([tools/corpus](tools/corpus)) and the promotion criteria are described in [docs/calibration.md](docs/calibration.md) (in Japanese).
 
@@ -613,7 +668,7 @@ You can drop `mise exec --` in a shell where `mise activate` is set up.
 ## Roadmap
 
 - LSP support (live diagnostics in editors)
-- An optional precision mode that uses a morphological-analysis dictionary (falls back to the current approximations without one)
+- Extending the dictionary-based judgment to buried enumerations (R04) and repeated sentence openings (R08)
 - Recalibrating the dictionary-free approximations on corpora measured with `noslop calibrate` and promoting experimental rules to stable
 - Comparing against a previous JSON result in CI and reporting only new findings (baseline)
 

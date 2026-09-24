@@ -6,7 +6,7 @@
 
 noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust 製の Linter。判定器ではなく、疑わしい箇所を決定的に並べ、直すかどうかは書き手に委ねる。
 
-- 形態素解析の辞書を使わない (Zero-Dictionary)。文字種・語句パターン・文長の統計だけで判定する
+- 形態素解析の辞書がなくても動く。文字種・語句パターン・文長の統計で判定する。hasami の辞書 (`.hsd`) があれば、品詞で数えるルール (P15・P16) を元の校正と同じ条件で判定する (`morph.rs`)
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
 - AI 臭さ (`slop`) と読解負荷 (`readability`) の 2 つのレーンを混ぜない。自然度スコアに入るのは stable な slop だけ
 
@@ -14,7 +14,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 - Rust (edition 2024)。ツールチェーンの版は `mise.toml` が正
 - Markdown: `pulldown-cmark`
-- 文分割: [hasami](https://github.com/owayo/hasami) の `hasami::sentence` (辞書を使わない)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。`default-features = false` なら依存は増えない。上げるときはタグを書き換えて `cargo update -p hasami` を実行し、例外表の版を固定したテスト (`segment.rs`) が落ちたら分割の差分と THIRD_PARTY_NOTICES.md の NOTICE の写しを確かめる
+- 文分割と形態素解析: [hasami](https://github.com/owayo/hasami)。文分割は `hasami::sentence` (辞書を使わない)、形態素解析は `analyzer` feature (辞書があるときだけ)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。テストは `build` feature (dev-dependency) で小さな辞書を組み立てる。上げるときはタグを書き換えて `cargo update -p hasami` を実行し、例外表の版を固定したテスト (`segment.rs`) が落ちたら分割の差分と THIRD_PARTY_NOTICES.md の NOTICE の写しを確かめる
 - 語句の照合: `aho-corasick` / `regex`
 - ファイル探索: `ignore` (.gitignore を尊重)、並列化: `rayon`
 - CLI: `clap`、設定: `toml` + `serde`、出力の色: `anstream` / `anstyle`
@@ -34,6 +34,8 @@ flowchart TD
     CFG --> ENG[engine.rs<br/>ルールの選択・実行]
     DOC --> ENG
     ENG --> RULES[rules/<br/>phrases・rhythm・structure・custom]
+    ENG --> MORPH[morph.rs<br/>形態素解析 (辞書は任意)]
+    RULES --> MORPH
     ENG --> SUP[suppress.rs<br/>抑制の適用]
     ENG --> SCORE[score.rs<br/>自然度スコア]
     ENG --> OUT[output/<br/>text・json・toon・github・brief]
@@ -57,7 +59,8 @@ flowchart TD
 | `src/cli.rs` | clap の定義と、`check` / `diff` / `calibrate` / `rules` / `explain` / `init` / `mcp` / `hook` / `skill-install` の実行。`check` と `diff` はルールの選び方の引数 (`EngineArgs`) を共有する。`check` は出す内容 (`--report full\|brief`) と形式 (`--format`) の組み合わせを最初に確かめる |
 | `src/config.rs` | `noslop.toml` / `.noslop.toml` の探索 (カレントから親へ、最初の 1 つ) と、CLI の指定との統合 |
 | `src/walk.rs` | 対象ファイルの列挙 (.gitignore・.ignore・.noslopignore・拡張子・設定の除外。除外は .gitignore と同じ書式で、設定ファイルのディレクトリが基準。直接指定したファイルは拡張子と除外を問わない) |
-| `src/engine.rs` | ルールの選択 (stable / experimental / ジャンル / 明示の有効化・無効化)、設定値の適用、実行、重大度の上書き、fingerprint、並べ替え |
+| `src/engine.rs` | ルールの選択 (stable / experimental / ジャンル / 明示の有効化・無効化)、設定値の適用、実行、重大度の上書き、fingerprint、並べ替え。辞書を使う有効なルール (`Rule::uses_morphology`) があるときだけ辞書を読み、文書ごとに `DocMorphology` を作ってルールに渡す |
+| `src/morph.rs` | 形態素解析 (辞書は任意)。`[morphology]`・`--dict`・`--no-dict` から辞書を決めて読み込む (`resolve`。`auto` で見つからなければ辞書なし、指定の誤りはエラー)。文書ごとの解析器で、ルールが求めた文だけを解析して覚えておく。使った方式 (`MorphologyStatus`) は出力の `settings` に載る |
 | `src/suppress.rs` | 抑制コメントを診断に当てる。未知のルール名は警告にする |
 | `src/score.rs` | 自然度スコア (算式の版を持つ) |
 | `src/output/` | text (色付き)・json (安定スキーマ)・toon (JSON と同じデータを TOON で。符号化は `toon-format` クレート)・github (ワークフローコマンド、エスケープは出力器の責務)・brief (AI や編集者に渡す改稿指示。`Brief` のデータを組み立て、Markdown・JSON・TOON に描き分ける。データはルールの表と該当箇所の表に分け、TOON の表形式が効くようにしている) |
@@ -93,7 +96,8 @@ flowchart TD
 5. テストを書く。検出する例・検出しない例・スコープ (段落だけか)・experimental の有効化・原文上の位置 (`matched` で原文の文字列と一致すること) の 5 点は必ず押さえる
 6. 閾値を持つルールは `Rule::measure` を実装し、`noslop calibrate` で閾値を掃引できるようにする。実装したら `rhythm.rs` / `structure.rs` のテストにある `MEASURED` に ID を足す。`testing::assert_measures_agree` が、測定値が閾値を越えることと `check` が指摘することの一致を、閾値を測定値の前後に動かして確かめる (指摘する例と、値は測れるが指摘しない例を 1 つ以上用意する)。重大度を切り替えるだけの閾値 (R05 の `error_above` など) は `Measure::at` で切り替え先の重大度を示す
 7. 特定の重大度の率で校正したルールは、`Rule::calibration_basis` でその重大度を返す (既定は、既定の重大度が警告以上なら警告、情報なら情報。R05 は重大)。`noslop calibrate` は、見直しの判定をこの重大度以上の指摘で数える
-8. README (日英) のルール一覧を更新し、`mise exec -- make docs` で `docs/rules.md` を作り直す
+8. 品詞で判定したほうが元の校正条件に近いルールは、`Rule::uses_morphology` を真にし、`ctx.morph` (辞書があるときだけ `Some`) の形態素で判定する。辞書がない・文を解析できないときは辞書なしの近似に戻す。テストは `morph::testing::morphology` で小さな辞書を組み立て、`testing::run_with_morphology` で当てる (辞書なしと辞書ありの結果が違う例を並べる)
+9. README (日英) のルール一覧を更新し、`mise exec -- make docs` で `docs/rules.md` を作り直す
 
 ### `explanation` の書式
 
@@ -123,6 +127,7 @@ flowchart TD
 
 - **閾値はデータなしに変えない**。変えるなら、人間の文書での誤検知率と AI の文書での検出率を `noslop calibrate` で測り (手順は [docs/calibration.md](docs/calibration.md))、根拠を `explanation` の「根拠」に書く。コーパスはリポジトリに入れない
 - **未校正のものは experimental にする**。辞書なしの近似で元の校正条件から外れるものも同じ
+- **辞書ありの判定は元の校正条件 (品詞で数える) に合わせる**。辞書あり・なしで結果が変わるルールは、元の検出器と比べた両方の一致率を `explanation` の「根拠」に書く。辞書で精度が上がらないルール (R06 など) は辞書を使わない
 - **スコアに入れるのは stable な slop だけ**。readability・experimental・独自ルールは入れない。算式を変えたら `score.rs` の算式の版を上げる
 - **統計系ルールは地の文だけで集計する**。校正を地の文 (見出し・リスト・引用・表・コードを除く) で行ったため
 - **語句ルールの既定のスコープは段落だけ**。リスト・表・引用は設定で広げる
@@ -143,6 +148,7 @@ mise exec -- make docs             # docs/rules.md を作り直す
 - CI (ubuntu) は `docs/rules.md` を生成し直して差分がないことも確かめる。ルールの定義や説明文を変えたら `make docs` を忘れない
 - 統合テストは `tests/cli.rs` (サブコマンドの入出力・終了コード) と `tests/integrations.rs` (MCP サーバーとフック) にある。組み込みルールの増減で壊れないよう、件数は設定ファイルの独自ルールと `--only-rules` で確かめる
 - テスト用の文章は、実在の文書や既存の資料を写さずに自分で書く
+- CI には形態素解析の辞書がない。辞書ありの判定のテストは hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする
 - Rust の文字列の行継続 (`\`) は次の行の先頭の空白を消す。説明文を数字や `(` の前で折り返すときは、`\` の前に空白を入れる (「90 字台から 100 字」のように、数字の前後の空白が落ちるため)
 
 ## 公開リポジトリとしての注意

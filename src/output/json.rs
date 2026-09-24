@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::diagnostic::{Diagnostic, Lane, Metric, RuleStatus, Severity, Span};
 use crate::document::{Document, SourceFormat};
 use crate::engine::{FileError, FileReport, RunReport};
+use crate::morph::MorphologyStatus;
 use crate::output::text::Counts;
 use crate::output::{Position, RenderOptions, toon};
 use crate::score::{self, Score};
@@ -27,7 +28,7 @@ struct Report<'a> {
     schema_version: u32,
     tool: Tool,
     column_unit: &'static str,
-    settings: Settings,
+    settings: Settings<'a>,
     files: Vec<File<'a>>,
     summary: Summary,
     errors: Vec<ErrorEntry<'a>>,
@@ -51,10 +52,12 @@ impl Tool {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Settings {
+struct Settings<'a> {
     genre: &'static str,
     experimental: bool,
     fail_on: &'static str,
+    /// 判定の方式 (形態素解析の辞書を使ったか)。
+    morphology: &'a MorphologyStatus,
 }
 
 #[derive(Serialize)]
@@ -273,6 +276,7 @@ fn build<'a>(report: &'a RunReport, opts: &RenderOptions) -> Report<'a> {
             genre: opts.genre.as_str(),
             experimental: opts.experimental,
             fail_on: opts.fail_on.as_str(),
+            morphology: &report.morphology,
         },
         files: report.files.iter().map(file_entry).collect(),
         summary,
@@ -296,6 +300,7 @@ mod tests {
                 path: "x.md".into(),
                 message: "読み込めません".into(),
             }],
+            morphology: Default::default(),
         };
         let mut buf = Vec::new();
         render(&report, &RenderOptions::default(), &mut buf).unwrap();

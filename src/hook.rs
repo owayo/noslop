@@ -153,6 +153,7 @@ pub fn respond(input: &str, args: &ClaudeCodeArgs) -> Result<Option<String>, Str
     let report = RunReport {
         files: vec![file],
         errors: Vec::new(),
+        morphology: engine.morphology().clone(),
     };
     let mut buf = Vec::new();
     output::brief::render(&report, &opts, &mut buf).map_err(|e| e.to_string())?;

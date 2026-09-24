@@ -17,6 +17,7 @@ use serde::Serialize;
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::engine::{FileReport, RunReport};
 use crate::genre::Genre;
+use crate::morph::Method;
 use crate::output::json::{COLUMN_UNIT, ErrorEntry, Tool};
 use crate::output::text::excerpt;
 use crate::output::{RenderOptions, toon};
@@ -63,7 +64,7 @@ pub struct Brief<'a> {
     kind: &'static str,
     tool: Tool,
     column_unit: &'static str,
-    settings: Settings,
+    settings: Settings<'a>,
     revision_rules: &'static [&'static str],
     editorial_questions: Vec<&'static str>,
     /// 指摘がないときの断り書き。指摘があれば `null`。
@@ -80,9 +81,13 @@ pub struct Brief<'a> {
 }
 
 #[derive(Serialize)]
-struct Settings {
+struct Settings<'a> {
     genre: &'static str,
     experimental: bool,
+    /// 判定の方式 (`dictionary`: 形態素解析の辞書の品詞で判定した、`surface`: 辞書なしの近似)。
+    method: Method,
+    /// 使った辞書の名前 (辞書なしなら `null`)。手元のパスは渡さない。
+    dictionary: Option<&'a str>,
 }
 
 /// 指摘のあるファイル 1 つ。
@@ -169,6 +174,12 @@ impl<'a> Brief<'a> {
             settings: Settings {
                 genre: opts.genre.as_str(),
                 experimental: opts.experimental,
+                method: report.morphology.method,
+                dictionary: report
+                    .morphology
+                    .dictionary
+                    .as_ref()
+                    .map(|d| d.name.as_str()),
             },
             revision_rules: &REVISION_RULES,
             editorial_questions: questions(opts.genre),
@@ -770,6 +781,7 @@ mod tests {
                 "これは言えるでしょう。様々な案がある。上限の設定の検討をする。\n\nやはり言えるでしょう。\n",
             ))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let s = render_str(&report, &opts(&e));
         assert!(s.starts_with("# noslop の改稿指示"), "{s}");
@@ -809,6 +821,7 @@ mod tests {
         let report = RunReport {
             files: vec![e.lint(Document::markdown(format!("{text}\n")))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let o = RenderOptions {
             brief_limit: Some(3),
@@ -825,6 +838,7 @@ mod tests {
         let report = RunReport {
             files: vec![e.lint(Document::markdown("問題のない文。\n"))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let s = render_str(&report, &opts(&e));
         assert!(s.contains(NO_FINDINGS), "{s}");
@@ -854,6 +868,7 @@ mod tests {
                 )),
             ],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let s = render_str(&report, &opts(&e));
         assert!(s.contains("(警告 1 件)"), "{s}");
@@ -890,6 +905,7 @@ mod tests {
                 ),
             ],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let s = render_str(&report, &opts(&e));
         assert!(
@@ -910,6 +926,7 @@ mod tests {
                 "これは言えるでしょう。また言えるでしょう。\n",
             ))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let o = RenderOptions {
             brief_compact: true,
@@ -946,6 +963,7 @@ mod tests {
                 path: "missing.md".into(),
                 message: "読み込めません".into(),
             }],
+            morphology: Default::default(),
         }
     }
 
@@ -1008,6 +1026,7 @@ mod tests {
         let report = RunReport {
             files: vec![e.lint(Document::markdown("問題のない文。\n"))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let mut buf = Vec::new();
         render_json(&report, &opts(&e), &mut buf).unwrap();

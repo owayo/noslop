@@ -60,7 +60,7 @@ Markdown と同じ改稿指示を、データとして出します。JSON と TO
 
 | 階層 | フィールド |
 |---|---|
-| 全体 | `schemaVersion` (版。互換性のない変更で上げる)・`kind` (`brief`)・`tool`・`columnUnit` (`unicode-scalar`)・`settings` (`genre`・`experimental`)・`revisionRules` (改稿のルール)・`editorialQuestions` (編集の問い)・`note` (指摘がないときの断り書き。あれば `null`)・`files`・`cleanFiles` (指摘のないファイル。20 件まで)・`omittedCleanFiles`・`warnings` (抑制コメントの注意。`path`・`message`)・`errors` (読めなかったファイル。`path`・`message`) |
+| 全体 | `schemaVersion` (版。互換性のない変更で上げる)・`kind` (`brief`)・`tool`・`columnUnit` (`unicode-scalar`)・`settings` (`genre`・`experimental`・`method` (判定の方式。`dictionary`: 形態素解析の辞書の品詞で判定した、`surface`: 辞書なしの近似)・`dictionary` (使った辞書の名前。手元のパスは載せない))・`revisionRules` (改稿のルール)・`editorialQuestions` (編集の問い)・`note` (指摘がないときの断り書き。あれば `null`)・`files`・`cleanFiles` (指摘のないファイル。20 件まで)・`omittedCleanFiles`・`warnings` (抑制コメントの注意。`path`・`message`)・`errors` (読めなかったファイル。`path`・`message`) |
 | `files[]` | `path`・`counts` (`stableSlop`・`experimentalSlop`・`custom`・`readability`)・`rules`・`occurrences` |
 | `rules[]` | `ruleId`・`ruleName`・`title`・`lane`・`maxSeverity`・`experimentalOnly`・`count` (未抑制の件数)・`omittedCount` (`--brief-limit` を超えて載せなかった件数)・`why` (なぜ疑わしいか)・`hint` (直し方の方向。2 つあれば ` / ` でつなぐ) |
 | `occurrences[]` | `ruleId` (`rules` を参照)・`line`・`column` (1 始まり。列は Unicode スカラー値の個数)・`message`・`excerpt` (指摘を含む文の抜粋。文を持たない指摘は `null`) |
@@ -108,6 +108,8 @@ noslop skill-install claude --dir .claude/skills  # プロジェクトに置く
 ### 設定ファイル
 
 `check` と同じく `noslop.toml` / `.noslop.toml` を親ディレクトリへたどって探します。探し始める場所は、環境変数 `CLAUDE_PROJECT_DIR` があればそのディレクトリ (Claude Code が起動したサーバーに渡すプロジェクトのルート)、なければサーバーの作業ディレクトリです。`noslop mcp --config path/to/noslop.toml` で指定したり、`--no-config` で読まないようにしたりもできます。設定を変えたらサーバーを起動し直してください。
+
+設定ファイルの `[morphology]` (形態素解析の辞書) も効きます。辞書を使うルール (P15・P16) が動く呼び出しでは、呼び出しごとに辞書を読みます (mmap なので数 ms)。使った方式は結果の `settings` (`method`・`dictionary`) に載ります。フックは既定で読みやすさのルールを止めて動くので、辞書を探しません。
 
 ### Claude Code に登録する
 

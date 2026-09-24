@@ -20,6 +20,7 @@ pub mod testing;
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
 use crate::document::{Block, BlockKind, Document};
 use crate::genre::Genre;
+use crate::morph::DocMorphology;
 
 /// ルールの静的な情報。`noslop rules` / `noslop explain` の表示にも使う。
 #[derive(Debug)]
@@ -95,6 +96,8 @@ pub struct RuleContext<'a> {
     pub scope: Scope,
     /// 実験的な項目 (未校正の語句など) も動かすか。
     pub experimental: bool,
+    /// 形態素 (辞書があるときだけ)。辞書を使うルールは、なければ辞書なしの近似で判定する。
+    pub morph: Option<&'a DocMorphology<'a>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -104,6 +107,7 @@ impl<'a> RuleContext<'a> {
             genre: Genre::General,
             scope: Scope::default(),
             experimental: false,
+            morph: None,
         }
     }
 
@@ -140,6 +144,13 @@ pub trait Rule: Send + Sync {
     /// 設定できる項目と現在値 (`noslop explain` の表示用)。
     fn options(&self) -> Vec<(&'static str, String)> {
         Vec::new()
+    }
+
+    /// 形態素解析の辞書があれば品詞で判定するか。
+    ///
+    /// エンジンは、これが真の有効なルールがあるときだけ辞書を探して読み込む。
+    fn uses_morphology(&self) -> bool {
+        false
     }
 
     /// 校正用に、閾値と比べる値を文書ごとに返す (`noslop calibrate` が閾値の掃引に使う)。

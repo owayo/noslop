@@ -981,11 +981,13 @@ impl Scan<'_> {
             .map(|ev| {
                 let engine = self.engine(ev.mode);
                 let o = engine.options();
+                let morph = engine.doc_morphology(&doc);
                 let ctx = RuleContext {
                     doc: &doc,
                     genre: o.genre,
                     scope: o.scope,
                     experimental: o.experimental,
+                    morph: morph.as_ref(),
                 };
                 engine.entries()[ev.entry].rule.measure(&ctx)
             })

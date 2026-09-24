@@ -16,6 +16,7 @@ pub mod heading;
 pub mod hook;
 pub mod markdown;
 pub mod mcp;
+pub mod morph;
 pub mod output;
 pub mod plaintext;
 pub mod rules;

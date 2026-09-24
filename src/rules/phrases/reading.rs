@@ -6,9 +6,11 @@
 use std::ops::Range;
 use std::sync::LazyLock;
 
+use hasami::CoarsePos;
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::morph::MorphToken;
 use crate::rules::{Rule, RuleContext, RuleMeta, option_usize, quote};
 use crate::text::{self, PLACEHOLDER};
 
@@ -28,7 +30,7 @@ static P15_META: RuleMeta = RuleMeta {
     summary: "漢字が 7 字以上続き、語の切れ目が読み取りにくい箇所を指す",
     explanation: r"### 何を見るか
 
-漢字が 7 字以上 (既定) 続く箇所を探します。「々」も漢字に数えます。
+漢字が 7 字以上 (既定) 続く箇所を探します。「々」も漢字に数えます。形態素解析の辞書があれば、固有名詞を含む連なりを除きます。
 
 ### なぜ問題か
 
@@ -45,7 +47,9 @@ static P15_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-AI らしさの判定ではなく、読みにくさの指さしです。自然度スコアには入りません。実文書での校正で目安を 7 字以上とし、固有名詞を含む連なりは、分解しようのない名前なので除外していました。辞書がないため固有名詞は見分けられず、裁判所・研究所・委員会・株式会社などの定番の接尾辞で終わる (または始まる) 連なりだけを除きます。長い固有名詞は指されることがあるので、その場合は残してかまいません。
+AI らしさの判定ではなく、読みにくさの指さしです。自然度スコアには入りません。実文書での校正で目安を 7 字以上とし、固有名詞を含む連なりは、分解しようのない名前なので除外していました。
+
+形態素解析の辞書 (hasami) があれば、校正と同じく品詞で固有名詞を見分けて除きます。辞書がなければ固有名詞は見分けられないため、裁判所・研究所・委員会・株式会社などの定番の接尾辞で終わる (または始まる) 連なりだけを除きます。この接尾辞による除外は、辞書があっても行います。元の検出器と同じ文書で比べると、指した箇所の一致率は辞書なしで 0.69、辞書ありで 0.81 でした (辞書なしは年号や人名を含む連なりを多く指す)。長い固有名詞が指された場合は、残してかまいません。
 
 ### 設定
 
@@ -138,11 +142,25 @@ impl Rule for KanjiRun {
         vec![("min_length", self.min_length.to_string())]
     }
 
+    fn uses_morphology(&self) -> bool {
+        true
+    }
+
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         for (idx, block) in ctx.scoped_blocks() {
-            for sentence in ctx.doc.block_sentences(idx) {
+            let first = block.sentences.start;
+            for (i, sentence) in ctx.doc.block_sentences(idx).iter().enumerate() {
                 let text = &block.text[sentence.range.clone()];
-                for (range, n) in self.find(text) {
+                let candidates = self.find(text);
+                if candidates.is_empty() {
+                    continue;
+                }
+                // 辞書があれば、固有名詞を含む連なり (分解しようのない名前) を品詞で除く
+                let tokens = ctx.morph.and_then(|m| m.sentence(first + i));
+                for (range, n) in candidates {
+                    if tokens.is_some_and(|t| contains_proper_noun(t, &range)) {
+                        continue;
+                    }
                     let matched = &text[range.clone()];
                     let abs =
                         (sentence.range.start + range.start)..(sentence.range.start + range.end);
@@ -164,6 +182,13 @@ impl Rule for KanjiRun {
     }
 }
 
+/// `range` に重なる形態素に固有名詞があるか。
+fn contains_proper_noun(tokens: &[MorphToken], range: &Range<usize>) -> bool {
+    tokens.iter().any(|t| {
+        t.pos == CoarsePos::ProperNoun && t.range.start < range.end && range.start < t.range.end
+    })
+}
+
 // ---------------------------------------------------------------------------
 // P16 NO_CHAIN
 // ---------------------------------------------------------------------------
@@ -178,7 +203,7 @@ static P16_META: RuleMeta = RuleMeta {
     summary: "「AのBのCのD」のように「の」が 3 回以上続き、係り受けが潰れる箇所を指す",
     explanation: r"### 何を見るか
 
-読点をはさまずに、短い語をつなぐ「の」が 3 回以上 (既定) 続く箇所を探します。
+読点をはさまずに、短い語をつなぐ「の」が 3 回以上 (既定) 続く箇所を探します。形態素解析の辞書があれば、格助詞の「の」を数え、隣り合う「の」の間が 2 形態素以内のものを続いているとみなします。
 
 ### なぜ問題か
 
@@ -195,7 +220,9 @@ static P16_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-AI らしさの判定ではなく、読みにくさの指さしです。自然度スコアには入りません。元の検出器は形態素解析で格助詞の「の」だけを数え、実文書での校正で指した箇所はすべて本当の連鎖でした (再現率は低く、精度は高い)。辞書がないため、漢字・カタカナ・英数字の語に挟まれた「の」だけを数えます。「この」「その」「もの」のようなひらがなの語の「の」は数えません。
+AI らしさの判定ではなく、読みにくさの指さしです。自然度スコアには入りません。元の検出器は形態素解析で格助詞の「の」だけを数え、実文書での校正で指した箇所はすべて本当の連鎖でした (再現率は低く、精度は高い)。
+
+形態素解析の辞書 (hasami) があれば、元の検出器と同じ定義で数えます。辞書がなければ、漢字・カタカナ・英数字の語に挟まれた「の」だけを数えます。そのため「この」「その」「もの」の「の」を誤って数えることはありませんが、ひらがなを含む語をはさむ連鎖 (「の家の大きな犬の」) や、端の語がひらがなの連鎖 (「魂の安静のため」) は拾えません。元の検出器と同じ文書で比べると、元が指した箇所のうち拾えたのは、辞書なしで 39%、辞書ありで 90% でした。
 
 ### 設定
 
@@ -282,6 +309,92 @@ impl NoChain {
         }
         out
     }
+
+    /// 辞書の形態素で数える (元の検出器と同じ定義)。
+    ///
+    /// 格助詞の「の」が `min_chain` 個以上並び、隣り合う「の」の間の形態素が 1〜2 個で、間に
+    /// 句読点・括弧がない箇所を返す。範囲は、最初の「の」の前の名詞のまとまりから、最後の「の」の
+    /// 後の名詞のまとまりまで。
+    fn find_with_tokens(&self, text: &str, tokens: &[MorphToken]) -> Vec<(Range<usize>, usize)> {
+        let nos: Vec<usize> = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.pos == CoarsePos::CaseParticle && &text[t.range.clone()] == "の")
+            .map(|(k, _)| k)
+            .collect();
+        let mut out = Vec::new();
+        let mut k = 0;
+        while k < nos.len() {
+            let mut last = k;
+            while let Some(&next) = nos.get(last + 1) {
+                let between = &tokens[nos[last] + 1..next];
+                if between.is_empty()
+                    || between.len() > NO_CHAIN_MAX_GAP
+                    || between.iter().any(|t| breaks_chain(t.pos))
+                {
+                    break;
+                }
+                last += 1;
+            }
+            let count = last - k + 1;
+            if count >= self.min_chain {
+                let start = nominal_edge(tokens, nos[k], Direction::Before);
+                let end = nominal_edge(tokens, nos[last], Direction::After);
+                out.push((tokens[start].range.start..tokens[end].range.end, count));
+            }
+            k = last + 1;
+        }
+        out
+    }
+}
+
+/// 隣り合う「の」の間に置ける形態素の最大数 (元の検出器と同じ)。
+const NO_CHAIN_MAX_GAP: usize = 2;
+
+/// 連鎖を切る品詞 (句読点・括弧)。
+fn breaks_chain(pos: CoarsePos) -> bool {
+    matches!(
+        pos,
+        CoarsePos::Period | CoarsePos::Comma | CoarsePos::OpenBracket | CoarsePos::CloseBracket
+    )
+}
+
+/// 名詞のまとまりを作る品詞 (範囲を「の」の前後の語まで広げるのに使う)。
+fn is_nominal_part(pos: CoarsePos) -> bool {
+    matches!(
+        pos,
+        CoarsePos::Noun
+            | CoarsePos::ProperNoun
+            | CoarsePos::Pronoun
+            | CoarsePos::Numeral
+            | CoarsePos::NounSuffix
+            | CoarsePos::FormalNoun
+            | CoarsePos::Prefix
+            | CoarsePos::Symbol
+    )
+}
+
+#[derive(Clone, Copy)]
+enum Direction {
+    Before,
+    After,
+}
+
+/// `at` の「の」の前 (後) にある名詞のまとまりの端の形態素 (`NO_CHAIN_MAX_GAP` 個まで)。
+/// まとまりがなければ `at` を返す。
+fn nominal_edge(tokens: &[MorphToken], at: usize, direction: Direction) -> usize {
+    let mut edge = at;
+    for _ in 0..NO_CHAIN_MAX_GAP {
+        let next = match direction {
+            Direction::Before => edge.checked_sub(1),
+            Direction::After => Some(edge + 1).filter(|&n| n < tokens.len()),
+        };
+        match next {
+            Some(n) if is_nominal_part(tokens[n].pos) => edge = n,
+            _ => break,
+        }
+    }
+    edge
 }
 
 impl Rule for NoChain {
@@ -307,11 +420,25 @@ impl Rule for NoChain {
         vec![("min_chain", self.min_chain.to_string())]
     }
 
+    fn uses_morphology(&self) -> bool {
+        true
+    }
+
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         for (idx, block) in ctx.scoped_blocks() {
-            for sentence in ctx.doc.block_sentences(idx) {
+            let first = block.sentences.start;
+            for (i, sentence) in ctx.doc.block_sentences(idx).iter().enumerate() {
                 let text = &block.text[sentence.range.clone()];
-                for (range, count) in self.find(text) {
+                let found = match ctx.morph {
+                    // 「の」の字が足りなければ連鎖はありえないので、解析しない
+                    Some(_) if text.matches('の').count() < self.min_chain => Vec::new(),
+                    Some(m) => match m.sentence(first + i) {
+                        Some(tokens) => self.find_with_tokens(text, tokens),
+                        None => self.find(text),
+                    },
+                    None => self.find(text),
+                };
+                for (range, count) in found {
                     let matched = &text[range.clone()];
                     let abs =
                         (sentence.range.start + range.start)..(sentence.range.start + range.end);
@@ -461,7 +588,8 @@ impl Rule for DoubleNegative {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::testing::{matched, run};
+    use crate::morph::testing::morphology;
+    use crate::rules::testing::{matched, run, run_with_morphology};
 
     #[test]
     fn p15_flags_long_kanji_runs() {
@@ -536,6 +664,113 @@ mod tests {
             .unwrap();
         let md = "運用コストの削減の実現を目指す。\n";
         assert_eq!(matched(md, &run(&rule, md)), vec!["運用コストの削減の実現"]);
+    }
+
+    // --- 形態素解析の辞書を使う判定 ---
+
+    const NO: (&str, &str) = ("の", "助詞,連体化,*,*");
+    const PERIOD: (&str, &str) = ("。", "記号,句点,*,*");
+    const COMMA: (&str, &str) = ("、", "記号,読点,*,*");
+
+    #[test]
+    fn rules_that_count_parts_of_speech_use_the_dictionary() {
+        assert!(KanjiRun::default().uses_morphology());
+        assert!(NoChain::default().uses_morphology());
+        assert!(!DoubleNegative.uses_morphology());
+    }
+
+    #[test]
+    fn p16_with_a_dictionary_counts_case_particles_between_any_words() {
+        let dict = morphology(&[
+            ("俺", "名詞,代名詞,一般,*"),
+            NO,
+            ("魂", "名詞,一般,*,*"),
+            ("安静", "名詞,形容動詞語幹,*,*"),
+            ("ため", "名詞,非自立,副詞可能,*"),
+            ("に", "助詞,格助詞,一般,*"),
+            ("祈る", "動詞,自立,*,*"),
+            PERIOD,
+        ]);
+        // 辞書なしでは、ひらがなの語「ため」で連鎖が切れて 2 回に数える
+        let md = "俺の魂の安静のために祈る。\n";
+        assert!(run(&NoChain::default(), md).is_empty());
+        let d = run_with_morphology(&NoChain::default(), md, &dict);
+        assert_eq!(matched(md, &d), vec!["俺の魂の安静のため"]);
+        assert_eq!(d[0].metrics["chain"], crate::diagnostic::Metric::Int(3));
+    }
+
+    #[test]
+    fn p16_with_a_dictionary_does_not_count_no_inside_a_word() {
+        let dict = morphology(&[
+            ("茶の間", "名詞,一般,*,*"),
+            NO,
+            ("茶箪笥", "名詞,一般,*,*"),
+            ("上", "名詞,非自立,副詞可能,*"),
+            ("に", "助詞,格助詞,一般,*"),
+            ("置く", "動詞,自立,*,*"),
+            PERIOD,
+        ]);
+        // 辞書なしでは「茶の間」の「の」も数えて 3 回になる
+        let md = "茶の間の茶箪笥の上に置く。\n";
+        assert_eq!(run(&NoChain::default(), md).len(), 1);
+        assert!(run_with_morphology(&NoChain::default(), md, &dict).is_empty());
+    }
+
+    #[test]
+    fn p16_with_a_dictionary_breaks_chains_at_long_gaps_and_punctuation() {
+        let dict = morphology(&[
+            ("猫", "名詞,一般,*,*"),
+            NO,
+            ("家", "名詞,一般,*,*"),
+            ("庭", "名詞,一般,*,*"),
+            ("木", "名詞,一般,*,*"),
+            ("とても", "副詞,一般,*,*"),
+            ("大きな", "連体詞,*,*,*"),
+            ("だ", "助動詞,*,*,*"),
+            COMMA,
+            PERIOD,
+        ]);
+        let rule = NoChain::default();
+        // 隣り合う「の」の間が 3 形態素
+        let md = "猫の家のとても大きな庭の木だ。\n";
+        assert!(run_with_morphology(&rule, md, &dict).is_empty());
+        // 読点をはさむ
+        let md = "猫の家の、庭の木だ。\n";
+        assert!(run_with_morphology(&rule, md, &dict).is_empty());
+        // 間が 2 形態素以内なら続く
+        let md = "猫の家の大きな庭の木だ。\n";
+        assert_eq!(
+            matched(md, &run_with_morphology(&rule, md, &dict)),
+            vec!["猫の家の大きな庭の木"]
+        );
+    }
+
+    #[test]
+    fn p15_with_a_dictionary_skips_runs_with_proper_nouns() {
+        let dict = morphology(&[
+            ("昭和", "名詞,固有名詞,一般,*"),
+            ("八", "名詞,数,*,*"),
+            ("年", "名詞,接尾,助数詞,*"),
+            ("七", "名詞,数,*,*"),
+            ("月", "名詞,一般,*,*"),
+            ("発行", "名詞,サ変接続,*,*"),
+            ("顧客", "名詞,一般,*,*"),
+            ("情報", "名詞,一般,*,*"),
+            ("統合", "名詞,サ変接続,*,*"),
+            ("管理", "名詞,サ変接続,*,*"),
+            ("基盤", "名詞,一般,*,*"),
+            ("を", "助詞,格助詞,一般,*"),
+            ("見る", "動詞,自立,*,*"),
+            PERIOD,
+        ]);
+        let md = "昭和八年七月発行。\n";
+        assert_eq!(run(&KanjiRun::default(), md).len(), 1);
+        assert!(run_with_morphology(&KanjiRun::default(), md, &dict).is_empty());
+        let md = "顧客情報統合管理基盤を見る。\n";
+        assert_eq!(
+            matched(md, &run_with_morphology(&KanjiRun::default(), md, &dict)),
+            vec!["顧客情報統合管理基盤"]
+        );
     }
 
     #[test]
