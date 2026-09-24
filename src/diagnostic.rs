@@ -54,8 +54,8 @@ impl fmt::Display for Severity {
 
 /// 指摘の目的の区別。
 ///
-/// `Slop` は AI 臭さの検出で、自然度スコアに入る。`Readability` は読解負荷の
-/// 指さしで、AI らしさとは無関係なのでスコアに入れない (混ぜると両方の判断が濁る)。
+/// `Slop` は AI 臭さの検出で、自然度スコアに入る。`Readability` は読みやすさの
+/// 指摘で、AI らしさとは無関係なのでスコアに入れない (混ぜると両方の判断が濁る)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lane {
@@ -70,6 +70,16 @@ impl Lane {
             Lane::Slop => "slop",
             Lane::Readability => "readability",
             Lane::Custom => "custom",
+        }
+    }
+
+    /// 利用者に見せる日本語の呼び名。どの出力でもこの名前で呼び、1 件ずつは「指摘」と数える
+    /// (「AI 臭さの指摘 1 件」)。出力ごとに別の呼び方を作ると、要約の件数と一覧が対応しなくなる。
+    pub fn label_ja(self) -> &'static str {
+        match self {
+            Lane::Slop => "AI 臭さ",
+            Lane::Readability => "読みやすさ",
+            Lane::Custom => "独自ルール",
         }
     }
 }

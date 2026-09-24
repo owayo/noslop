@@ -34,7 +34,7 @@ noslop judges text by character classes, phrase patterns and sentence-length sta
 
 - **Dictionary bundled**: the IPAdic dictionary of the morphological analyzer hasami is built into the binary, so chains of 「の」 (P16) and kanji runs (P15) are judged by part of speech with no installation or setup ([Morphological-analysis dictionary](#morphological-analysis-dictionary))
 - **Calibrated thresholds**: only phrases and thresholds whose false-positive rates were measured on human and model-generated documents (7 models) are enabled by default; uncalibrated checks run only when you opt in as experimental rules
-- **Two lanes**: AI "slop" (`slop`) and reading-load hints (`readability`) are reported separately; only calibrated slop rules feed the naturalness score
+- **Two lanes**: AI "slop" findings (`slop`) and readability findings (`readability`) are reported separately; only calibrated slop rules feed the naturalness score
 - **Markdown-aware**: skips code blocks, inline code, URLs and front matter at the top of the document (YAML `---` or TOML `+++`), and tells headings, lists, tables and quotes apart. A `---` further down is read as a thematic break or a heading underline, so no text is dropped
 - **Bracket-aware sentence splitting**: uses the dictionary-free splitter of the morphological analyzer [hasami](https://github.com/owayo/hasami); it never splits at a full stop inside 「」 or （）, an unclosed bracket does not swallow the following sentences, and words that contain sentence-ending marks such as `Yahoo!ニュース` stay whole
 - **Records your decisions**: write why you keep a flagged spot, e.g. `<!-- noslop-disable-next-line P01 -- quoted remark -->`
@@ -144,7 +144,7 @@ When a directory is given, files with the extensions `md` / `markdown` / `txt` a
 | `--fail-on <LEVEL>` | | Exit with 1 when a finding at or above this severity exists: `never` (default) / `info` / `warning` / `error` |
 | `--stdin-filename <NAME>` | | Display name when reading stdin (`-`); its extension selects the format |
 | `--show-suppressed` | | Also show findings kept by suppression comments |
-| `--no-readability` | | Do not report the readability lane |
+| `--no-readability` | | Do not report readability findings |
 | `--include <KINDS>` | | Also apply phrase rules to lists, tables and quotes: `lists` / `tables` / `quotes` / `all` (comma-separated) |
 | `--line-breaks <MODE>` | | How line breaks inside a paragraph are treated: `space` (default) / `sentence` |
 | `--dict <PATH>` | | Use this morphological-analysis dictionary (a hasami `.hsd`) instead of the bundled one |
@@ -175,7 +175,7 @@ When a directory is given, files with the extensions `md` / `markdown` / `txt` a
 | `noslop explain <RULE>` | | Show a rule's metadata, the current values of its thresholds and its explanation, by ID or name |
 | `noslop init` | `--force` | Create a `noslop.toml` template in the current directory (`--force` overwrites an existing one) |
 | `noslop mcp` | `--config <PATH>` / `--no-config` | Configuration file to use. Tools and registration are described in [docs/integrations.md](docs/integrations.md) |
-| `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | Spots returned per rule (default 3), whether to include readability hints, and whether to look at the whole file instead of the changed lines. See [docs/integrations.md](docs/integrations.md) |
+| `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | Spots returned per rule (default 3), whether to include readability findings, and whether to look at the whole file instead of the changed lines. See [docs/integrations.md](docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | Where to put the skill (default `~/.claude/skills` or `~/.codex/skills`; use `.claude/skills` or similar for a project). Writes `noslop/SKILL.md`, overwriting an existing one |
 | `noslop calibrate` | `--human <PATH>` / `--ai <PATH>` (required, repeatable), `--genre`, `--target-fp`, `--holdout`, `--min-detection`, `--no-experimental`, `-f, --format <text\|json\|markdown>` | How the corpus is measured. The procedure is in [docs/calibration.md](docs/calibration.md) |
 
@@ -201,7 +201,7 @@ Rules come in three families.
 
 Each rule has a lane and a status.
 
-- **Lane** — `slop` detects AI habits and feeds the naturalness score. `readability` points at reading load (overlong sentences, double negatives, ...). It is unrelated to AI-likeness, so it never enters the score.
+- **Lane** — `slop` detects AI habits and feeds the naturalness score. `readability` flags spots that are hard to read (overlong sentences, double negatives, ...). It is unrelated to AI-likeness, so it never enters the score. Custom rules from the configuration go to the `custom` lane by default. The output labels the lanes 「AI 臭さ」, 「読みやすさ」 and 「独自ルール」.
 - **Status** — `stable` rules had their false-positive rates measured on a corpus and are enabled by default. `experimental` rules are uncalibrated, or rely on dictionary-free approximations that fall outside the calibration conditions; they run only when enabled with `--experimental` or in the configuration, and they never enter the score. Phrase rules also carry a status per phrase.
 
 | ID | Name | Checks | Lane | Status |
@@ -403,10 +403,10 @@ A stable schema for machines. The essentials (the example below is the P01 findi
 
 ### github
 
-Emits GitHub Actions workflow commands, which annotate the pull request diff. Severities map as `error`→`error`, `warning`→`warning`, `info`→`notice`. Suppressed findings are not emitted.
+Emits GitHub Actions workflow commands, which annotate the pull request diff. Severities map as `error`→`error`, `warning`→`warning`, `info`→`notice`. Each annotation's title is the lane label (「AI 臭さ」, 「読みやすさ」 or 「独自ルール」) followed by the rule ID and name. Suppressed findings are not emitted.
 
 ```text
-::warning file=docs/meeting.md,line=3,col=35,endLine=3,endColumn=42,title=P01 AI_CONCLUSION::「と言えるだろう」は結論を定型句で押し付ける締めです%0A💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
+::warning file=docs/meeting.md,line=3,col=35,endLine=3,endColumn=42,title=[AI 臭さ] P01 AI_CONCLUSION::「と言えるだろう」は結論を定型句で押し付ける締めです%0A💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
 ```
 
 ### brief
@@ -421,7 +421,7 @@ Emits a revision brief in Markdown (in Japanese) to hand to an AI agent or an ed
 
 ### 優先して見る箇所
 
-#### 1. P01 AI_CONCLUSION — 結論の押し付け・まとめ口調 (警告 1 件)
+#### 1. P01 AI_CONCLUSION — 結論の押し付け・まとめ口調 (AI 臭さ・警告 1 件)
 
 - なぜ疑わしいか: 要約の定型として大量に学習された言い回しで、生成された文章ほど段落の終わりに現れます。…
 - 直し方の方向: 定型句を外して言い切るか、結論を支える事実や数値を書いてください
@@ -646,8 +646,8 @@ noslop check docs/ --dict hasami/dict/ipadic-neologd.hsd
 The rules and thresholds enabled by default had their false-positive rates checked on human documents and documents generated by 7 models (71–103 human and 81–381 AI documents). The main decisions:
 
 - **Monotonous sentence lengths (R01)** — burstiness `(σ−μ)/(σ+μ)` is a monotone transform of the coefficient of variation, and measuring length in characters or in morae discriminates about equally well. At the document level, `-0.38` flags 1.4% of human documents and about 58% of AI documents; `-0.24` flagged 32% of human documents, so it is not used. Paragraphs contain too few sentences for stable statistics, so the whole document is judged (20 or more prose sentences). Documents with 10–19 sentences are reported as info only below a stricter `-0.45`.
-- **Comma counts** — flagging sentences with four or more commas fired on 62% of real documents, and almost all of them were plain enumerations. noslop does not count commas; it points at buried enumerations instead (R04).
-- **Long sentences (R03)** — length is not evidence of AI (about 1% of AI documents are caught), but it is a useful reading-load hint, so the readability lane uses 90 characters (roughly the 91st percentile of the corpus).
+- **Comma counts** — flagging sentences with four or more commas fired on 62% of real documents, and almost all of them were plain enumerations. noslop does not count commas and flags buried enumerations instead (R04).
+- **Long sentences (R03)** — length is not evidence of AI (about 1% of AI documents are caught), but long sentences are worth flagging for readability, so the readability lane uses 90 characters (roughly the 91st percentile of the corpus).
 - **Redundancy dictionaries (P04, P05)** — broad dictionaries of wordy expressions fired on 25.5% of well-written human documents. They stay experimental.
 - **Stock phrases** — words humans used more than models (「最後に」「まさに」) were removed, and words with a steady human baseline (「重要なのは」「このように」 and a few others) were lowered to info.
 - **Repeated contrasts (R05)** — deciding severity by the raw count fires strongly even at a thin rate in long documents. Severity follows the ratio to the total number of sentences: below 2% info, 2–3% warning, 3% or more error.

@@ -6,7 +6,7 @@
 //! - `R` リズム・統計: 文や段落をまたいだ集計で拾う ([`rhythm`])
 //! - `S` 構造: Markdown の体裁 (太字・箇条書き・見出し) を拾う ([`structure`])
 //!
-//! どの系統のルールも「AI 臭さ」(`Lane::Slop`) か「読解負荷」(`Lane::Readability`) の
+//! どの系統のルールも「AI 臭さ」(`Lane::Slop`) か「読みやすさ」(`Lane::Readability`) の
 //! どちらかのレーンに属し、校正状況 (`RuleStatus`) を持つ。
 
 pub mod custom;
