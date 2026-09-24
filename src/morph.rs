@@ -214,6 +214,9 @@ impl Morphology {
 }
 
 /// 同梱の辞書の中身 (hasami の `.hsd`。出所と更新の手順は `dict/README.md`)。
+///
+/// `Dictionary::from_bytes` は 8 バイト境界のバッファへ全体を複製するので、読み込むたびに 18MB を
+/// 複製する。複製せずに読む API を hasami に求めている (owayo/hasami#8)。
 #[cfg(feature = "bundled-dict")]
 static BUNDLED_HSD: &[u8] = include_bytes!("../dict/ipadic.hsd");
 
