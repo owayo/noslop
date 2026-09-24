@@ -1382,11 +1382,7 @@ impl<'a> DownloadProgress<'a> {
             return;
         }
         self.shown = Some(now);
-        let percent = if total == 0 {
-            100
-        } else {
-            received * 100 / total
-        };
+        let percent = (received * 100).checked_div(total).unwrap_or(100);
         let mut err = io::stderr();
         let _ = write!(
             err,
