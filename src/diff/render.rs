@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! 🔁 draft.md → draft-v2.md
-//!   自然度 58/100 (要修正) → 81/100 (良好)
+//!   AI 臭さの指摘 5 → 2 件、読みやすさの指摘 1 → 1 件
 //!   指摘: 新規 1・書き換えても残った 0・解消 4・継続 2・抑制して残した 0
 //!
 //! 新しく出た指摘 (1 件。優先して確認してください)
@@ -20,7 +20,11 @@
 //! text は `noslop check` の端末出力と同じく ANSI の装飾つきで書き、端末でなければ
 //! 呼び出し側 (anstream) が取り除く。json のキーは既存の JSON 出力と同じく camelCase で、
 //! 位置は原文の UTF-8 バイトオフセット (`offset`) に行・列 (1 始まり、列は Unicode
-//! スカラー値の個数) を併記する。指摘の形は `noslop check --format json` の指摘と同じ。
+//! スカラー値の個数) を併記する。指摘と件数 (`counts`) の形は `noslop check --format json`
+//! と同じ。
+//!
+//! 版 2 では、前後の文書全体の点数 (`before.score`・`after.score`、自然度スコア) をやめ、
+//! `noslop check --format json` と同じ形の件数 (`before.counts`・`after.counts`) に置き換えた。
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -28,20 +32,19 @@ use std::io::{self, Write};
 use anstyle::{AnsiColor, Style};
 use serde::Serialize;
 
-use crate::diagnostic::{Diagnostic, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
 use crate::document::Document;
 use crate::engine::FileReport;
-use crate::output::json::{COLUMN_UNIT, DiagnosticEntry, Range, ScoreEntry, Tool, format_name};
-use crate::output::text::excerpt;
+use crate::output::json::{COLUMN_UNIT, DiagnosticEntry, LaneCounts, Range, Tool, format_name};
+use crate::output::text::{Counts, LANES, excerpt};
 use crate::output::toon;
-use crate::score::Score;
 
 use super::DiffReport;
 use super::facts::{FactChange, FactKind};
 use super::shifts::{Shift, ShiftKind};
 
 /// `noslop diff --format json` のスキーマの版。互換性のない変更をしたら上げる。
-pub const DIFF_SCHEMA_VERSION: u32 = 1;
+pub const DIFF_SCHEMA_VERSION: u32 = 2;
 
 /// 事実・偏りの位置として並べる行番号の上限。
 const MAX_LINES_SHOWN: usize = 5;
@@ -62,11 +65,21 @@ fn bold() -> Style {
     Style::new().bold()
 }
 
-fn score_label(score: Option<Score>) -> String {
-    score.map_or_else(
-        || "-".to_string(),
-        |s| format!("{}/100 ({})", s.value, s.band.label_ja()),
-    )
+/// レーンごとの指摘の件数の前後 (`AI 臭さの指摘 3 → 1 件、読みやすさの指摘 13 → 13 件`)。
+///
+/// `noslop check` の要約と同じく、AI 臭さは 0 件でも出し、独自ルールと読みやすさは前後の
+/// どちらかが 1 件以上のときだけ出す。抑制した指摘は数えない。
+fn lane_count_changes(before: &FileReport, after: &FileReport) -> String {
+    let (b, a) = (Counts::of_file(before), Counts::of_file(after));
+    LANES
+        .into_iter()
+        .filter_map(|lane| {
+            let (nb, na) = (b.lane(lane).total(), a.lane(lane).total());
+            (lane == Lane::Slop || nb + na > 0)
+                .then(|| format!("{}の指摘 {nb} → {na} 件", lane.label_ja()))
+        })
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 /// 位置の行番号の一覧 (`3・7 行`、多いときは `3・7・9・12・15 行ほか 4 行`)。
@@ -101,14 +114,7 @@ pub fn render_text(report: &DiffReport, out: &mut dyn Write) -> io::Result<()> {
         before.path(),
         after.path()
     )?;
-    if before.score.is_some() || after.score.is_some() {
-        writeln!(
-            out,
-            "  自然度 {} → {}",
-            score_label(before.score),
-            score_label(after.score)
-        )?;
-    }
+    writeln!(out, "  {}", lane_count_changes(before, after))?;
     writeln!(
         out,
         "  指摘: 新規 {}・書き換えても残った {}・解消 {}・継続 {}・抑制して残した {}",
@@ -335,7 +341,8 @@ struct FileEntry<'a> {
     format: &'static str,
     characters: usize,
     sentences: usize,
-    score: Option<ScoreEntry>,
+    /// 抑制していない指摘の件数 (`noslop check --format json` の `files[].counts` と同じ形)。
+    counts: LaneCounts,
     warnings: &'a [String],
 }
 
@@ -443,7 +450,7 @@ fn file_entry(file: &FileReport) -> FileEntry<'_> {
         format: format_name(file.doc.format),
         characters: file.doc.char_count(),
         sentences: file.doc.sentences.len(),
-        score: file.score.as_ref().map(ScoreEntry::of),
+        counts: LaneCounts::of(file),
         warnings: &file.warnings,
     }
 }
@@ -599,7 +606,8 @@ mod tests {
         );
         let text = text_of(&r);
         for part in [
-            "🔁 before.md → after.md",
+            // AI 臭さは 0 件でも出し、件数の前後を指摘の変化の前に置く
+            "🔁 before.md → after.md\n  AI 臭さの指摘 0 → 0 件、独自ルールの指摘 2 → 2 件\n  指摘: ",
             "指摘: 新規 1・書き換えても残った 1・解消 1・継続 0・抑制して残した 0",
             "新しく出た指摘 (1 件。優先して確認してください)",
             "  5:4  警告  [独自ルール]  X03 HEAVY_WORD\n    重みだけを足す語です\n    │ 検証は非常に重要だ。\n    💡 何が重要かを書いてください\n",
@@ -672,13 +680,24 @@ mod tests {
             "効果があると言えるでしょう。\n\n数値は１２件。\n",
         );
         let v = json_of(&r);
-        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["schemaVersion"], 2);
         assert_eq!(v["kind"], "diff");
         assert_eq!(v["tool"]["name"], "noslop");
         assert_eq!(v["columnUnit"], "unicode-scalar");
         assert_eq!(v["hasConcerns"], true);
         assert_eq!(v["before"]["path"], "before.md");
         assert_eq!(v["after"]["format"], "markdown");
+        assert!(
+            v["before"].get("score").is_none(),
+            "文書全体の点数は出さない"
+        );
+        let counts = serde_json::json!({
+            "slop": { "error": 0, "warning": 0, "info": 0 },
+            "readability": { "error": 0, "warning": 0, "info": 0 },
+            "custom": { "error": 0, "warning": 1, "info": 0 },
+        });
+        assert_eq!(v["before"]["counts"], counts);
+        assert_eq!(v["after"]["counts"], counts);
 
         let summary = &v["findings"]["summary"];
         assert_eq!(summary["new"], 0);
@@ -721,12 +740,64 @@ mod tests {
             text.contains("2:6  X01 CANNED_CLOSING  理由: 引用のため"),
             "{text}"
         );
+        assert!(
+            text.contains("  AI 臭さの指摘 0 → 0 件、独自ルールの指摘 1 → 0 件\n"),
+            "抑制した指摘は件数に数えない: {text}"
+        );
         let v = json_of(&r);
         let s = &v["findings"]["suppressed"][0];
         assert_eq!(s["after"]["suppressed"]["reason"], "引用のため");
         assert_eq!(s["after"]["suppressed"]["line"], 1);
         assert!(s["before"]["suppressed"].is_null());
         assert_eq!(v["hasConcerns"], false);
+    }
+
+    #[test]
+    fn lane_counts_skip_empty_lanes_and_leave_out_suppressed_findings() {
+        let in_lane = |id: &str, name: &str, pattern: &str, lane: &str| CustomRuleConfig {
+            lane: Some(lane.to_string()),
+            ..rule(id, name, pattern, "指摘", "直し方")
+        };
+        let options = EngineOptions {
+            custom: vec![
+                in_lane("X01", "CANNED_CLOSING", "と言えるでしょう", "slop"),
+                in_lane("X02", "NO_CHAIN", "の設定の", "readability"),
+            ],
+            ..EngineOptions::default()
+        };
+        let engine = Engine::with_rules(Vec::new(), options).expect("engine");
+        let text = |name: &str, source: &str| Input::Text {
+            name: name.to_string(),
+            source: source.to_string(),
+            format: SourceFormat::Markdown,
+        };
+        let (b, a) = lint_pair(
+            &engine,
+            text(
+                "before.md",
+                "効果があると言えるでしょう。上限の設定の検討。\n\n手順は簡単だと言えるでしょう。\n",
+            ),
+            text(
+                "after.md",
+                "<!-- noslop-disable-next-line X01 -- 引用のため -->\n効果があると言えるでしょう。上限の設定の検討。\n\n手順は簡単です。\n",
+            ),
+        )
+        .expect("lint");
+        let r = compare(b, a);
+        // 独自ルールは前後とも 0 件なので出さない。抑制した X01 は改稿後の件数に入れない
+        let text = text_of(&r);
+        assert!(
+            text.contains("\n  AI 臭さの指摘 2 → 0 件、読みやすさの指摘 1 → 1 件\n"),
+            "{text}"
+        );
+        let v = json_of(&r);
+        assert_eq!(v["before"]["counts"]["slop"]["warning"], 2);
+        assert_eq!(v["after"]["counts"]["slop"]["warning"], 0);
+        assert_eq!(v["after"]["counts"]["readability"]["warning"], 1);
+        assert_eq!(
+            v["after"]["counts"]["custom"],
+            serde_json::json!({ "error": 0, "warning": 0, "info": 0 })
+        );
     }
 
     #[test]

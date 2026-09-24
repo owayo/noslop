@@ -1,7 +1,7 @@
 //! 設定ファイルの `[[custom]]` で定義する独自ルール。
 //!
 //! チームの表記規則や独自の禁止語を、組み込みルールと同じ仕組み (抑制コメント・
-//! 出力形式・`--fail-on`) で扱えるようにする。自然度スコアには入れない。
+//! 出力形式・`--fail-on`) で扱えるようにする。
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use regex::{Regex, RegexBuilder};

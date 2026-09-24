@@ -1,15 +1,13 @@
 //! R03 LONG_SENTENCE: 一文が長すぎる。
 
-use std::ops::Range;
-
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
 use crate::document::{Document, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::segment;
-use crate::text::{is_closing_bracket, is_sentence_ender, reading_length};
+use crate::text::reading_length;
 
-use super::{option_count, strip_sentence_end, unknown_option};
+use super::{option_count, unknown_option};
 
 static META: RuleMeta = RuleMeta {
     id: "R03",
@@ -33,8 +31,7 @@ const EXPLANATION: &str = "\
 
 主語・条件・理由・結論を一文に詰め込むと、読み手は文末の述語にたどり着くまで構造全体を覚えて\
 おかなければなりません。一方で、長い文そのものは AI らしさの証拠になりません (人の書いた良い\
-文章にも長い文はあります)。このルールは AI 臭さではなく読みやすさの指摘として扱い、自然度\
-スコアには入れません。
+文章にも長い文はあります)。このルールは AI 臭さではなく読みやすさの指摘として扱います。
 
 ### 直し方
 
@@ -171,7 +168,14 @@ fn judged_sentences<'a>(
 /// 文を断片に分け、最も長い断片 (同じ字数なら前のもの) を返す。
 ///
 /// 括弧の中に文末記号がある文 (`embedded_enders`) は、文分割が括弧ごと 1 文にしているので、
-/// 括弧の中の文末記号でも区切る ([`fragment_ranges`])。そうでない文は、文全体を 1 つの断片とする。
+/// 括弧の中の文末記号でも区切る ([`segment::fragments`])。文末記号の連なりと、それに隙間なく続く
+/// 閉じ括弧までを前の断片に含め、前後の空白は断片から除く。どの文末記号が文末として働くかは文分割と
+/// 同じ判定なので、URL の `?id=1`、例外表の語 (`Yahoo!` など)、小数点 (`１．５`) では区切らない。
+/// そうでない文は、文全体を 1 つの断片とする。
+///
+/// 断片は文のテキストだけから求める。解析用テキストには改行の字が残らず、改行で文を区切る設定でも
+/// 括弧の外側の改行はすでに文の境界になっている (括弧の内側の改行では断片も区切らない) ので、改行の
+/// 位置を渡さなくても同じ断片になる。
 fn longest_fragment(doc: &Document, s: &Sentence) -> Longest {
     let whole = Longest {
         fragment: Fragment {
@@ -185,7 +189,7 @@ fn longest_fragment(doc: &Document, s: &Sentence) -> Longest {
     }
     let block = &doc.blocks[s.block];
     let text = doc.sentence_text(s);
-    let ranges = fragment_ranges(text);
+    let ranges = segment::fragments(text);
     let divided = ranges.len() > 1;
     ranges
         .into_iter()
@@ -202,58 +206,6 @@ fn longest_fragment(doc: &Document, s: &Sentence) -> Longest {
             }
         })
         .map_or(whole, |fragment| Longest { fragment, divided })
-}
-
-/// 文のテキストを括弧の中の文末記号でも区切った、断片の範囲 (文のテキスト上の範囲)。
-///
-/// 文末記号の連なりと、その直後に続く閉じ括弧までを前の断片に含め、その次の字から新しい断片に
-/// する。前後の空白は断片から除く。
-///
-/// 区切る位置は、括弧の対応を見ずに文末記号で区切る [`segment::chunk_ends`] で探す。文分割と
-/// 同じ分割器なので、どの文末記号が文末として働くかは文分割と同じ判定になり、URL の `?id=1`、
-/// 例外表の語 (`Yahoo!` など)、小数点 (`１．５`) では区切らない。`chunk_ends` は直後の閉じ括弧を
-/// 次の区間に入れ、改行の字でも区切るので、閉じ括弧は前の断片に移し、文末記号の直後でない区切りは
-/// 使わない。`chunk_ends` は形態素解析の前分割向けの関数なので、括弧の中でも区切る文分割を
-/// hasami に求めている (owayo/hasami#9)。
-fn fragment_ranges(text: &str) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    for end in segment::chunk_ends(text) {
-        let after_ender = text[..end]
-            .chars()
-            .next_back()
-            .is_some_and(is_sentence_ender);
-        if end <= start || !after_ender {
-            continue;
-        }
-        let brackets: usize = text[end..]
-            .chars()
-            .take_while(|&c| is_closing_bracket(c))
-            .map(char::len_utf8)
-            .sum();
-        push_fragment(text, start..end + brackets, &mut ranges);
-        start = end + brackets;
-    }
-    // 文末記号で終わらない残り (文末記号のない文の終わり)
-    push_fragment(text, start..text.len(), &mut ranges);
-    ranges
-}
-
-/// `range` から前後の空白を除いた範囲を、断片として加える (空白だけなら加えない)。
-///
-/// 文末の記号 (文末記号と閉じ括弧) だけの範囲 (「はい。」。の最後の句点など) は、それだけでは
-/// 文にならないので、新しい断片にせず前の断片の文末に含める。
-fn push_fragment(text: &str, range: Range<usize>, out: &mut Vec<Range<usize>>) {
-    let body = &text[range.clone()];
-    let start = range.start + (body.len() - body.trim_start().len());
-    let end = start + body.trim().len();
-    if start == end {
-        return;
-    }
-    match out.last_mut() {
-        Some(last) if strip_sentence_end(&text[start..end]).is_empty() => last.end = end,
-        _ => out.push(start..end),
-    }
 }
 
 #[cfg(test)]
@@ -400,6 +352,17 @@ mod tests {
         assert_eq!(d.len(), 1);
         // 閉じ括弧は前の断片に入るので、指すのはその次の字からの外側の文
         assert_eq!(matched(&md, &d), vec![LONG_AFTER_QUOTE]);
+        assert_eq!(d[0].metrics.get("length"), Some(&Metric::Int(93)));
+        assert_eq!(&md[d[0].context.unwrap().range()], md.trim_end());
+    }
+
+    #[test]
+    fn the_rest_of_a_sentence_without_an_ender_is_a_fragment() {
+        // 文末記号のない文の終わりも断片にする。断片の前の空白 (全角) は範囲に含めない
+        let tail = LONG_AFTER_QUOTE.trim_end_matches('。');
+        let md = format!("彼は「今日はここまで。」\u{3000}{tail}\n");
+        let d = run(&LongSentence::new(Genre::General), &md);
+        assert_eq!(matched(&md, &d), vec![tail]);
         assert_eq!(d[0].metrics.get("length"), Some(&Metric::Int(93)));
         assert_eq!(&md[d[0].context.unwrap().range()], md.trim_end());
     }

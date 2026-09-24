@@ -2,6 +2,11 @@
 //!
 //! 位置は原文の UTF-8 バイトオフセット (`offset`) を正とし、行・列 (1 始まり、列は
 //! Unicode スカラー値の個数) を併記する。配列の順序はパス・位置・ルール ID で固定する。
+//!
+//! 版 2 では、ファイルごとの文書全体の点数 (`files[].score`、自然度スコア) をやめ、抑制していない
+//! 指摘をレーンごと・重大度ごとに数えた件数 (`files[].counts`) に置き換えた。指摘を足し合わせた
+//! 点数は、コーパスで人の文書と AI の文書を見分けられず、指摘があっても満点が出て安心材料と
+//! 誤読されていた。1 件ずつの指摘とその件数だけを出し、判断は書き手に委ねる。
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -12,12 +17,11 @@ use crate::diagnostic::{Diagnostic, Lane, Metric, RuleStatus, Severity, Span};
 use crate::document::{Document, SourceFormat};
 use crate::engine::{FileError, FileReport, RunReport};
 use crate::morph::MorphologyStatus;
-use crate::output::text::Counts;
+use crate::output::text::{Counts, SeverityCounts};
 use crate::output::{Position, RenderOptions, toon};
-use crate::score::{self, Score};
 
 /// JSON のスキーマの版。互換性のない変更をしたら上げる。
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// 列の数え方 (`columnUnit`)。列は Unicode スカラー値の個数で数える。
 pub(crate) const COLUMN_UNIT: &str = "unicode-scalar";
@@ -67,27 +71,28 @@ struct File<'a> {
     format: &'static str,
     characters: usize,
     sentences: usize,
-    score: Option<ScoreEntry>,
+    counts: LaneCounts,
     diagnostics: Vec<DiagnosticEntry<'a>>,
     warnings: &'a [String],
 }
 
+/// 1 ファイルの、抑制していない指摘の件数 (レーンごと・重大度ごと。`noslop diff` の JSON でも
+/// 同じ形で出す)。0 件のレーンと重大度も省かずに出す。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ScoreEntry {
-    value: u32,
-    band: &'static str,
-    label: &'static str,
-    formula: &'static str,
+pub(crate) struct LaneCounts {
+    slop: SeverityCounts,
+    readability: SeverityCounts,
+    custom: SeverityCounts,
 }
 
-impl ScoreEntry {
-    pub(crate) fn of(s: &Score) -> Self {
+impl LaneCounts {
+    pub(crate) fn of(file: &FileReport) -> Self {
+        let c = Counts::of_file(file);
         Self {
-            value: s.value,
-            band: s.band.as_str(),
-            label: s.band.label_ja(),
-            formula: score::FORMULA,
+            slop: c.slop,
+            readability: c.readability,
+            custom: c.custom,
         }
     }
 }
@@ -215,7 +220,7 @@ fn file_entry(file: &FileReport) -> File<'_> {
         format: format_name(file.doc.format),
         characters: file.doc.char_count(),
         sentences: file.doc.sentences.len(),
-        score: file.score.as_ref().map(ScoreEntry::of),
+        counts: LaneCounts::of(file),
         diagnostics: file
             .diagnostics
             .iter()
@@ -305,7 +310,7 @@ mod tests {
         let mut buf = Vec::new();
         render(&report, &RenderOptions::default(), &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
-        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["schemaVersion"], 2);
         assert_eq!(v["tool"]["name"], "noslop");
         assert_eq!(v["columnUnit"], "unicode-scalar");
         assert_eq!(v["settings"]["failOn"], "never");
@@ -319,9 +324,48 @@ mod tests {
         assert_eq!(d["excerpt"], "これは言えるでしょう。");
         assert!(d["suppressed"].is_null());
         assert_eq!(d["fingerprint"].as_str().unwrap().len(), 16);
-        assert_eq!(v["files"][0]["score"], serde_json::Value::Null);
+        assert!(
+            v["files"][0].get("score").is_none(),
+            "文書全体の点数は出さない"
+        );
+        assert_eq!(v["files"][0]["counts"]["slop"]["warning"], 1);
         assert_eq!(v["summary"]["diagnostics"], 1);
         assert_eq!(v["summary"]["bySeverity"]["warning"], 1);
         assert_eq!(v["errors"][0]["path"], "x.md");
+    }
+
+    #[test]
+    fn files_count_unsuppressed_findings_by_lane_and_severity() {
+        let engine =
+            Engine::with_rules(crate::engine::tests::test_rules(), EngineOptions::default())
+                .unwrap();
+        let report = RunReport {
+            files: vec![engine.lint(Document::markdown(
+                "<!-- noslop-disable-next-line T01 -- 引用 -->\nこれは言えるでしょう。\n\nそれも言えるでしょう。上限の設定の検討。\n",
+            ))],
+            errors: Vec::new(),
+            morphology: Default::default(),
+        };
+        let mut buf = Vec::new();
+        render(&report, &RenderOptions::default(), &mut buf).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(
+            v["files"][0]["counts"],
+            serde_json::json!({
+                "slop": { "error": 0, "warning": 1, "info": 0 },
+                "readability": { "error": 0, "warning": 0, "info": 1 },
+                "custom": { "error": 0, "warning": 0, "info": 0 },
+            }),
+            "抑制した指摘は数えず、0 件のレーンと重大度も省かない"
+        );
+        assert_eq!(v["summary"]["suppressed"], 1);
+
+        // TOON も同じデータを描く
+        let mut buf = Vec::new();
+        render_toon(&report, &RenderOptions::default(), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.starts_with("schemaVersion: 2\n"), "{s}");
+        assert!(s.contains("counts:\n"), "{s}");
+        assert!(!s.contains("score"), "{s}");
     }
 }

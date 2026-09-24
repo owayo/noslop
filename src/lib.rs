@@ -7,6 +7,7 @@ pub mod calibrate;
 pub mod cli;
 pub mod config;
 pub mod diagnostic;
+pub mod dictionaries;
 pub mod diff;
 pub mod directive;
 pub mod document;
