@@ -6,8 +6,9 @@
 //! 辞書を使わないとき (`--no-dict`・同梱しないビルドで辞書が見つからないとき) は、それらのルールは
 //! 辞書なしの近似で判定する。
 //!
-//! - 辞書は実行ごとに 1 度だけ読む ([`resolve`])。ファイルは mmap で、同梱の辞書はプロセスで
-//!   1 度だけ読み込んで共有する
+//! - 辞書は実行ごとに 1 度だけ読む ([`resolve`])。ファイルの辞書は mmap し、同梱の辞書はバイナリに
+//!   埋め込んだバイト列を複製せずに読む。どちらも読み込みと解析で触れたページだけがメモリに載る。
+//!   同梱の辞書はプロセスで 1 度だけ組み立てて共有する
 //! - 辞書を使う有効なルールがなければ、辞書を探さない (フックのように起動の速さが要る場面のため)
 //! - 文書ごとに解析器を作り ([`DocMorphology`])、ルールが求めた文だけを解析して覚えておく
 
@@ -172,14 +173,16 @@ impl Morphology {
         Ok(Self::from_dictionary(dictionary, info))
     }
 
-    /// 同梱の辞書 (`dict/ipadic.hsd`)。プロセスで 1 度だけ読み込み、以後は同じ辞書を共有する
+    /// 同梱の辞書 (`dict/ipadic.hsd`)。バイナリに埋め込んだバイト列を複製せずに参照する
+    /// ([`Dictionary::from_static`])。それでも組み立てるたびに辞書の検査と、品詞・活用の文字列表や
+    /// 文字種の表の確保をするので、組み立てはプロセスで 1 度だけにし、以後は同じ辞書を共有する
     /// (MCP サーバーの呼び出しをまたいでも)。
     #[cfg(feature = "bundled-dict")]
     pub fn bundled() -> Result<Self, String> {
         static BUNDLED: OnceLock<Result<Morphology, String>> = OnceLock::new();
         BUNDLED
             .get_or_init(|| {
-                let dictionary = Dictionary::from_bytes(BUNDLED_HSD)
+                let dictionary = Dictionary::from_static(BUNDLED_HSD)
                     .map_err(|e| format!("同梱の形態素解析の辞書を読めません: {e}"))?;
                 let info = DictionaryInfo {
                     name: dictionary.meta().name().to_string(),
@@ -215,10 +218,12 @@ impl Morphology {
 
 /// 同梱の辞書の中身 (hasami の `.hsd`。出所と更新の手順は `dict/README.md`)。
 ///
-/// `Dictionary::from_bytes` は 8 バイト境界のバッファへ全体を複製するので、読み込むたびに 18MB を
-/// 複製する。複製せずに読む API を hasami に求めている (owayo/hasami#8)。
+/// `Dictionary::from_static` は先頭が 8 バイト境界にあることを求める。`include_bytes!` だけでは
+/// 境界がそろわない (そろうかどうかがビルドごとに変わる) ので、`hasami::include_hsd!` で 64 バイト
+/// 境界にそろえて埋め込む。パスは `include_bytes!` と同じく、このファイルからの相対パス。マクロは
+/// 呼ぶたびに別の静的領域になる (同じ辞書がバイナリに 2 つ入る) ので、埋め込むのはここだけにする。
 #[cfg(feature = "bundled-dict")]
-static BUNDLED_HSD: &[u8] = include_bytes!("../dict/ipadic.hsd");
+static BUNDLED_HSD: &[u8] = hasami::include_hsd!("../dict/ipadic.hsd");
 
 /// 設定から辞書を決めて読み込み、使う方式を返す。
 ///
@@ -455,7 +460,7 @@ mod tests {
     #[cfg(feature = "bundled-dict")]
     #[test]
     fn the_bundled_dictionary_is_ipadic_from_hasami() {
-        assert_eq!(BUNDLED_HSD.len(), 18_117_590);
+        assert_eq!(BUNDLED_HSD.len(), 18_125_804);
         let m = Morphology::bundled().unwrap();
         assert_eq!(m.info().name, "ipadic");
         assert_eq!(m.info().source, DictionarySource::Bundled);
@@ -464,7 +469,7 @@ mod tests {
             m.dictionary.meta().get("sources"),
             Some("ipadic@61b90ba6e669")
         );
-        assert_eq!(m.dictionary.entry_count(), 390_668);
+        assert_eq!(m.dictionary.entry_count(), 390_849);
         // 2 度目からは同じ辞書を共有する
         let again = Morphology::bundled().unwrap();
         assert!(Arc::ptr_eq(&m.dictionary, &again.dictionary));
