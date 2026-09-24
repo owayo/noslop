@@ -424,7 +424,7 @@ fn is_nominal(pos: CoarsePos) -> bool {
 
 /// 形態素の並びを、「の」の連鎖を数える単位に分ける。
 ///
-/// - 空白は数えない (hasami は空白を記号のトークンとして出す)
+/// - 空白は数えない (hasami は空白を記号のトークンとして出す。owayo/hasami#5)
 /// - 格助詞の「の」と、用言のあとで名詞の前に来る準体助詞の「の」(「聴くと伝えるの両立」) を
 ///   連体の「の」とする
 /// - 「分の」(IPAdic の助数詞) は、後ろが数詞なら分数 (「3分の1」) として前後の数と 1 語にし、
@@ -569,11 +569,11 @@ fn joins(text: &str, prev: &MorphToken, t: &MorphToken) -> bool {
         (CoarsePos::Prefix, pos) => is_nominal(pos) || pos == CoarsePos::Verb,
         // 「三万七千」
         (CoarsePos::Numeral, CoarsePos::Numeral) => true,
-        // 「4㎏」「50%」(IPAdic は単位の記号を 記号,一般 にする)
+        // 「4㎏」「50%」(hasami は単位の記号を 記号,一般 にする。owayo/hasami#7)
         (CoarsePos::Numeral, CoarsePos::Symbol) => is_unit_symbol(&text[t.range.clone()]),
         // 分数「3分の1」の後ろの数
         (CoarsePos::NounSuffix, CoarsePos::Numeral) => &text[prev.range.clone()] == "分の",
-        // カタカナ語の並び (辞書にない語が 2 字ずつに割れた場合を含む)
+        // カタカナ語の並び (辞書にない語が 2 字ずつに割れた場合を含む。owayo/hasami#4)
         _ => katakana(prev) && katakana(t),
     }
 }
