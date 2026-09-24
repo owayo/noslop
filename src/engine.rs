@@ -21,7 +21,6 @@ use crate::genre::Genre;
 use crate::morph::{self, DocMorphology, Morphology, MorphologyOptions, MorphologyStatus};
 use crate::rules::custom::CustomRule;
 use crate::rules::{Rule, RuleContext, Scope, builtin_rules};
-use crate::score::{self, Score};
 use crate::suppress::{self, RuleNames};
 
 /// ルールの明示的な有効化・無効化の指定。
@@ -294,17 +293,10 @@ impl Engine {
                 b.span.end,
             ))
         });
-        let score = score::compute(
-            doc.char_count(),
-            diagnostics
-                .iter()
-                .filter(|d| score::counts(d, |id| self.is_builtin(id))),
-        );
         FileReport {
             doc,
             diagnostics,
             warnings,
-            score,
         }
     }
 
@@ -371,7 +363,6 @@ pub struct FileReport {
     pub diagnostics: Vec<Diagnostic>,
     /// 抑制コメントの誤りなど、そのファイルについての警告。
     pub warnings: Vec<String>,
-    pub score: Option<Score>,
 }
 
 impl FileReport {
@@ -698,8 +689,6 @@ pub(crate) mod tests {
         assert!(!e.is_builtin("X01"));
         let report = e.lint(Document::markdown("ユーザー様と言えるでしょう。\n"));
         assert_eq!(report.diagnostics.len(), 2);
-        // 独自ルールはスコアに入らない: stable の T01 (warning) だけが減点される
-        assert_eq!(report.score, None, "100 字未満はスコアなし");
 
         let clash = EngineOptions {
             custom: vec![CustomRuleConfig {
@@ -736,21 +725,6 @@ pub(crate) mod tests {
         let c = e.lint(Document::markdown("前置き。\n\nあれは言えるでしょう。\n"));
         assert_eq!(a.diagnostics[0].fingerprint, b.diagnostics[0].fingerprint);
         assert_ne!(a.diagnostics[0].fingerprint, c.diagnostics[0].fingerprint);
-    }
-
-    #[test]
-    fn score_counts_only_stable_slop_diagnostics() {
-        let e = engine(EngineOptions {
-            experimental: true,
-            ..Default::default()
-        });
-        // 100 字以上の文書に stable の T01 (warning) が 1 件、実験的な T02 と読みやすさのレーンの T03 が 1 件ずつ
-        let filler = "これは十分な長さの文章を作るための文です。".repeat(6);
-        let src = format!("{filler}\n\nそれは言えるでしょう。様々な上限の設定の検討。\n");
-        let report = e.lint(Document::markdown(src));
-        let score = report.score.unwrap();
-        assert_eq!(score.deduction, 4.0);
-        assert_eq!(score.value, 96);
     }
 
     #[test]
