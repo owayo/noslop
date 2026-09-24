@@ -90,7 +90,7 @@ mod tests {
             other => panic!("{key}: {other:?}"),
         };
 
-        // 辞書の正規表現の項目は、表記が違っても同じ項目の名前になる
+        // 辞書の正規表現の項目は、表記が違っても同じ項目の名前 (`/パターン/`) になる
         let d = run(
             get("P12").as_ref(),
             "記録を読むことができる。来週に書くことが出来ます。\n",
@@ -99,7 +99,17 @@ mod tests {
             .iter()
             .map(|d| (metric(d, "item"), metric(d, "matched")))
             .collect();
-        let pattern = "/ことが(?:でき|出来)(?:る|ます|た)/".to_string();
+        let pattern = catalog::P12
+            .entries
+            .last()
+            .expect("P12 の項目")
+            .pattern
+            .item();
+        assert!(
+            pattern.starts_with("/こと(?:が|は)(?:でき|出来)"),
+            "{pattern}"
+        );
+        assert!(pattern.ends_with('/'), "{pattern}");
         assert_eq!(
             pairs,
             vec![

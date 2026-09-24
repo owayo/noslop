@@ -109,7 +109,7 @@ noslop skill-install claude --dir .claude/skills  # プロジェクトに置く
 
 `check` と同じく `noslop.toml` / `.noslop.toml` を親ディレクトリへたどって探します。探し始める場所は、環境変数 `CLAUDE_PROJECT_DIR` があればそのディレクトリ (Claude Code が起動したサーバーに渡すプロジェクトのルート)、なければサーバーの作業ディレクトリです。`noslop mcp --config path/to/noslop.toml` で指定したり、`--no-config` で読まないようにしたりもできます。設定を変えたらサーバーを起動し直してください。
 
-設定ファイルの `[morphology]` (形態素解析の辞書) も効きます。辞書を使うルール (P15・P16) が動く呼び出しでは、呼び出しごとに辞書を読みます (mmap なので数 ms)。使った方式は結果の `settings` (`method`・`dictionary`) に載ります。フックは既定で読みやすさのルールを止めて動くので、辞書を探しません。
+設定ファイルの `[morphology]` (形態素解析の辞書) も効きます。既定では、辞書を使うルール (P15・P16) が動く最初の呼び出しで同梱の辞書を読み、以後の呼び出しで共有します。ファイルの辞書を指定した場合は、呼び出しごとに mmap で読みます (数 ms)。使った方式は結果の `settings` (`method`・`dictionary`) に載ります。フックは既定で読みやすさのルールを止めて動くので、辞書を探しません。
 
 ### Claude Code に登録する
 
