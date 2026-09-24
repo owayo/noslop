@@ -34,7 +34,7 @@ noslop judges text by character classes, phrase patterns and sentence-length sta
 
 - **Dictionary bundled**: the IPAdic dictionary of the morphological analyzer hasami is built into the binary, so chains of 「の」 (P16) and kanji runs (P15) are judged by part of speech with no installation or setup ([Morphological-analysis dictionary](#morphological-analysis-dictionary))
 - **Calibrated thresholds**: only phrases and thresholds whose false-positive rates were measured on human and model-generated documents (7 models) are enabled by default; uncalibrated checks run only when you opt in as experimental rules
-- **Two lanes**: AI "slop" findings (`slop`) and readability findings (`readability`) are reported separately; only calibrated slop rules feed the naturalness score
+- **Two lanes**: AI "slop" findings (`slop`) and readability findings (`readability`) are reported separately. noslop gives no document-level score; it lists the findings and counts them
 - **Markdown-aware**: skips code blocks, inline code, URLs and front matter at the top of the document (YAML `---` or TOML `+++`), and tells headings, lists, tables and quotes apart. A `---` further down is read as a thematic break or a heading underline, so no text is dropped
 - **Bracket-aware sentence splitting**: uses the dictionary-free splitter of the morphological analyzer [hasami](https://github.com/owayo/hasami); it never splits at a full stop inside 「」 or （）, an unclosed bracket does not swallow the following sentences, and words that contain sentence-ending marks such as `Yahoo!ニュース` stay whole
 - **Records your decisions**: write why you keep a flagged spot, e.g. `<!-- noslop-disable-next-line P01 -- quoted remark -->`
@@ -205,8 +205,8 @@ Rules come in three families.
 
 Each rule has a lane and a status.
 
-- **Lane** — `slop` detects AI habits and feeds the naturalness score. `readability` flags spots that are hard to read (overlong sentences, double negatives, ...). It is unrelated to AI-likeness, so it never enters the score. Custom rules from the configuration go to the `custom` lane by default. The output labels the lanes 「AI 臭さ」, 「読みやすさ」 and 「独自ルール」.
-- **Status** — `stable` rules had their false-positive rates measured on a corpus and are enabled by default. `experimental` rules are uncalibrated, or rely on dictionary-free approximations that fall outside the calibration conditions; they run only when enabled with `--experimental` or in the configuration, and they never enter the score. Phrase rules also carry a status per phrase.
+- **Lane** — `slop` detects AI habits. `readability` flags spots that are hard to read (overlong sentences, double negatives, ...). It is unrelated to AI-likeness, so it is reported separately from AI slop. Custom rules from the configuration go to the `custom` lane by default. The output labels the lanes 「AI 臭さ」, 「読みやすさ」 and 「独自ルール」.
+- **Status** — `stable` rules had their false-positive rates measured on a corpus and are enabled by default. `experimental` rules are uncalibrated, or rely on dictionary-free approximations that fall outside the calibration conditions; they run only when enabled with `--experimental` or in the configuration. Phrase rules also carry a status per phrase.
 
 | ID | Name | Checks | Lane | Status |
 |----|------|--------|------|--------|
@@ -342,7 +342,7 @@ Messages are in Japanese. Lines and columns are 1-based, and columns count chara
 - Every finding shows its lane (`[AI 臭さ]`, `[独自ルール]`, `[読みやすさ]`) next to its severity. Findings from experimental entries are also marked `[実験的]` at the end
 - The summary at the bottom counts each lane with the same names as the section headings, followed by a severity breakdown. AI smell is always shown, even at 0; custom rules and readability appear only when they have findings
 - The leading ✖ means there are AI-smell or custom-rule findings, or `--fail-on` was tripped. Readability findings alone get ✔
-- Documents with at least 100 characters get a naturalness score next to the file name (e.g. `自然度 56/100 (要修正)`)
+- There is no document-level score (see [Why there is no document-level score](#why-there-is-no-document-level-score))
 
 When there are readability findings, the readability section follows the AI-smell section. In the example below the readability finding (line 3) comes first in the document, but the AI-smell section is still listed first.
 
@@ -355,7 +355,7 @@ When there are readability findings, the readability section follows the AI-smel
     │                                                   ^^^^^^^^^^^^^^
     💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
 
-  読みやすさの指摘 1 件 (自然度には入りません)
+  読みやすさの指摘 1 件
   3:4  情報  [読みやすさ]  P15 KANJI_RUN
     漢字が 8 字続いています (「全社業務改善計画」)
     │ 来期は全社業務改善計画に沿って、会議の数を半分にします。
@@ -371,7 +371,8 @@ A stable schema for machines. The essentials (the example below is the P01 findi
 
 - Top level: `schemaVersion`, `tool` (`name`, `version`), `columnUnit`, `settings` (`genre`, `experimental`, `failOn`, `morphology`), `files`, `summary`, `errors`
 - `settings.morphology` is the judging method: `requested` (`auto` / `required` / `off`), `method` (`dictionary` / `surface`), `dictionary` (the `name`, `source` — `bundled` or `file` — and `path`, which is `null` for the bundled one; `null` without a dictionary) and `reason` (why no dictionary was used: `disabled` / `not-found` / `not-needed`)
-- Per file: `path`, `format` (`markdown` / `text`), `characters`, `sentences`, `score` (`value`, `band`, `label`, `formula`; `null` for documents under 100 characters), `diagnostics`, `warnings`
+- Per file: `path`, `format` (`markdown` / `text`), `characters`, `sentences`, `counts` (unsuppressed findings counted per lane — `slop`, `readability`, `custom` — and per severity — `error`, `warning`, `info`; zeros are always present), `diagnostics`, `warnings`
+- The schema version (`schemaVersion`) is 2. Version 2 removed the document-level `score` of version 1 and replaced it with `counts` (see [Why there is no document-level score](#why-there-is-no-document-level-score))
 - Per finding: `ruleId`, `ruleName`, `severity`, `lane`, `status`, `message`, `hint`, `range`, `context`, `excerpt`, `related`, `metrics`, `fingerprint`, `suppressed`
 - `range` and `context` have `start` and `end`, each with `line`, `column` (1-based, counted in Unicode scalar values as `columnUnit` says) and `offset` (UTF-8 byte offset)
 - `metrics` holds rule-specific values. Phrase rules put the matched dictionary entry in `item` (a regular-expression entry is written as `/pattern/`) and the matched text in `matched`
@@ -382,7 +383,7 @@ A stable schema for machines. The essentials (the example below is the P01 findi
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "tool": { "name": "noslop", "version": "0.1.0" },
   "columnUnit": "unicode-scalar",
   "settings": { "genre": "general", "experimental": false, "failOn": "never" },
@@ -392,7 +393,11 @@ A stable schema for machines. The essentials (the example below is the P01 findi
       "format": "markdown",
       "characters": 56,
       "sentences": 2,
-      "score": null,
+      "counts": {
+        "slop": { "error": 0, "warning": 1, "info": 1 },
+        "readability": { "error": 0, "warning": 0, "info": 0 },
+        "custom": { "error": 0, "warning": 0, "info": 0 }
+      },
       "diagnostics": [
         {
           "ruleId": "P01",
@@ -443,12 +448,11 @@ Emits GitHub Actions workflow commands, which annotate the pull request diff. Se
 
 ### brief
 
-Emits a revision brief in Markdown (in Japanese) to hand to an AI agent or an editor. It opens with the rules of revision (keep claims, numbers and proper nouns; do not add facts that are not in the source; do not apply the same edit everywhere; findings may be kept; do not aim at the count or the score; re-run only once), then groups the findings by rule with why they are suspicious, the direction of a fix and the locations. It never prescribes replacement wording.
+Emits a revision brief in Markdown (in Japanese) to hand to an AI agent or an editor. It opens with the rules of revision (keep claims, numbers and proper nouns; do not add facts that are not in the source; do not apply the same edit everywhere; findings may be kept; do not aim at a lower count; re-run only once), then groups the findings by rule with why they are suspicious, the direction of a fix and the locations. It never prescribes replacement wording.
 
 ```markdown
 ## docs/meeting.md
 
-- 自然度 (参考): 本文が短いため算出していません
 - 指摘: AI 臭さ (校正済み) 2 件 / AI 臭さ (実験的) 0 件 / 独自ルール 0 件 / 読みやすさ 0 件
 
 ### 優先して見る箇所
@@ -471,7 +475,7 @@ The same brief comes as JSON for programs and as [TOON](https://github.com/toon-
 - `rules` — the rules with findings, in the order to look at them: `ruleId`, `ruleName`, `title`, `lane`, `maxSeverity`, `experimentalOnly`, `count`, `omittedCount` (findings beyond `--brief-limit`), `why` (why it looks suspicious) and `hint` (the direction of a fix)
 - `occurrences` — the locations, referring to `rules` by `ruleId`: `line`, `column` (1-based, counted in characters), `message` and `excerpt` (the sentence with the finding; `null` for findings without one)
 
-The top level also has `settings` (`genre`, `experimental`, `method` — the judging method, `dictionary` or `surface` — and `dictionary`, the name of the dictionary used; local paths are left out), `revisionRules`, `editorialQuestions`, `note` (a caveat when there are no findings), `cleanFiles`, `warnings` and `errors`. The naturalness score, metrics, fingerprints and suppressed findings are left out; use the full report to track findings. The schema version is `schemaVersion`, and `kind` is `brief`.
+The top level also has `settings` (`genre`, `experimental`, `method` — the judging method, `dictionary` or `surface` — and `dictionary`, the name of the dictionary used; local paths are left out), `revisionRules`, `editorialQuestions`, `note` (a caveat when there are no findings), `cleanFiles`, `warnings` and `errors`. Metrics, fingerprints and suppressed findings are left out; use the full report to track findings. The schema version is `schemaVersion`, and `kind` is `brief`.
 
 ```toon
 files[1]:
@@ -573,7 +577,7 @@ Supported MCP protocol versions, what the hook returns and its limits are descri
 
 ## Comparing Revisions
 
-`noslop diff <BEFORE> <AFTER>` lints both revisions with the same settings and lists three kinds of concerns. It does not grade the rewrite; it is a checklist for the writer to confirm that a rewrite aimed at fewer findings or a better score did not create new problems.
+`noslop diff <BEFORE> <AFTER>` lints both revisions with the same settings and lists three kinds of concerns. It does not grade the rewrite; it is a checklist for the writer to confirm that a rewrite aimed at fewer findings did not create new problems. The counts before and after are shown per lane (「AI 臭さの指摘 3 → 1 件」).
 
 - **Finding changes** — findings introduced by the rewrite, findings that survived a rewritten sentence with the same phrase, persisting and resolved findings, and findings kept with a suppression comment. Findings are matched by the line-independent `fingerprint`
 - **Fact changes** — numbers, dates, words that look like proper nouns, quotations and URLs that disappeared or appeared. Numbers that were not in the original carry a warning to check for unsourced figures
@@ -581,27 +585,15 @@ Supported MCP protocol versions, what the hook returns and its limits are descri
 
 With `--format json` or `--format toon`, `hasConcerns` tells whether there is anything to look at. The exit code stays 0 even when there are concerns.
 
-## Naturalness Score
+## Why there is no document-level score
 
-The text and JSON outputs include a per-file naturalness score (0–100; higher means less AI-like).
+noslop lists findings one by one and counts them per lane and severity; it does not give a document-level score (a value such as "naturalness 80/100"). Earlier versions had a 0–100 "naturalness score" that divided the AI-slop findings by the document length. It was removed for these reasons:
 
-```text
-deduction = (error × 8 + warning × 4 + info × 0.5) × (1000 / max(characters, 1000))
-score     = max(100 − deduction, 20)
-```
+- Calibrating each rule (its false-positive rate on human writing) checks whether individual findings are right; it does not make the sum of findings tell where a document came from
+- Measured, it did not tell them apart. 29 human documents of known origin scored 92–100, and 20 AI-written documents scored 98–100 (17 of them 100); human books had a higher density of findings than AI reports
+- Long documents scored almost 100 even with findings, and the 「自然」 (natural) label was misread as a clean bill of health
 
-- Only unsuppressed findings from `stable` rules in the `slop` lane count. Readability, experimental and custom rules are excluded.
-- Characters are counted over the whole source, including Markdown syntax and line breaks. Each finding weighs more in a short document; in a long document the density matters.
-- Documents with fewer than 100 characters of text get no score.
-
-| Score | Band | Reading |
-|-------|------|---------|
-| 90–100 | 自然 (natural) | Almost no findings; whatever remains can be left to the writer's taste |
-| 70–89 | 軽微 (minor) | A few habits remain, but not enough to catch a reader's attention |
-| 50–69 | 要修正 (needs work) | Noticeable habits in wording or structure; worth fixing |
-| 20–49 | 濃厚 (heavy) | Strong signals in several families; rewriting is faster than patching |
-
-The score is a rough guide. Adding rules changes it, so compare only values with the same `score.formula` (currently `v1`) in JSON. Do not use it as a CI gate.
+Decide whether to fix each finding in its context, not by the count. To compare documents, use `counts` in the JSON.
 
 ## Genres
 

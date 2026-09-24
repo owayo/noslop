@@ -57,8 +57,11 @@ blockquotes = false  # 引用 (> で始まる部分)
 #   off      使わない (辞書なしの近似で判定する)
 mode = "auto"
 # 同梱の辞書の代わりに使う辞書のファイル。相対パスはこの設定ファイルのディレクトリが基準で、
-# ~/ はホームディレクトリ。読めなければ設定の誤りにする (同梱の辞書に切り替えない)。
-# dictionary = "~/.local/share/hasami/ipadic-neologd.hsd"
+# ~/ はホームディレクトリ。share:<名前> は `noslop dict download <名前>` で取得した配布辞書
+# ($XDG_DATA_HOME/hasami/<名前>.hsd、なければ ~/.local/share/hasami/<名前>.hsd)。
+# 読めなければ設定の誤りにする (同梱の辞書に切り替えない)。品詞で数えるルールは同梱の IPAdic で
+# 校正しているので、ほかの辞書では結果が変わることがある。
+# dictionary = "share:ipadic-neologd-sudachi"
 
 # ルールごとの設定。表の名前はルールの ID か名前 (例: [rules.AI_CONCLUSION])。
 # 共通の項目:
