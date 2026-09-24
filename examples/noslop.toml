@@ -48,15 +48,15 @@ tables = false       # 表のセル
 blockquotes = false  # 引用 (> で始まる部分)
 
 [morphology]
-# 形態素解析の辞書 (hasami の .hsd)。あれば「の」の連鎖 (P16) と連続漢字 (P15) を品詞で判定する。
-# 辞書がなければ、これらも辞書なしの近似で判定する。
-#   auto     見つかれば使う (既定)
-#   required 必ず使う。見つからなければ設定の誤りにする (CI で判定の方式をそろえたいとき)
-#   off      使わない
+# 形態素解析の辞書 (hasami の .hsd)。「の」の連鎖 (P16) と連続漢字 (P15) を品詞で判定する。
+# 既定は、バイナリに同梱した IPAdic の辞書。
+#   auto     HASAMI_DICT があればその辞書、なければ同梱の辞書を使う (既定)
+#   required 必ず使う。同梱しないビルドで見つからなければ設定の誤りにする
+#   off      使わない (辞書なしの近似で判定する)
 mode = "auto"
-# 辞書のファイル。相対パスはこの設定ファイルのディレクトリが基準で、~/ はホームディレクトリ。
-# 書かなければ HASAMI_DICT と ~/.local/share/hasami/*.hsd を探す。
-# dictionary = "~/.local/share/hasami/ipadic.hsd"
+# 同梱の辞書の代わりに使う辞書のファイル。相対パスはこの設定ファイルのディレクトリが基準で、
+# ~/ はホームディレクトリ。読めなければ設定の誤りにする (同梱の辞書に切り替えない)。
+# dictionary = "~/.local/share/hasami/ipadic-neologd.hsd"
 
 # ルールごとの設定。表の名前はルールの ID か名前 (例: [rules.AI_CONCLUSION])。
 # 共通の項目:

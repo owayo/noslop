@@ -1126,6 +1126,7 @@ fn a_dictionary_switches_part_of_speech_rules_to_the_precise_method() {
     let morphology = &v["settings"]["morphology"];
     assert_eq!(morphology["requested"], "required");
     assert_eq!(morphology["method"], "dictionary");
+    assert_eq!(morphology["dictionary"]["source"], "file");
     assert!(
         morphology["dictionary"]["path"]
             .as_str()
@@ -1184,7 +1185,17 @@ fn dictionary_settings_are_checked_and_auto_falls_back() {
         .assert()
         .code(2);
 
-    // auto で見つからなければ、辞書なしの近似で判定する
+    // HASAMI_DICT で指定した辞書が読めなければ、同梱の辞書に黙って切り替えず設定の誤り
+    noslop()
+        .env("HASAMI_DICT", dir.path().join("missing.hsd"))
+        .args(["check", "--no-config", "--only-rules", "P16"])
+        .arg(&doc)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("missing.hsd"));
+
+    // 指定がなければ、同梱の辞書を使う (同梱しないビルドでは辞書なしの近似に戻る)。
+    // 手元の ~/.local/share/hasami に入れた辞書は探さない
     let out = noslop_without_installed_dictionary(empty.path())
         .args([
             "check",
@@ -1198,21 +1209,36 @@ fn dictionary_settings_are_checked_and_auto_falls_back() {
         .output()
         .unwrap();
     let v = json(&out.stdout);
-    assert_eq!(v["settings"]["morphology"]["requested"], "auto");
-    assert_eq!(v["settings"]["morphology"]["reason"], "not-found");
+    let morphology = &v["settings"]["morphology"];
+    assert_eq!(morphology["requested"], "auto");
+    if cfg!(feature = "bundled-dict") {
+        assert_eq!(morphology["method"], "dictionary");
+        assert_eq!(morphology["dictionary"]["name"], "ipadic");
+        assert_eq!(morphology["dictionary"]["source"], "bundled");
+        assert!(morphology["dictionary"]["path"].is_null());
+        // 辞書で数えるので、ひらがなの語で終わる連鎖も拾う
+        assert_eq!(rule_count(&v, "P16"), 1);
+    } else {
+        assert_eq!(morphology["reason"], "not-found");
+    }
 
-    // required で見つからなければ設定の誤り
+    // required で見つからなければ設定の誤り (同梱の辞書があれば、それで満たされる)
     fs::write(
         dir.path().join("noslop.toml"),
         "[morphology]\nmode = \"required\"\n",
     )
     .unwrap();
-    noslop_without_installed_dictionary(empty.path())
+    let required = noslop_without_installed_dictionary(empty.path())
         .current_dir(dir.path())
         .args(["check", "--only-rules", "P16", "doc.md"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("辞書が見つかりません"));
+        .assert();
+    if cfg!(feature = "bundled-dict") {
+        required.success();
+    } else {
+        required
+            .code(2)
+            .stderr(predicate::str::contains("辞書が見つかりません"));
+    }
 
     // 辞書を使うルールが動かなければ、required でも辞書を探さない
     noslop_without_installed_dictionary(empty.path())

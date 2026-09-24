@@ -1,7 +1,7 @@
 <h1 align="center">noslop</h1>
 
 <p align="center">
-  <strong>日本語の文章から「AI 臭さ」を機械的に拾う Linter（辞書は不要）</strong>
+  <strong>日本語の文章から「AI 臭さ」を機械的に拾う Linter</strong>
 </p>
 
 <p align="center">
@@ -28,11 +28,11 @@ noslop は、LLM が書いた日本語（議事録・ブログ・技術文書）
 
 noslop は「この文章は AI が書いた」と判定する道具ではありません。書き手は自分の文章の癖に気づきにくく、長い文書を目で追うと必ず見落としが出ます。noslop は疑わしい箇所を漏れなく並べるところまでを受け持ち、直すか残すかは書き手が文脈で決めます。残すと決めた箇所には、理由を添えた抑制コメントを書けます。
 
-形態素解析の辞書がなくても動きます。文字種と語句のパターン、文長の統計で判定するので、単一のバイナリで動き、起動も速く、大きなリポジトリでもファイルを並列に処理します。形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書があれば、品詞で数えるルール（「の」の連鎖・連続漢字）をより精密に判定します。
+文字種と語句のパターン、文長の統計で判定し、品詞で数えるルール（「の」の連鎖・連続漢字）は、同梱した形態素解析の辞書で判定します。単一のバイナリで動き、起動も速く、大きなリポジトリでもファイルを並列に処理します。
 
 ## 特徴
 
-- **辞書は任意**: 辞書を読み込まずに単一バイナリで動く。形態素解析器 hasami の辞書（`.hsd`）があれば、「の」の連鎖（P16）と連続漢字（P15）を品詞で判定する（[形態素解析の辞書](#形態素解析の辞書任意)）
+- **辞書を同梱**: 形態素解析器 hasami の IPAdic の辞書をバイナリに同梱し、「の」の連鎖（P16）と連続漢字（P15）を品詞で判定する。インストールも設定も要らない（[形態素解析の辞書](#形態素解析の辞書)）
 - **校正済みの閾値**: 人間とモデル 7 種の文書で誤検知率を確かめた語句と閾値だけを既定で有効にする。未校正のものは実験的ルールとして明示的に有効にしたときだけ動く
 - **2 つのレーン**: AI 臭さ（`slop`）と読解負荷の指さし（`readability`）を分けて出す。自然度スコアに入るのは AI 臭さの校正済みルールだけ
 - **Markdown を理解する**: コードブロック・インラインコード・URL・文書の先頭の front matter（YAML の `---`・TOML の `+++`）を除き、見出し・リスト・表・引用を区別して解析する。文書の途中の `---` は区切り線か見出しの下線として読み、本文を捨てない
@@ -147,7 +147,7 @@ noslop explain R01
 | `--no-readability` | | 読解負荷レーンの指摘を出さない |
 | `--include <KINDS>` | | 語句パターン系ルールをリスト・表・引用にも当てる。`lists` / `tables` / `quotes` / `all`（カンマ区切り） |
 | `--line-breaks <MODE>` | | 段落内の改行の扱い。`space`（既定）/ `sentence` |
-| `--dict <PATH>` | | 形態素解析の辞書（hasami の `.hsd`）を指定し、必ず使う |
+| `--dict <PATH>` | | 同梱の辞書の代わりに、この形態素解析の辞書（hasami の `.hsd`）を使う |
 | `--no-dict` | | 形態素解析の辞書を使わず、辞書なしの近似で判定する |
 | `--color <WHEN>` | | 色付けの有無。`auto`（既定）/ `always` / `never`。`NO_COLOR` も尊重する |
 | `--quiet` | `-q` | 指摘のないファイルとサマリを表示しない |
@@ -269,7 +269,7 @@ exclude = ["CHANGELOG.md", "vendor/**"]
 lists = true            # 箇条書きの項目にも語句パターン系ルールを当てる
 
 [morphology]
-mode = "required"       # 形態素解析の辞書を必ず使う (auto / required / off)
+mode = "off"            # 形態素解析の辞書を使わない (auto / required / off)
 
 [rules.P04]
 enabled = true          # 実験的ルールを個別に有効にする
@@ -338,7 +338,7 @@ severity = "warning"
 機械処理向けの安定したスキーマで出力します。要点は次のとおりです（下の例は、上の text 出力と同じ文書の JSON から P01 の指摘だけを抜き出したものです）。
 
 - トップレベルに `schemaVersion`・`tool`（`name`・`version`）・`columnUnit`・`settings`（`genre`・`experimental`・`failOn`・`morphology`）・`files`・`summary`・`errors`
-- `settings.morphology` は判定の方式で、`requested`（`auto` / `required` / `off`）・`method`（`dictionary` / `surface`）・`dictionary`（使った辞書の `name` と `path`。辞書なしなら `null`）・`reason`（辞書を使わなかった理由: `disabled` / `not-found` / `not-needed`）を持つ
+- `settings.morphology` は判定の方式で、`requested`（`auto` / `required` / `off`）・`method`（`dictionary` / `surface`）・`dictionary`（使った辞書の `name`・`source`（`bundled`: 同梱 / `file`: 指定したファイル）・`path`（同梱なら `null`）。辞書なしなら `null`）・`reason`（辞書を使わなかった理由: `disabled` / `not-found` / `not-needed`）を持つ
 - 各ファイルに `path`・`format`（`markdown` / `text`）・`characters`・`sentences`・`score`（`value`・`band`・`label`・`formula`。100 字未満の文書では `null`）・`diagnostics`・`warnings`
 - 各指摘に `ruleId`・`ruleName`・`severity`・`lane`・`status`・`message`・`hint`・`range`・`context`・`excerpt`・`related`・`metrics`・`fingerprint`・`suppressed`
 - `range` と `context` は `start` と `end` を持ち、それぞれ `line`・`column`（1 始まり。`columnUnit` のとおり Unicode のスカラー値で数える）と `offset`（UTF-8 のバイト位置）を持つ
@@ -582,11 +582,11 @@ text と json の出力には、ファイルごとの自然度スコア（0〜10
 | `business` | `minutes` | 太字・箇条書き・定型見出し・番号付きの段階・見出しの型・構造の密度・ラベルでの書き出し（S01〜S04・S07・S09・S10）を止める。体言止めの欠如は 3000 字以上。文頭の反復は 7 回以上 |
 | `essay` | `blog` | 長すぎる一文の目安を 90 字から 110 字に緩める。体言止めの欠如は 1500 字以上で判定。文頭の反復は 5 回以上 |
 
-## 形態素解析の辞書（任意）
+## 形態素解析の辞書
 
-noslop は辞書がなくても動きます。形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書（`.hsd`）があれば、品詞で数えるルールを、元の校正と同じ条件で精密に判定します。
+noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdic の辞書（`dict/ipadic.hsd`）をバイナリに同梱していて、何も指定しなくても、品詞で数えるルールを元の校正と同じ条件で判定します。
 
-| ルール | 辞書ありの判定 | 辞書なしの判定 |
+| ルール | 辞書ありの判定（既定） | 辞書なしの判定（`--no-dict`） |
 |---|---|---|
 | P16「の」の連鎖 | 格助詞の「の」を数え、隣り合う「の」の間が 2 形態素以内なら続いているとみなす | 漢字・カタカナ・英数字の語に挟まれた「の」だけを数える。ひらがなを含む語をはさむ連鎖（「の家の大きな犬の」）や、端の語がひらがなの連鎖（「魂の安静のため」）は拾えない |
 | P15 連続漢字 | 固有名詞を含む連なり（年号・人名など）を品詞で除く | 定番の接尾辞（〜委員会・株式会社など）で終わる連なりだけを除く |
@@ -601,35 +601,39 @@ noslop は辞書がなくても動きます。形態素解析器 [hasami](https:
 
 ほかのルールは辞書の有無で変わりません。文分割も辞書を使いません。体言止め（R06）は、文書単位の判定が辞書なし・ありで変わらなかったため、辞書なしの推定のままです。
 
-### 辞書の入れ方
-
-hasami のリポジトリに、ビルド済みの辞書が Git LFS で入っています。おすすめは IPAdic 単体の `ipadic.hsd`（17MB）です。NEologd の語彙を含む `ipadic-neologd.hsd` と `ipadic-neologd-sudachi.hsd` は収録語が多い一方で、「どうでしょう」「作りました」のようなありふれた表現を 1 語の固有名詞として解析することがあります（hasami の [#1](https://github.com/owayo/hasami/issues/1)〜[#3](https://github.com/owayo/hasami/issues/3)）。
-
-```bash
-git lfs install
-git clone https://github.com/owayo/hasami
-mkdir -p ~/.local/share/hasami
-cp hasami/dict/ipadic.hsd ~/.local/share/hasami/
-```
-
-`~/.local/share/hasami/` に置いた辞書は自動で使われます（`HASAMI_DICT` で直接指定することもできます）。複数置いた場合は `ipadic-neologd-sudachi` → `ipadic-neologd` → `ipadic` の順に選ばれるので、ipadic を使うなら設定ファイルの `dictionary` で指定してください。
+同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB、配布の tar.gz は約 9MB）。読み込みはプロセスで 1 度だけで、文書 1 本の検査は約 3ms 遅くなる程度です。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を読みません。
 
 ### 使い方の指定
 
 | 指定 | 動き |
 |---|---|
-| `mode = "auto"`（既定） | 見つかれば使い、なければ辞書なしの近似で判定する |
-| `mode = "required"` | 必ず使う。見つからなければ設定の誤り（終了コード 2）。CI で判定の方式をそろえたいとき |
-| `mode = "off"` / `--no-dict` | 使わない |
-| `dictionary = "<パス>"` / `--dict <パス>` | この辞書を使う。`--dict` は `required` を兼ねる。設定ファイルの相対パスは設定ファイルのディレクトリが基準 |
+| なにも指定しない（`mode = "auto"`） | `HASAMI_DICT` があればその辞書、なければ同梱の辞書を使う |
+| `mode = "off"` / `--no-dict` | 辞書を使わず、辞書なしの近似で判定する |
+| `dictionary = "<パス>"` / `--dict <パス>` | この辞書（hasami の `.hsd`）を使う。`--dict` は `required` を兼ねる。設定ファイルの相対パスは設定ファイルのディレクトリが基準 |
+| `mode = "required"` | 辞書を必ず使う。同梱しないビルドで辞書が見つからなければ設定の誤り（終了コード 2） |
+
+指定した辞書（`--dict`・`dictionary`・`HASAMI_DICT`）が読めないときは、同梱の辞書に切り替えず、設定の誤りにします。`~/.local/share/hasami/` に置いた辞書は自動では使いません（同じ版の noslop なら、手元に入れた辞書によらず同じ結果になるように）。
 
 ```toml
 [morphology]
 mode = "auto"
-dictionary = "~/.local/share/hasami/ipadic.hsd"
+# 同梱の辞書の代わりに使う辞書
+# dictionary = "~/.local/share/hasami/ipadic-neologd.hsd"
 ```
 
-使った方式は、text の集計の行（「辞書あり (ipadic)」など）、JSON の `settings.morphology`、改稿指示の `settings.method` と `settings.dictionary` に出ます。辞書を使うルールが動かない実行（`--no-readability` や `--only-rules` で外したとき）では、辞書を探しません。
+使った方式は、text の集計の行（「辞書あり (同梱の ipadic)」など）、JSON の `settings.morphology`、改稿指示の `settings.method` と `settings.dictionary` に出ます。
+
+### 別の辞書を使う
+
+hasami のリポジトリに、ほかのビルド済みの辞書が Git LFS で入っています。NEologd の語彙を含む `ipadic-neologd.hsd` と `ipadic-neologd-sudachi.hsd` は収録語が多い一方で、「どうでしょう」「作りました」のようなありふれた表現を 1 語の固有名詞として解析することがあるため、同梱していません（hasami の [#1](https://github.com/owayo/hasami/issues/1)〜[#3](https://github.com/owayo/hasami/issues/3)）。
+
+```bash
+git lfs install
+git clone https://github.com/owayo/hasami
+noslop check docs/ --dict hasami/dict/ipadic-neologd.hsd
+```
+
+辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときは、`--dict`・`dictionary`・`HASAMI_DICT` に加えて `~/.local/share/hasami/*.hsd` を探し、見つからなければ辞書なしの近似で判定します。
 
 ## 校正の考え方
 
@@ -645,7 +649,7 @@ dictionary = "~/.local/share/hasami/ipadic.hsd"
 - **構造の癖（S01〜S10）** — 定量校正が済んでいないため、すべて実験的ルールです。
 - **後から足したルール（P18〜P20・R11〜R13）** — チャット応答の名残・誇張・問いと自答・直しすぎの均一さ・読点の癖は、閾値が暫定のため実験的ルールです。
 
-辞書を使わない近似（体言止めの推定、列挙の判定など）は、元の校正条件と同じではありません。近似で判定するルールは、再校正が済むまで実験的か情報の扱いにしています。形態素解析の辞書があれば、「の」の連鎖（P16）と連続漢字（P15）は元の校正と同じ品詞の条件で数えます。
+辞書を使わない近似（体言止めの推定、列挙の判定など）は、元の校正条件と同じではありません。近似で判定するルールは、再校正が済むまで実験的か情報の扱いにしています。「の」の連鎖（P16）と連続漢字（P15）は、同梱の形態素解析の辞書で、元の校正と同じ品詞の条件で数えます。
 
 手元の文書で測り直すには `noslop calibrate --human <人の文書> --ai <生成文書>` を使います。ルールごとの誤検知率・検出率、閾値を動かしたときの率、校正済みに上げる候補と見直しが必要な校正済みルールを出します（閾値や状態は書き換えません）。コーパスの集め方・生成文書の作り方（[tools/corpus](tools/corpus)）・昇格の条件は [docs/calibration.md](docs/calibration.md) にまとめてあります。
 

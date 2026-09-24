@@ -6,7 +6,7 @@
 
 noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust 製の Linter。判定器ではなく、疑わしい箇所を決定的に並べ、直すかどうかは書き手に委ねる。
 
-- 形態素解析の辞書がなくても動く。文字種・語句パターン・文長の統計で判定する。hasami の辞書 (`.hsd`) があれば、品詞で数えるルール (P15・P16) を元の校正と同じ条件で判定する (`morph.rs`)
+- 文字種・語句パターン・文長の統計で判定する。品詞で数えるルール (P15・P16) は、バイナリに同梱した hasami の IPAdic の辞書 (`dict/ipadic.hsd`) で、元の校正と同じ条件で判定する (`morph.rs`)。`--no-dict` や同梱しないビルドでは辞書なしの近似で動く
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
 - AI 臭さ (`slop`) と読解負荷 (`readability`) の 2 つのレーンを混ぜない。自然度スコアに入るのは stable な slop だけ
 
@@ -14,7 +14,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 - Rust (edition 2024)。ツールチェーンの版は `mise.toml` が正
 - Markdown: `pulldown-cmark`
-- 文分割と形態素解析: [hasami](https://github.com/owayo/hasami)。文分割は `hasami::sentence` (辞書を使わない)、形態素解析は `analyzer` feature (辞書があるときだけ)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。テストは `build` feature (dev-dependency) で小さな辞書を組み立てる。上げるときはタグを書き換えて `cargo update -p hasami` を実行し、例外表の版を固定したテスト (`segment.rs`) が落ちたら分割の差分と THIRD_PARTY_NOTICES.md の NOTICE の写しを確かめる
+- 文分割と形態素解析: [hasami](https://github.com/owayo/hasami)。文分割は `hasami::sentence` (辞書を使わない)、形態素解析は `analyzer` feature (辞書があるときだけ)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。テストは `build` feature (dev-dependency) で小さな辞書を組み立てる。既定の feature `bundled-dict` で `dict/ipadic.hsd` (約 18MB) をバイナリに埋め込む。辞書を差し替える手順は `dict/README.md`。上げるときはタグを書き換えて `cargo update -p hasami` を実行し、例外表の版を固定したテスト (`segment.rs`) が落ちたら分割の差分と THIRD_PARTY_NOTICES.md の NOTICE の写しを確かめる
 - 語句の照合: `aho-corasick` / `regex`
 - ファイル探索: `ignore` (.gitignore を尊重)、並列化: `rayon`
 - CLI: `clap`、設定: `toml` + `serde`、出力の色: `anstream` / `anstyle`
@@ -34,7 +34,7 @@ flowchart TD
     CFG --> ENG[engine.rs<br/>ルールの選択・実行]
     DOC --> ENG
     ENG --> RULES[rules/<br/>phrases・rhythm・structure・custom]
-    ENG --> MORPH[morph.rs<br/>形態素解析 (辞書は任意)]
+    ENG --> MORPH[morph.rs<br/>形態素解析 (辞書は同梱)]
     RULES --> MORPH
     ENG --> SUP[suppress.rs<br/>抑制の適用]
     ENG --> SCORE[score.rs<br/>自然度スコア]
@@ -60,7 +60,7 @@ flowchart TD
 | `src/config.rs` | `noslop.toml` / `.noslop.toml` の探索 (カレントから親へ、最初の 1 つ) と、CLI の指定との統合 |
 | `src/walk.rs` | 対象ファイルの列挙 (.gitignore・.ignore・.noslopignore・拡張子・設定の除外。除外は .gitignore と同じ書式で、設定ファイルのディレクトリが基準。直接指定したファイルは拡張子と除外を問わない) |
 | `src/engine.rs` | ルールの選択 (stable / experimental / ジャンル / 明示の有効化・無効化)、設定値の適用、実行、重大度の上書き、fingerprint、並べ替え。辞書を使う有効なルール (`Rule::uses_morphology`) があるときだけ辞書を読み、文書ごとに `DocMorphology` を作ってルールに渡す |
-| `src/morph.rs` | 形態素解析 (辞書は任意)。`[morphology]`・`--dict`・`--no-dict` から辞書を決めて読み込む (`resolve`。`auto` で見つからなければ辞書なし、指定の誤りはエラー)。文書ごとの解析器で、ルールが求めた文だけを解析して覚えておく。使った方式 (`MorphologyStatus`) は出力の `settings` に載る |
+| `src/morph.rs` | 形態素解析。`[morphology]`・`--dict`・`--no-dict` から辞書を決めて読み込む (`resolve`)。探す順は、明示のパス → `HASAMI_DICT` → 同梱の辞書 (`~/.local/share/hasami` は探さない。同梱しないビルドでは hasami の既定の場所を探し、`auto` で見つからなければ辞書なし)。指定した辞書が読めなければエラーにし、同梱の辞書に切り替えない。同梱の辞書はプロセスで 1 度だけ読んで共有する (`Morphology::bundled`)。文書ごとの解析器で、ルールが求めた文だけを解析して覚えておく。使った方式 (`MorphologyStatus`) は出力の `settings` に載る |
 | `src/suppress.rs` | 抑制コメントを診断に当てる。未知のルール名は警告にする |
 | `src/score.rs` | 自然度スコア (算式の版を持つ) |
 | `src/output/` | text (色付き)・json (安定スキーマ)・toon (JSON と同じデータを TOON で。符号化は `toon-format` クレート)・github (ワークフローコマンド、エスケープは出力器の責務)・brief (AI や編集者に渡す改稿指示。`Brief` のデータを組み立て、Markdown・JSON・TOON に描き分ける。データはルールの表と該当箇所の表に分け、TOON の表形式が効くようにしている) |
@@ -148,7 +148,7 @@ mise exec -- make docs             # docs/rules.md を作り直す
 - CI (ubuntu) は `docs/rules.md` を生成し直して差分がないことも確かめる。ルールの定義や説明文を変えたら `make docs` を忘れない
 - 統合テストは `tests/cli.rs` (サブコマンドの入出力・終了コード) と `tests/integrations.rs` (MCP サーバーとフック) にある。組み込みルールの増減で壊れないよう、件数は設定ファイルの独自ルールと `--only-rules` で確かめる
 - テスト用の文章は、実在の文書や既存の資料を写さずに自分で書く
-- CI には形態素解析の辞書がない。辞書ありの判定のテストは hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする
+- CI には形態素解析の辞書がない。辞書ありの判定のテストは hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする。同梱の辞書に依るテストは `cfg(feature = "bundled-dict")` で分け、同梱しないビルドも `mise exec -- cargo test --no-default-features` で確かめる
 - Rust の文字列の行継続 (`\`) は次の行の先頭の空白を消す。説明文を数字や `(` の前で折り返すときは、`\` の前に空白を入れる (「90 字台から 100 字」のように、数字の前後の空白が落ちるため)
 
 ## 公開リポジトリとしての注意

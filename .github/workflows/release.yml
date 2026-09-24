@@ -173,6 +173,18 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      # バイナリには同梱の辞書 (IPAdic、NAIST-2003) が入るので、ライセンスの表示を添える
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          sparse-checkout: |
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+          sparse-checkout-cone-mode: false
+
+      - name: Add license notices
+        run: cp source/LICENSE source/THIRD_PARTY_NOTICES.md release-assets/
+
       - name: Generate checksums
         working-directory: release-assets
         run: |

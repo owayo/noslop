@@ -24,3 +24,6 @@ target
 /corpus/
 # tools/corpus/generate.sh の書きかけのファイル
 .*.md.part
+
+# Claude Code のサブエージェントが作る作業用の worktree (リポジトリに入れない)
+.claude/worktrees/

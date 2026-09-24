@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::sync::LazyLock;
 
 use hasami::CoarsePos;
-use regex::Regex;
+use regex::{Regex, RegexSet};
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::morph::MorphToken;
@@ -474,7 +474,7 @@ static P17_META: RuleMeta = RuleMeta {
     summary: "「〜ないわけではない」「〜ないとは言えない」のように否定を重ね、真偽の計算を強いる箇所を指す",
     explanation: r"### 何を見るか
 
-「〜ないわけではない」「〜ないとは言えない」「〜ないとも限らない」「〜なくはない」「〜なくもない」「〜ないでもない」「〜ないこともない」のように、否定を二重に重ねた言い回しを探します。ます形・過去形も含みます。
+「〜ないわけではない」「〜ないとは言えない」「〜ないとも限らない」「〜なくはない」「〜なくもない」「〜ないでもない」「〜ないこともない」のように否定を二重に重ねた言い回しと、「〜ずにはいられない」「〜ないわけにはいかない」「〜ないはずはない」「〜ない人はいない」「無きにしもあらず」のような二重否定の定型、「〜ないのではない」「〜ないからではない」「〜ないということではない」のような否定の入れ子を探します。ます形・過去形 (「〜なかったわけではない」) と、「無い」「ワケ」の表記も含みます。
 
 ### なぜ問題か
 
@@ -491,23 +491,106 @@ static P17_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-AI らしさの判定ではなく、読みにくさの指さしです。自然度スコアには入りません。義務を表す定型 (「〜ないといけない」「〜なければならない」「〜ざるを得ない」) と、必要条件を述べる条件形 (「〜ないと動かない」「〜なければ意味がない」) は、形の上では否定が 2 つあっても読み手が符号を計算しないため拾いません。辞書がないため、否定の形態素を数える代わりに定型の表層パターンで拾います。「危なくはない」のように「ない」が否定でない形容詞は除きます。",
+AI らしさの判定ではなく、読みにくさの指さしです。自然度スコアには入りません。元の検出器は、否定の形態素 (「ない」「無い」「ぬ」「ず」) が近くに 2 つ並ぶ箇所を拾っていました。辞書がないため、否定の形態素を数える代わりに定型の表層パターンで拾います。「〜ないわけではない」の類の 4 つの定型から始め、元の定義の範囲に合わせて、上に挙げた定型と否定の入れ子、「無い」「ワケ」の表記まで広げました。
+
+形の上では否定が 2 つあっても、読み手が符号を計算しない次の形は拾いません。義務・許可の定型 (「〜ないといけない」「〜なければならない」「〜ざるを得ない」「〜なくても構わない」)、必要条件を述べる条件形 (「〜ないと動かない」「〜なければ意味がない」)、推量 (「〜ないかもしれない」)、否定の連体修飾に否定の述語が続くだけの形 (「〜ない人間ではない」)、読点で区切った別々の否定 (「〜ず、〜ない」) です。「〜ないのではないか」「〜ないではないか」「〜ない人はいないか」のように文末が問いや念押しになる形も、否定を 2 回計算させないので除きます。「危なくはない」「少ない人はいない」のように「ない」が否定でない形容詞も除きます。",
 };
 
-static DOUBLE_NEGATIVE_RES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        // ないわけではない / ないことはない / ないものでもない / ないわけじゃない
-        r"ない(?:わけ|訳|こと|事|もの)(?:(?:で|に)?(?:は|も)|じゃ)(?:ない|なかった|ありません|ありませんでした)",
-        // ないとは言えない / ないとも限らない / ないとは思わない
-        r"ない(?:とは|とも)(?:言え|いえ|限ら|かぎら|思わ|考え)(?:ない|なかった|ません|ませんでした)",
+/// 前の否定 (「ない」と漢字の「無い」)。
+const NEG: &str = "(?:ない|無い)";
+/// 前の否定の過去形。
+const NEG_PAST: &str = "(?:なかった|無かった)";
+/// 形式名詞 (わけ・こと・もの) と、そのあとの「は」「も」「では」「じゃ」など。
+const NOUN_TOPIC: &str = "(?:わけ|訳|ワケ|こと|事|もの)(?:(?:で|に)?(?:は|も)|じゃ)";
+/// 「とは」「とも」に続く動詞の否定 (言えない・限らない・言い切れない など)。
+const SAY_NOT: &str = "(?:言え|いえ|言い切れ|言いきれ|言われ|限ら|かぎら|思わ|考え)(?:ない|なかった|ません|ませんでした)";
+/// 後ろの否定。ます形・過去形のほか、「なさそう」「なかろう」も否定の形態素として数える。
+const TAIL: &str = "(?:ない|無い|なかった|無かった|なさそう|なかろう|ありません|ありませんでした)";
+/// 「では」「じゃ」に続く否定。「〜ないのではなく、」の中止形も含む。
+const TAIL_DEHA: &str = "(?:ない|無い|なかった|無かった|なく|なかろう|ありません|ありませんでした)";
+
+/// 二重否定の型 1 つ。
+struct NegationForm {
+    re: Regex,
+    /// 形容詞の「ない」(「少ない人はいない」) と、文末を問いや念押しにする形
+    /// (「〜ないのではないか」) を除くか。
+    ///
+    /// はじめからある 4 つの定型は、校正したときの挙動を保つため除かない。ただし「なく」で始まる
+    /// 形容詞 (「危なくはない」) は、どの型でも除く。
+    guarded: bool,
+}
+
+/// 二重否定の型の一覧と、それらをまとめた集合。
+struct NegationForms {
+    /// すべての型の集合。文に現れる型を 1 回の走査で絞ってから、その型だけで位置を求める
+    /// (型ごとに文を走査すると、型の数だけ時間がかかる)。
+    any: RegexSet,
+    forms: Vec<NegationForm>,
+}
+
+static DOUBLE_NEGATIVE_FORMS: LazyLock<NegationForms> = LazyLock::new(|| {
+    let specs: [(String, bool); 13] = [
+        // --- はじめからある定型 (表記ゆれを足したもの) ---
+        // ないわけではない / ないことはない / ないものでもない / ないわけじゃない / ないワケでもない
+        (format!("{NEG}{NOUN_TOPIC}{TAIL}"), false),
+        // ないとは言えない / ないとも限らない / ないとは思わない / ないとは言い切れない
+        (format!("{NEG}(?:とは|とも){SAY_NOT}"), false),
         // なくはない / なくもない
-        r"なく(?:は|も)(?:ない|なかった|ありません|ありませんでした)",
+        (format!("(?:なく|無く)(?:は|も){TAIL}"), false),
         // ないでもない
-        r"ないでも(?:ない|なかった|ありません|ありませんでした)",
-    ]
-    .iter()
-    .map(|p| Regex::new(p).expect("double negative regex"))
-    .collect()
+        (format!("{NEG}でも{TAIL}"), false),
+        // --- 元の定義の範囲に合わせて足した型 ---
+        // なかったわけではない / なかったとは言えない
+        (format!("{NEG_PAST}{NOUN_TOPIC}{TAIL}"), true),
+        (format!("{NEG_PAST}(?:とは|とも){SAY_NOT}"), true),
+        // ないではない / ないのではない / ないのではなく / なかったのではない
+        (format!("(?:{NEG}|{NEG_PAST})の?では{TAIL_DEHA}"), true),
+        // 否定の入れ子: ないからではない / ないということではない / ないせいなのではない
+        (
+            format!(
+                "(?:{NEG}|{NEG_PAST})(?:から|ため|せい|という(?:こと|の)?)(?:なの)?(?:では|じゃ){TAIL_DEHA}"
+            ),
+            true,
+        ),
+        // ないはずはない / ないはずがない / ないわけがない
+        (
+            format!("(?:{NEG}|{NEG_PAST})(?:(?:はず|筈)(?:が|は|も)|(?:わけ|訳|ワケ)が){TAIL}"),
+            true,
+        ),
+        // ずにはいられない / ずにいられない / ないではいられない
+        (
+            "(?:ずに|ないで)は?(?:いられ|居られ)(?:ない|なかった|なく|ません|ませんでした|ぬ|ず)"
+                .to_string(),
+            true,
+        ),
+        // ないわけにはいかない / ない訳に行かない / ないわけにはいきません
+        (
+            format!(
+                "{NEG}(?:わけ|訳|ワケ)に(?:は|も)?(?:(?:いか|行か|ゆか)(?:ない|なかった|なく|ず|ぬ|ん)|(?:いき|行き|ゆき)(?:ません|ませんでした))"
+            ),
+            true,
+        ),
+        // ない人はいない / なかった人はいない / ない者はない (全称の二重否定)
+        (
+            format!(
+                "(?:{NEG}|{NEG_PAST})(?:(?:人|者)(?:は|も)(?:いない|いなかった|いません|いませんでした)|者(?:は|も)(?:ない|なかった))"
+            ),
+            true,
+        ),
+        // 無きにしもあらず
+        ("(?:無|な)きにしも(?:あら|非)ず".to_string(), true),
+    ];
+    let any = RegexSet::new(specs.iter().map(|(pattern, _)| pattern))
+        .unwrap_or_else(|e| panic!("二重否定の正規表現が不正です: {e}"));
+    let forms = specs
+        .into_iter()
+        .map(|(pattern, guarded)| NegationForm {
+            re: Regex::new(&pattern)
+                .unwrap_or_else(|e| panic!("二重否定の正規表現が不正です ({pattern}): {e}")),
+            guarded,
+        })
+        .collect();
+    NegationForms { any, forms }
 });
 
 /// 「ない」が否定ではない形容詞の語幹 (「危なくはない」を二重否定とみなさない)。
@@ -526,18 +609,52 @@ const NON_NEGATION_ADJECTIVE_STEMS: &[&str] = &[
     "やるせ",
 ];
 
+/// 一致の直後が、文を問いや念押しにする形か (「〜ないのではないか」「〜ないではないか」
+/// 「〜ないからではないでしょうか」「〜ありませんか？」)。
+///
+/// 問いや念押しの「ではないか」は否定として読まれないので、読み手は符号を 2 回計算しない。
+/// 「から」(理由) と「かも」(推量) の「か」は問いではない。
+fn ends_as_question(after: &str) -> bool {
+    let rest = after.strip_prefix(['の', 'ん']).unwrap_or(after);
+    let rest = ["です", "でしょう", "だろう"]
+        .iter()
+        .find_map(|p| rest.strip_prefix(p))
+        .unwrap_or(rest);
+    if rest.starts_with(['?', '？']) {
+        return true;
+    }
+    rest.strip_prefix('か')
+        .is_some_and(|next| !next.starts_with(['ら', 'も']))
+}
+
 pub(super) struct DoubleNegative;
 
 impl DoubleNegative {
     fn find(text: &str) -> Vec<Range<usize>> {
         let mut ranges: Vec<Range<usize>> = Vec::new();
-        for re in DOUBLE_NEGATIVE_RES.iter() {
-            for m in re.find_iter(text) {
-                let before = &text[..m.start()];
-                if m.as_str().starts_with("なく")
+        let forms = &*DOUBLE_NEGATIVE_FORMS;
+        for idx in forms.any.matches(text).iter() {
+            let form = &forms.forms[idx];
+            for m in form.re.find_iter(text) {
+                let (before, after) = (&text[..m.start()], &text[m.end()..]);
+                let matched = m.as_str();
+                // 「危なくはない」「少ない人はいない」の「ない」は否定ではない
+                let negation_may_be_adjective = if form.guarded {
+                    matched.starts_with('な')
+                } else {
+                    matched.starts_with("なく")
+                };
+                if negation_may_be_adjective
                     && NON_NEGATION_ADJECTIVE_STEMS
                         .iter()
                         .any(|stem| before.ends_with(stem))
+                {
+                    continue;
+                }
+                if form.guarded
+                    && (ends_as_question(after)
+                        // 「〜ない者はないがしろにされる」の後ろの「ない」は否定ではない
+                        || (matched.ends_with("ない") && after.starts_with("がしろ")))
                 {
                     continue;
                 }
@@ -745,6 +862,27 @@ mod tests {
         );
     }
 
+    /// 同梱の辞書 (IPAdic) で、辞書なしの近似との違いを確かめる。
+    #[cfg(feature = "bundled-dict")]
+    #[test]
+    fn the_bundled_dictionary_judges_by_part_of_speech() {
+        let dict = crate::morph::Morphology::bundled().unwrap();
+        let md = "俺の魂の安静のために祈る。\n";
+        assert_eq!(
+            matched(md, &run_with_morphology(&NoChain::default(), md, &dict)),
+            vec!["俺の魂の安静のため"]
+        );
+        let md = "茶の間の茶箪笥の上に置く。\n";
+        assert!(run_with_morphology(&NoChain::default(), md, &dict).is_empty());
+        let md = "昭和八年七月発行の雑誌を読んだ。\n";
+        assert!(run_with_morphology(&KanjiRun::default(), md, &dict).is_empty());
+        let md = "顧客情報統合管理基盤移行計画を承認した。\n";
+        assert_eq!(
+            run_with_morphology(&KanjiRun::default(), md, &dict).len(),
+            1
+        );
+    }
+
     #[test]
     fn p15_with_a_dictionary_skips_runs_with_proper_nouns() {
         let dict = morphology(&[
@@ -796,5 +934,122 @@ mod tests {
         ] {
             assert!(run(&DoubleNegative, md).is_empty(), "{md}");
         }
+    }
+
+    #[test]
+    fn p17_flags_fixed_double_negative_forms() {
+        // 装飾をまたぐ一致は、原文の装飾記号ごと範囲に含める
+        let md = "この話を聞くと、**笑わずには**いられない。ここまで来たら、引き受けないわけにはいかない。\
+                  手順どおりなら、動かないはずはない。新しい道具を試したくない人はいない。\
+                  改善の余地は無きにしもあらずだ。あのときは、祈らずにいられなかった。\n";
+        let d = run(&DoubleNegative, md);
+        assert_eq!(
+            matched(md, &d),
+            vec![
+                "ずには**いられない",
+                "ないわけにはいかない",
+                "ないはずはない",
+                "ない人はいない",
+                "無きにしもあらず",
+                "ずにいられなかった",
+            ]
+        );
+        assert!(d.iter().all(|d| d.severity == Severity::Info));
+
+        let md = "彼の苦労を思うと、同情しないではいられない。頼まれた以上、行かない訳に行かない。\
+                  これだけ遅れれば、上司が怒らないわけがありません。\n";
+        assert_eq!(
+            matched(md, &run(&DoubleNegative, md)),
+            vec![
+                "ないではいられない",
+                "ない訳に行かない",
+                "ないわけがありません",
+            ]
+        );
+    }
+
+    #[test]
+    fn p17_flags_nested_negations() {
+        let md = "会議が要らないのではない。失敗したのは、道具を知らないからではない。\
+                  予算が無いということではない。手を抜かないのではなく、抜き方を知らないのだ。\
+                  準備が足りなかったからではなく、手順が古かった。\n";
+        assert_eq!(
+            matched(md, &run(&DoubleNegative, md)),
+            vec![
+                "ないのではない",
+                "ないからではない",
+                "無いということではない",
+                "ないのではなく",
+                "なかったからではなく",
+            ]
+        );
+    }
+
+    #[test]
+    fn p17_flags_notation_and_tense_variants() {
+        let md = "反対する理由が無いわけではない。抜け道がないワケでもない。\
+                  迷いが無いでもなかった。当時も、知らなかったわけではない。\
+                  失敗しないとは言い切れない。反対が出ないこともなさそうだ。\
+                  彼は手順を知らなかったのではない。あの映画を観て泣かなかった人はいない。\n";
+        assert_eq!(
+            matched(md, &run(&DoubleNegative, md)),
+            vec![
+                "無いわけではない",
+                "ないワケでもない",
+                "無いでもなかった",
+                "なかったわけではない",
+                "ないとは言い切れない",
+                "ないこともなさそう",
+                "なかったのではない",
+                "なかった人はいない",
+            ]
+        );
+    }
+
+    #[test]
+    fn p17_skips_forms_that_are_not_double_negatives() {
+        for md in [
+            // 義務・許可
+            "申請書は今日中に出さなくてはいけません。\n",
+            "約束は守らねばならぬ。\n",
+            "手順は必ず守らなければならない。\n",
+            "無理に参加しなくても構わない。\n",
+            // 推量
+            "明日は雨が降らないかもしれない。\n",
+            // 別々の否定が近くにあるだけ
+            "彼は約束を守らない人間ではない。\n",
+            "何も言わず、動かない。\n",
+        ] {
+            assert!(run(&DoubleNegative, md).is_empty(), "{md}");
+        }
+    }
+
+    #[test]
+    fn p17_skips_questions_adjectives_and_other_words() {
+        for md in [
+            // 文末が問いや念押しになる形
+            "遅れの原因は、人手が足りないからではないか。\n",
+            "このままでは、期限に間に合わないのではないでしょうか。\n",
+            "それでは、誰も得をしないではないか。\n",
+            "あの判断は間違っていなかったのではないか。\n",
+            "まだ申請していない人はいないか確かめる。\n",
+            "急いでいるときに、パスワードを思い出せなかったことはありませんか？\n",
+            // 「ない」が否定ではない形容詞
+            "この町に危ない人はいない。\n",
+            "参加者が少ないのではない。\n",
+            // 後ろの「ない」が「ないがしろ」の一部
+            "声を上げない者はないがしろにされる。\n",
+            // 既定ではリストを見ない
+            "- 笑わずにはいられない。\n",
+        ] {
+            assert!(run(&DoubleNegative, md).is_empty(), "{md}");
+        }
+        // 理由の「から」と推量の「かも」の「か」は問いではない
+        let md = "理由が分からないのではないから、説明は要らない。\
+                  この機能を使わない人はいないかもしれない。\n";
+        assert_eq!(
+            matched(md, &run(&DoubleNegative, md)),
+            vec!["ないのではない", "ない人はいない"]
+        );
     }
 }
