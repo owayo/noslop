@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip actual release)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: noslop
+  # mise 自身の版の正はここ (mise.toml には mise 自身を書けない)。ci.yml と同じ値にそろえる。
+  MISE_VERSION: "2026.9.4"
+
+jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: ${{ env.MISE_VERSION }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        run: |
+          set -euo pipefail
+          # Use 2-digit year (YY) for Windows MSI compatibility (major version must be <= 255)
+          YEAR=$(date +%y)
+          MONTH=$(date +%-m)
+
+          CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "Current version: ${CURRENT}"
+
+          if echo "${CURRENT}" | grep -qE '^[0-9]{2,4}\.[0-9]{1,2}\.[0-9]+$'; then
+            OLD_YEAR=$(echo "${CURRENT}" | cut -d. -f1)
+            OLD_MONTH=$(echo "${CURRENT}" | cut -d. -f2)
+            OLD_COUNTER=$(echo "${CURRENT}" | cut -d. -f3)
+            # Handle both 2-digit and 4-digit year formats
+            OLD_YEAR_2DIGIT="${OLD_YEAR#20}"
+            if [ "${OLD_YEAR_2DIGIT}" = "${YEAR}" ] && [ "${OLD_MONTH}" = "${MONTH}" ]; then
+              NEW_COUNTER=$((OLD_COUNTER + 1))
+            else
+              NEW_COUNTER=100
+            fi
+          else
+            NEW_COUNTER=100
+          fi
+
+          NEW_VERSION="${YEAR}.${MONTH}.${NEW_COUNTER}"
+          TAG="v${NEW_VERSION}"
+          echo "New version: ${NEW_VERSION}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists"
+            exit 1
+          fi
+
+          # [package] の version (ファイル内で最初の `version = ...` 行) だけを書き換える
+          sed -i "0,/^version = \"[^\"]*\"/s//version = \"${NEW_VERSION}\"/" Cargo.toml
+
+          # 依存の版は上げず、Cargo.lock の noslop 自身の版だけを更新する
+          cargo update --workspace
+
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release ${{ steps.bump.outputs.tag }}"
+          git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.tag }}"
+          git push origin "${{ github.ref_name }}" "${{ steps.bump.outputs.tag }}"
+
+      - name: Dry run info
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "🧪 Dry run mode - skipping commit and tag"
+          echo "Would release: ${{ steps.bump.outputs.tag }}"
+          git diff -- Cargo.toml Cargo.lock
+
+  build-and-release:
+    name: Build (${{ matrix.target }})
+    needs: prepare-release
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: noslop
+            asset_name: noslop-linux-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: noslop
+            asset_name: noslop-darwin-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: noslop
+            asset_name: noslop-darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: noslop.exe
+            asset_name: noslop-windows-amd64.exe
+
+    steps:
+      # Windows のランナーは既定で LF を CRLF に変えて checkout する
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      # Rust の版は mise.toml が正
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: ${{ env.MISE_VERSION }}
+
+      # mise が入れたツールチェーンにクロスビルド用のターゲットを足す
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "dist/${{ matrix.asset_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Release
+    needs: [prepare-release, build-and-release]
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release-assets
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
+
+      - name: Create Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: Release ${{ needs.prepare-release.outputs.tag }}
+          files: release-assets/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release summary
+        run: echo "🚀 Released ${{ needs.prepare-release.outputs.tag }}"

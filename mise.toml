@@ -1,0 +1,4 @@
+# ツールチェーンの版の正はここ。CI (jdx/mise-action) もこのファイルを読む。
+# mise 自身の版はここに書けないため、CI 側の mise-action の `version` で固定している。
+[tools]
+rust = { version = "1.98.1", components = "clippy,rustfmt" }
