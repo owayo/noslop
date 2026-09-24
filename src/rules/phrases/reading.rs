@@ -89,7 +89,8 @@ impl Default for KanjiRun {
 }
 
 impl KanjiRun {
-    fn find(&self, text: &str) -> Vec<(Range<usize>, usize)> {
+    /// `breaks` は原文の改行があった位置 (`text` 上のバイト位置)。連なりは改行をまたがない。
+    fn find(&self, text: &str, breaks: &[usize]) -> Vec<(Range<usize>, usize)> {
         let mut out = Vec::new();
         let mut run: Option<(usize, usize, usize)> = None; // (start, end, chars)
         let mut flush = |run: &mut Option<(usize, usize, usize)>| {
@@ -105,6 +106,11 @@ impl KanjiRun {
             }
         };
         for (i, c) in text.char_indices() {
+            // 段落内の改行は解析用テキストでは何も挟まずにつながるが、1 行 1 語の並び
+            // (「対談」「面談」の行) を 1 つの連なりとして数えないよう、改行の位置で切る
+            if breaks.contains(&i) {
+                flush(&mut run);
+            }
             if text::is_kanji(c) {
                 run = Some(match run {
                     Some((s, _, n)) => (s, i + c.len_utf8(), n + 1),
@@ -151,7 +157,13 @@ impl Rule for KanjiRun {
             let first = block.sentences.start;
             for (i, sentence) in ctx.doc.block_sentences(idx).iter().enumerate() {
                 let text = &block.text[sentence.range.clone()];
-                let candidates = self.find(text);
+                let breaks: Vec<usize> = block
+                    .line_breaks
+                    .iter()
+                    .filter(|&&at| sentence.range.start < at && at < sentence.range.end)
+                    .map(|&at| at - sentence.range.start)
+                    .collect();
+                let candidates = self.find(text, &breaks);
                 if candidates.is_empty() {
                     continue;
                 }
@@ -725,6 +737,19 @@ mod tests {
         ] {
             assert!(run(&KanjiRun::default(), md).is_empty(), "{md}");
         }
+    }
+
+    #[test]
+    fn p15_runs_do_not_cross_line_breaks() {
+        // 1 行 1 語の並びは、解析用テキストではつながっても別々の語
+        let md = "候補は次のとおり。\n対談記事\n面談記録\n座談会\n";
+        assert!(run(&KanjiRun::default(), md).is_empty());
+        // 行の中の連なりは、改行の前後に文が続いても数える
+        let md = "今回は\n顧客情報統合管理基盤を\n移す。\n";
+        assert_eq!(
+            matched(md, &run(&KanjiRun::default(), md)),
+            vec!["顧客情報統合管理基盤"]
+        );
     }
 
     #[test]

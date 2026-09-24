@@ -30,7 +30,7 @@ static P13_META: RuleMeta = RuleMeta {
     summary: "「この事実は〜を示している」のような、無生物を主語にして他動詞で結ぶ直訳調の構文を指摘する",
     explanation: r"### 何を見るか
 
-「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「物語る」「浮き彫りにする」「後押しする」が来る文を探します。
+「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「暗示する」「物語る」「浮き彫りにする」「後押しする」が来る文を探します。主語のあとで開いた括弧の中の述語 (「これは「〜と証明した」ものではない」) は、主語の述語ではないので数えません。
 
 ### なぜ問題か
 
@@ -47,7 +47,7 @@ static P13_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-人間とAIのコーパスで確かめた構文で、重大度は情報です。元の検出器は表層の正規表現と、品詞列で述語の原形を照合する版の 2 本立てでした。辞書を使わないため、述語は活用の語幹 (「示し」「もたらさ」など) で近似しています。原形が一致すれば活用を問わない元の定義の範囲に合わせて、未然形は「もたらさ」「示さ」と同じく「生み出さ」(「何も生み出さない」) も拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。",
+人間とAIのコーパスで確かめた構文で、重大度は情報です。元の検出器は表層の正規表現と、品詞列で述語の原形を照合する版の 2 本立てでした。辞書を使わないため、述語は活用の語幹 (「示し」「もたらさ」など) で近似しています。原形が一致すれば活用を問わない元の定義の範囲に合わせて、未然形は「もたらさ」「示さ」と同じく「生み出さ」(「何も生み出さない」) も拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は元の述語の一覧にありませんが、元の表層の正規表現は「示す」を「暗示する」の中でも拾っていたため、校正の時点で数えられていた語として含めています。",
 };
 
 /// 抽象的な主語と主題・主格の助詞。長い候補を先に置く。
@@ -61,7 +61,7 @@ static SUBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// 元の定義は述語の原形の一致なので、未然形 (「何も生み出さない」「示される」) も拾う。
 static VERB_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"もたら[すしさ]|示唆(?:する|し)|示[すしさ]|意味(?:する|し)|証明(?:する|し)|生み出[すしさ]|反映(?:する|し)|物語(?:る|っ)|浮き彫りに(?:する|し)|後押し(?:する|し)",
+        r"もたら[すしさ]|示唆(?:する|し)|暗示(?:する|し)|示[すしさ]|意味(?:する|し)|証明(?:する|し)|生み出[すしさ]|反映(?:する|し)|物語(?:る|っ)|浮き彫りに(?:する|し)|後押し(?:する|し)",
     )
     .expect("verb regex")
 });
@@ -73,9 +73,10 @@ const P13_WINDOW_CHARS: usize = 40;
 ///
 /// `noslop calibrate` が述語ごとに人と生成文書での出方を比べられるよう、診断の `item` に
 /// 活用をそろえた形を入れる (「示し」「示さ」はどちらも「示す」)。「示唆」は「示」より先に見る。
-const P13_VERB_ITEMS: [(&str, &str); 10] = [
+const P13_VERB_ITEMS: [(&str, &str); 11] = [
     ("もたら", "もたらす"),
     ("示唆", "示唆する"),
+    ("暗示", "暗示する"),
     ("示", "示す"),
     ("意味", "意味する"),
     ("証明", "証明する"),
@@ -111,13 +112,15 @@ impl InanimateSubject {
                 .map_or(text.len(), |(i, _)| subject.end() + i);
             let window = &text[subject.end()..window_end];
             let verb = VERB_RE.find_iter(window).find(|m| {
-                // 「指示」「表示」「提示」のように前に漢字が付く「示」は名詞の一部
                 let start = subject.end() + m.start();
-                !(m.as_str().starts_with('示')
+                // 「指示」「表示」「提示」のように前に漢字が付く「示」は名詞の一部
+                let compound = m.as_str().starts_with('示')
                     && text[..start]
                         .chars()
                         .next_back()
-                        .is_some_and(text::is_kanji))
+                        .is_some_and(text::is_kanji);
+                // 主語のあとで開いた括弧の中の述語は、引用や名詞修飾の中の述語で主語の述語ではない
+                !compound && !opens_bracket(&text[subject.end()..start])
             });
             if let Some(verb) = verb {
                 let end = subject.end() + verb.end();
@@ -130,6 +133,19 @@ impl InanimateSubject {
         }
         out
     }
+}
+
+/// `s` の中で開いたまま閉じていない括弧があるか。
+fn opens_bracket(s: &str) -> bool {
+    let mut open: Vec<char> = Vec::new();
+    for c in s.chars() {
+        if let Some(close) = text::closing_bracket(c) {
+            open.push(close);
+        } else if open.last() == Some(&c) {
+            open.pop();
+        }
+    }
+    !open.is_empty()
 }
 
 impl Rule for InanimateSubject {
@@ -477,6 +493,39 @@ mod tests {
     }
 
     #[test]
+    fn p13_flags_anji_like_shisa() {
+        let md = "この事実は、需要が戻らないことを暗示している。\n";
+        let d = run(&InanimateSubject, md);
+        assert_eq!(
+            matched(md, &d),
+            vec!["この事実は、需要が戻らないことを暗示し"]
+        );
+        assert_eq!(item(&d[0]), "暗示する");
+    }
+
+    #[test]
+    fn p13_ignores_predicates_inside_brackets_opened_after_the_subject() {
+        // 括弧の中の述語は引用や名詞修飾の中の述語で、主語「これ」の述語ではない
+        for md in [
+            "これは「手順が不要だと証明した」ものではない。\n",
+            "それは（前提の誤りを示す）資料ではない。\n",
+        ] {
+            assert!(run(&InanimateSubject, md).is_empty(), "{md}");
+        }
+        // 括弧が閉じたあとの述語や、括弧ごと主語を含む文は数える
+        let md = "これは「速さ」の問題を示している。\n";
+        assert_eq!(
+            matched(md, &run(&InanimateSubject, md)),
+            vec!["これは「速さ」の問題を示し"]
+        );
+        let md = "彼は「これは誤りを示す」と言った。\n";
+        assert_eq!(
+            matched(md, &run(&InanimateSubject, md)),
+            vec!["これは誤りを示す"]
+        );
+    }
+
+    #[test]
     fn p13_requires_the_verb_within_the_window() {
         let md = "これは、長い前置きのあとで、ようやく本題に入るまでにいくつもの段落を費やしてからようやく方針を示す。\n";
         assert!(run(&InanimateSubject, md).is_empty());
@@ -605,6 +654,8 @@ mod tests {
             "もたらさ",
             "示唆する",
             "示唆し",
+            "暗示する",
+            "暗示し",
             "示す",
             "示し",
             "示さ",
