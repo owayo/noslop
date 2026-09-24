@@ -2,7 +2,8 @@
 //!
 //! 解析用テキストには地の文として読まれる文字だけを残す。
 //!
-//! - コードブロック・HTML ブロック・front matter・数式ブロックは捨てる
+//! - コードブロック・HTML ブロック・数式ブロックと、文書の先頭の front matter は捨てる
+//!   (front matter は先頭にあるものだけ。途中の `---` は区切り線か見出しの下線として読む)
 //! - インラインコード・数式・画像・自動リンクはプレースホルダ 1 字に畳む
 //! - 太字・リンクなどの装飾記号は取り除き、装飾の範囲は [`InlineMark`] に残す
 //! - ソフト改行は日本語どうしの間なら何も入れず、英数字が隣り合うなら空白 1 つにする
@@ -11,33 +12,157 @@
 //! 記法例を誤って抑制として扱わないため)。
 
 use std::ops::Range;
+use std::sync::LazyLock;
 
 use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use regex::Regex;
 
 use crate::diagnostic::Span;
 use crate::directive;
 use crate::document::{Block, BlockKind, Directive, InlineMark, MarkKind, TextMap};
 use crate::text::{self, PLACEHOLDER};
 
+/// pulldown-cmark の拡張記法。
+///
+/// メタデータブロック (`ENABLE_YAML_STYLE_METADATA_BLOCKS` など) は有効にしない。
+/// pulldown-cmark はこれを文書の途中にも当てるため、段落の直後でない `---` の行から
+/// 次の `---` か `...` の行までの本文がメタデータとして捨てられてしまう。先頭の
+/// front matter は [`front_matter_len`] で見つけて解析から外す。
 fn options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_HEADING_ATTRIBUTES
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
         | Options::ENABLE_MATH
         | Options::ENABLE_GFM
 }
 
+/// Markdown の記法にない箇条書きの記号か番号で始まる行 (1 行 1 項目の箇条書き)。
+///
+/// 番号は「1.」「(1)」「１．」の形で、直後が数字なら小数 (「3.5 倍」) とみなして外す。
+static ITEM_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:[・•●○◦▪■□◆◇※★☆◎▶▷►➤→✓✔]|[①-⑳]|[⑴-⒇]|[（(]\d{1,3}[)）]|\d{1,3}[.)．）](?:[^\d.．]|$)|[０-９]{1,3}[．）](?:[^０-９]|$))",
+    )
+    .expect("item line regex")
+});
+
+/// 段落の中の改行が、書式から文の区切りと分かるか (1 行 1 項目で書いた箇条書きとラベルの行)。
+///
+/// 次のどれかなら、改行の扱いの設定によらず文を切る。本文の折り返しで文の途中に改行を置く
+/// 書き方は、これらに当たらないのでつないだままにする。
+///
+/// - 次の行が、Markdown の記法にない箇条書きの記号か番号で始まる (「・項目」「①項目」)
+/// - 直前の行がコロンで終わる (「目的:」)
+/// - 直前の行が【】で囲んだ見出し風の行である
+fn breaks_sentence(source: &str, range: &Range<usize>) -> bool {
+    /// 引用の記号・字下げ・太字の記号を外した行。
+    fn bare(line: &str) -> &str {
+        line.trim_start_matches(|c: char| c == '>' || c.is_whitespace())
+            .trim_matches(|c: char| c == '*' || c == '_' || c.is_whitespace())
+    }
+    let before = &source[..range.start];
+    let prev = bare(&before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+    let after = &source[range.end..];
+    let next = bare(&after[..after.find('\n').unwrap_or(after.len())]);
+    ITEM_LINE.is_match(next)
+        || prev.ends_with([':', '：'])
+        || (prev.starts_with('【') && prev.ends_with('】'))
+}
+
 /// Markdown の原文をブロックと抑制コメントに分ける。
+///
+/// `source` は先頭の BOM を除いた原文 ([`crate::document::Document::parse`] が除く)。
+/// 先頭の front matter の後ろだけを解析し、位置は原文上のバイト位置に戻す。
 pub fn parse(source: &str) -> (Vec<Block>, Vec<Directive>) {
     let mut builder = Builder::new(source);
-    for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
-        builder.event(event, range);
+    let body = front_matter_len(source);
+    for (event, range) in Parser::new_ext(&source[body..], options()).into_offset_iter() {
+        builder.event(event, range.start + body..range.end + body);
     }
     builder.finish()
+}
+
+/// 文書の先頭にある front matter の長さ (閉じの行の改行まで含むバイト数)。なければ 0。
+///
+/// 開き・閉じの判定は pulldown-cmark のメタデータブロックと同じにして、先頭の
+/// front matter の扱いを変えない。違うのは、文書の 1 行目から始まるものだけを
+/// front matter とみなす点。
+///
+/// - 開きは 1 行目の `---` (YAML) か `+++` (TOML)。ちょうど 3 字で、後ろは空白だけ
+/// - 閉じは行頭の `---` か `...` (TOML は `+++`)。ちょうど 3 字で、後ろはスペースだけ
+/// - 開きの次の行が空行か閉じの行なら front matter ではない (区切り線として読む)
+/// - 閉じの行がなければ front matter ではない (全体を本文として読む)
+fn front_matter_len(source: &str) -> usize {
+    let bytes = source.as_bytes();
+    let fence = match bytes.first() {
+        Some(&c @ (b'-' | b'+')) => c,
+        _ => return 0,
+    };
+    let opening_end = next_line_start(bytes, 0);
+    let opening = &bytes[..opening_end];
+    if run_of(opening, fence) != 3 || !opening[3..].iter().all(u8::is_ascii_whitespace) {
+        return 0;
+    }
+    let mut pos = opening_end;
+    let mut first = true;
+    while pos < bytes.len() {
+        let line = &bytes[pos..];
+        if let Some(len) = closing_line_len(line, fence) {
+            return if first { 0 } else { pos + len };
+        }
+        if first && line_end_len(skip_blanks(line)).is_some() {
+            return 0;
+        }
+        first = false;
+        pos = next_line_start(bytes, pos);
+    }
+    0
+}
+
+/// front matter を閉じる行なら、その長さ (改行を含む)。
+fn closing_line_len(line: &[u8], fence: u8) -> Option<usize> {
+    let marker = if run_of(line, fence) == 3 || (fence == b'-' && run_of(line, b'.') == 3) {
+        3
+    } else {
+        return None;
+    };
+    let spaces = run_of(&line[marker..], b' ');
+    let eol = line_end_len(&line[marker + spaces..])?;
+    Some(marker + spaces + eol)
+}
+
+/// 先頭から `c` が続く字数。
+fn run_of(bytes: &[u8], c: u8) -> usize {
+    bytes.iter().take_while(|&&b| b == c).count()
+}
+
+/// 行頭の空白 (スペース・タブ・垂直タブ・改ページ) を飛ばした残り。
+fn skip_blanks(line: &[u8]) -> &[u8] {
+    let n = line
+        .iter()
+        .take_while(|&&b| matches!(b, b' ' | b'\t' | 0x0b | 0x0c))
+        .count();
+    &line[n..]
+}
+
+/// `bytes` が行末 (改行か文書の終わり) で始まるなら、改行の長さ。
+fn line_end_len(bytes: &[u8]) -> Option<usize> {
+    match bytes {
+        [] => Some(0),
+        [b'\r', b'\n', ..] => Some(2),
+        [b'\n' | b'\r', ..] => Some(1),
+        _ => None,
+    }
+}
+
+/// `pos` から始まる行の次の行の先頭 (最後の行なら文書の終わり)。
+fn next_line_start(bytes: &[u8], pos: usize) -> usize {
+    bytes[pos..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(bytes.len(), |i| pos + i + 1)
 }
 
 /// 組み立て途中のブロック。
@@ -49,6 +174,7 @@ struct Current {
     in_quote: bool,
     in_footnote: bool,
     line_breaks: Vec<usize>,
+    sentence_breaks: Vec<usize>,
     marks: Vec<InlineMark>,
     /// 直前にあった改行の原文範囲 (次の文字を足すときに区切りの空白を入れるか決める)。
     pending_break: Option<Span>,
@@ -104,8 +230,12 @@ impl Current {
         self.extend_span(&range);
     }
 
-    fn line_break(&mut self, range: Range<usize>) {
+    /// 改行を記録する。`sentence` は、書式から文の区切りと分かる改行か ([`breaks_sentence`])。
+    fn line_break(&mut self, range: Range<usize>, sentence: bool) {
         self.line_breaks.push(self.text.len());
+        if sentence {
+            self.sentence_breaks.push(self.text.len());
+        }
         self.pending_break = Some(Span::new(range.start, range.end));
     }
 }
@@ -118,7 +248,7 @@ struct Builder<'a> {
     quote_depth: usize,
     footnote_depth: usize,
     item_depth: usize,
-    /// コードブロック・front matter の内側 (テキストを捨てる)。
+    /// コードブロックの内側 (テキストを捨てる)。
     skip_depth: usize,
     /// 画像・自動リンクの内側 (プレースホルダに畳んだので中身を捨てる)。
     inline_skip: usize,
@@ -155,6 +285,7 @@ impl<'a> Builder<'a> {
             in_quote: self.quote_depth > 0,
             in_footnote: self.footnote_depth > 0,
             line_breaks: Vec::new(),
+            sentence_breaks: Vec::new(),
             marks: Vec::new(),
             pending_break: None,
         });
@@ -189,6 +320,7 @@ impl<'a> Builder<'a> {
             in_quote: cur.in_quote,
             in_footnote: cur.in_footnote,
             line_breaks: cur.line_breaks,
+            sentence_breaks: cur.sentence_breaks,
             marks: cur.marks,
             sentences: 0..0,
         });
@@ -230,7 +362,8 @@ impl<'a> Builder<'a> {
                 if !self.skipping()
                     && let Some(cur) = self.current.as_mut()
                 {
-                    cur.line_break(range);
+                    let sentence = breaks_sentence(self.source, &range);
+                    cur.line_break(range, sentence);
                 }
             }
             Event::Rule => self.flush(),
@@ -255,6 +388,7 @@ impl<'a> Builder<'a> {
                 self.flush();
                 self.quote_depth += 1;
             }
+            // メタデータブロックの記法は有効にしていないので来ないが、来ても中身は捨てる
             Tag::CodeBlock(_) | Tag::MetadataBlock(_) => {
                 self.flush();
                 self.skip_depth += 1;
@@ -476,6 +610,40 @@ mod tests {
             "日本語の文が折り返される。English words wrap here."
         );
         assert_eq!(b[0].line_breaks.len(), 2);
+        // 本文の折り返しは、文の区切りにしない
+        assert!(b[0].sentence_breaks.is_empty());
+    }
+
+    /// 段落の中で、書式から文の区切りと分かる改行 (の直後の行の頭)。
+    fn sentence_break_heads(src: &str) -> Vec<String> {
+        let b = blocks(src);
+        b[0].sentence_breaks
+            .iter()
+            .map(|&at| b[0].text[at..].trim_start().chars().take(3).collect())
+            .collect()
+    }
+
+    #[test]
+    fn item_lines_and_labels_break_sentences() {
+        // Markdown の記法にない箇条書きの記号と番号
+        let src = "機能は次の 3 つ\n・通知を減らす\n• 画面を速くする\n①設定を簡単にする\n(2) 共有する\n3. 保存する\n";
+        assert_eq!(
+            sentence_break_heads(src),
+            ["・通知", "• 画", "①設定", "(2)", "3. "]
+        );
+        // コロンで終わるラベル (太字の記号は外して見る) と、【】で囲んだ見出し風の行
+        let src = "**目的**：\n通知を減らす\n【背景】\n問い合わせが多い\n";
+        assert_eq!(sentence_break_heads(src), ["通知を", "問い合"]);
+        // 引用の中でも同じ
+        let src = "> 手順:\n> ・保存する\n";
+        assert_eq!(sentence_break_heads(src), ["・保存"]);
+    }
+
+    #[test]
+    fn wrapped_prose_and_decimals_do_not_break_sentences() {
+        // 読点・助詞で折り返した本文と、小数で始まる行
+        let src = "測った結果は、\n平均して\n3.5 倍に速くなった。値は\n１２．５ だった。\n";
+        assert!(sentence_break_heads(src).is_empty());
     }
 
     #[test]
@@ -485,12 +653,236 @@ mod tests {
         assert_eq!(b[0].text, "図は\u{FFFC}の通り。\u{FFFC}を見る。");
     }
 
+    /// ブロックを「種類:解析用テキスト」で並べる (P は段落、L はリスト項目、H2 は見出し 2)。
+    fn outline(src: &str) -> Vec<String> {
+        blocks(src)
+            .iter()
+            .map(|b| {
+                let kind = match b.kind {
+                    BlockKind::Paragraph => "P".to_string(),
+                    BlockKind::ListItem => "L".to_string(),
+                    BlockKind::TableCell => "T".to_string(),
+                    BlockKind::Heading(level) => format!("H{level}"),
+                };
+                format!("{kind}:{}", b.text)
+            })
+            .collect()
+    }
+
     #[test]
     fn skips_front_matter() {
         let src = "---\ntitle: と言えるでしょう\n---\n\n本文。\n";
         let b = blocks(src);
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].text, "本文。");
+    }
+
+    #[test]
+    fn front_matter_at_the_top_is_skipped_in_every_form() {
+        // YAML は --- か ... で閉じ、TOML は +++ で閉じる。CRLF でも、区切りの行の後ろに
+        // 空白があっても同じ。本文の位置は原文上の位置のまま
+        for src in [
+            "---\ntitle: と言えるでしょう\n---\n本文と言えるでしょう。\n",
+            "---\ntitle: と言えるでしょう\n...\n本文と言えるでしょう。\n",
+            "+++\ntitle = \"と言えるでしょう\"\n+++\n本文と言えるでしょう。\n",
+            "---\r\ntitle: と言えるでしょう\r\n---\r\n本文と言えるでしょう。\r\n",
+            "--- \t\ntitle: と言えるでしょう\n---  \n\n本文と言えるでしょう。\n",
+        ] {
+            let b = blocks(src);
+            assert_eq!(b.len(), 1, "{src:?}");
+            assert_eq!(b[0].text, "本文と言えるでしょう。", "{src:?}");
+            let pos = b[0].text.find("と言える").unwrap();
+            let span = b[0].to_source(pos..pos + "と言える".len());
+            assert_eq!(span.start, src.rfind("と言える").unwrap(), "{src:?}");
+            assert_eq!(&src[span.range()], "と言える");
+        }
+        // 閉じの行で文書が終わってもよい
+        assert!(blocks("---\ntitle: 表題\n---").is_empty());
+    }
+
+    /// 以前の解析 (pulldown-cmark のメタデータブロックの記法で front matter を飛ばす)。
+    fn parse_with_metadata_blocks(source: &str) -> (Vec<Block>, Vec<Directive>) {
+        let options = options()
+            | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+            | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
+        let mut builder = Builder::new(source);
+        for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+            builder.event(event, range);
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn front_matter_at_the_top_is_read_as_pulldown_cmark_did() {
+        // 1 行目から始まる front matter の判定と、その後ろの本文の読み方 (ブロック・位置・
+        // 抑制コメント) は、以前の pulldown-cmark のメタデータブロックと変わらない
+        for src in [
+            // front matter になる形とならない形
+            "---\ntitle: x\n---\n本文。\n",
+            "---\ntitle: x\n...\n本文。\n",
+            "+++\ntitle = 1\n+++\n本文。\n",
+            "+++\ntitle = 1\n...\n本文。\n",
+            "---\t \ntitle: x\n---   \n本文。\n",
+            "---\ntitle: x\n---\t\n本文。\n",
+            "---\ntitle: x\n----\n本文。\n",
+            "----\ntitle: x\n----\n本文。\n",
+            "--- x\ntitle: x\n---\n本文。\n",
+            " ---\ntitle: x\n---\n本文。\n",
+            "---\n---\n本文。\n",
+            "---\n\ntitle: x\n---\n本文。\n",
+            "---\n \t\ntitle: x\n---\n本文。\n",
+            "---\ntitle: x\n\n本文。\n",
+            "---\ntitle: x\n---",
+            "---\n",
+            "---",
+            // 改行が CRLF・CR だけ・閉じの行だけ CR
+            "---\r\ntitle: x\r\n---\r\n本文。\r\n",
+            "---\rtitle: x\r---\r本文。\r",
+            "---\ntitle: x\n---\r本文。\n",
+            // front matter の直後の Markdown
+            "---\na: b\n---\n[ref]: /url\n\n[ref]と言えるでしょう。\n",
+            "---\na: b\n---\n    code\n\n本文。\n",
+            "---\na: b\n---\n| A | B |\n|---|---|\n| 文 | 字 |\n",
+            "---\na: b\n---\n<!-- noslop-disable-next-line P01 -->\n本文と言えるでしょう。\n",
+            "---\na: b\n---\n本文[^1]。\n\n[^1]: 注の文。\n",
+            "---\na: b\n---\n- 項目。\n  続き。\n",
+        ] {
+            assert_eq!(
+                format!("{:#?}", parse(src)),
+                format!("{:#?}", parse_with_metadata_blocks(src)),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn body_after_front_matter_keeps_lines_and_columns() {
+        // BOM は Document が取り除くので、front matter は BOM の直後から始まる
+        let src =
+            "\u{FEFF}---\ntitle: 表題\ntags: [メモ]\n---\n\n# 見出し\n\n本文と言えるでしょう。\n";
+        let doc = crate::document::Document::markdown(src);
+        let texts: Vec<_> = doc.sentences.iter().map(|s| doc.sentence_text(s)).collect();
+        assert_eq!(texts, ["見出し", "本文と言えるでしょう。"]);
+        assert_eq!(doc.line_col(doc.sentences[0].span.start), (6, 3));
+        assert_eq!(doc.line_col(doc.sentences[1].span.start), (8, 1));
+        assert_eq!(
+            doc.file_offset(doc.sentences[1].span.start),
+            src.find("本文").unwrap()
+        );
+    }
+
+    #[test]
+    fn marker_lines_that_do_not_form_front_matter_are_read_as_markdown() {
+        // 閉じの行がない: 区切り線として読み、後ろは本文 (捨てない)
+        assert_eq!(
+            outline("---\ntitle: 表題\n\n本文。\n"),
+            ["P:title: 表題", "P:本文。"]
+        );
+        // 開きの次の行が空行: 区切り線。閉じのつもりの行は見出しの下線になる
+        assert_eq!(
+            outline("---\n\ntitle: 表題\n---\n\n本文。\n"),
+            ["H2:title: 表題", "P:本文。"]
+        );
+        // 1 行目から始まらない
+        assert_eq!(
+            outline("\n---\ntitle: 表題\n---\n\n本文。\n"),
+            ["H2:title: 表題", "P:本文。"]
+        );
+        // 中身がない、区切りが 4 字
+        assert_eq!(outline("---\n---\n本文。\n"), ["P:本文。"]);
+        assert_eq!(
+            outline("----\ntitle: 表題\n----\n\n本文。\n"),
+            ["H2:title: 表題", "P:本文。"]
+        );
+    }
+
+    #[test]
+    fn marker_lines_in_the_middle_do_not_swallow_the_body() {
+        // 以前は段落の直後でない --- の行から、次の --- か ... の行までをメタデータとして
+        // 捨てていた。閉じのつもりの --- の直前の行は、CommonMark のとおり見出しになる
+        let cases = [
+            (
+                "さて、一。\n\n---\nさて、二。\n\nさて、三。\n---\n\nさて、四。\n",
+                [
+                    "P:さて、一。",
+                    "P:さて、二。",
+                    "H2:さて、三。",
+                    "P:さて、四。",
+                ],
+            ),
+            // 1 つ目の --- の後に空行がある (以前から区切り線)
+            (
+                "さて、一。\n\n---\n\nさて、二。\n\nさて、三。\n---\n\nさて、四。\n",
+                [
+                    "P:さて、一。",
+                    "P:さて、二。",
+                    "H2:さて、三。",
+                    "P:さて、四。",
+                ],
+            ),
+            // 閉じの行がない
+            (
+                "さて、一。\n\n---\nさて、二。\n\nさて、三。\n\nさて、四。\n",
+                [
+                    "P:さて、一。",
+                    "P:さて、二。",
+                    "P:さて、三。",
+                    "P:さて、四。",
+                ],
+            ),
+            // ... の行で閉じる形 (... は段落の続き)
+            (
+                "さて、一。\n\n---\nさて、二。\n\nさて、三。\n...\n\nさて、四。\n",
+                [
+                    "P:さて、一。",
+                    "P:さて、二。",
+                    "P:さて、三。 ...",
+                    "P:さて、四。",
+                ],
+            ),
+            // リスト項目や見出しの直後の ---、TOML の +++ も同じ
+            (
+                "- 項目。\n---\nさて、二。\n\nさて、三。\n---\n\nさて、四。\n",
+                ["L:項目。", "P:さて、二。", "H2:さて、三。", "P:さて、四。"],
+            ),
+            (
+                "# 見出し\n---\nさて、二。\n\nさて、三。\n---\n\nさて、四。\n",
+                ["H1:見出し", "P:さて、二。", "H2:さて、三。", "P:さて、四。"],
+            ),
+            (
+                "さて、一。\n\n+++\nさて、二。\n\nさて、三。\n+++\n\nさて、四。\n",
+                [
+                    "P:さて、一。",
+                    "P:+++ さて、二。",
+                    "P:さて、三。 +++",
+                    "P:さて、四。",
+                ],
+            ),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(outline(src), expected, "{src:?}");
+            let b = blocks(src);
+            let last = b.last().unwrap();
+            assert_eq!(
+                &src[last.to_source(0..last.text.len()).range()],
+                "さて、四。"
+            );
+        }
+    }
+
+    #[test]
+    fn front_matter_is_skipped_only_at_the_top() {
+        let src =
+            "---\ntitle: さて、零。\n---\n\nさて、一。\n\n---\nさて、二。\n---\n\nさて、三。\n";
+        assert_eq!(
+            outline(src),
+            ["P:さて、一。", "H2:さて、二。", "P:さて、三。"]
+        );
+        let b = blocks(src);
+        assert_eq!(
+            &src[b[1].to_source(0..b[1].text.len()).range()],
+            "さて、二。"
+        );
     }
 
     #[test]

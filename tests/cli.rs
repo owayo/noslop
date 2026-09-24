@@ -541,6 +541,74 @@ fn json_offsets_count_a_leading_bom() {
     assert_eq!(start["column"], 4);
 }
 
+/// 設定ファイル (X01) と Markdown の文書 1 つを置いて検査し、X01 の指摘の
+/// (行, 列, ファイル上のオフセット) を返す。
+fn x01_positions(src: &str) -> Vec<(u64, u64, u64)> {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("noslop.toml"), CONFIG).unwrap();
+    fs::write(dir.path().join("doc.md"), src).unwrap();
+    let out = noslop()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json", "--only-rules", "X01", "doc.md"])
+        .output()
+        .unwrap();
+    json(&out.stdout)["files"][0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            let start = &d["range"]["start"];
+            let field = |key: &str| start[key].as_u64().unwrap();
+            (field("line"), field("column"), field("offset"))
+        })
+        .collect()
+}
+
+#[test]
+fn front_matter_at_the_top_is_skipped_and_positions_stay_exact() {
+    // front matter の中の「ユーザー様」は数えない (... で閉じる形なので、読んでしまうと
+    // 段落になって指摘が出る)。BOM の直後の front matter も先頭のものとして扱う
+    let src = "\u{FEFF}---\ntitle: ユーザー様の声\n...\n\n# 見出し\n\nこれはユーザー様の声です。\n";
+    let offset = src.rfind("ユーザー様").unwrap() as u64;
+    assert_eq!(x01_positions(src), [(7, 4, offset)]);
+}
+
+#[test]
+fn marker_lines_in_the_middle_are_not_front_matter() {
+    // 段落の直後でない --- の行から、次の --- か ... の行までが front matter として
+    // 検査から漏れていた。閉じのつもりの --- の直前の行 (1 つ目と 2 つ目の 6 行目) は
+    // 下線形式の見出しになるので、語句のルールは見ない
+    let cases = [
+        (
+            "一つ目はユーザー様の声です。\n\n---\n二つ目はユーザー様の声です。\n\n\
+             三つ目はユーザー様の声です。\n---\n\n四つ目はユーザー様の声です。\n",
+            vec![1, 4, 9],
+        ),
+        // 1 つ目の --- の後に空行がある
+        (
+            "一つ目はユーザー様の声です。\n\n---\n\n二つ目はユーザー様の声です。\n\n\
+             三つ目はユーザー様の声です。\n---\n\n四つ目はユーザー様の声です。\n",
+            vec![1, 5, 10],
+        ),
+        // 閉じの行がない
+        (
+            "一つ目はユーザー様の声です。\n\n---\n二つ目はユーザー様の声です。\n\n\
+             三つ目はユーザー様の声です。\n\n四つ目はユーザー様の声です。\n",
+            vec![1, 4, 6, 8],
+        ),
+        // ... の行で閉じる形
+        (
+            "一つ目はユーザー様の声です。\n\n---\n二つ目はユーザー様の声です。\n\n\
+             三つ目はユーザー様の声です。\n...\n\n四つ目はユーザー様の声です。\n",
+            vec![1, 4, 6, 9],
+        ),
+    ];
+    for (src, lines) in cases {
+        let found: Vec<u64> = x01_positions(src).iter().map(|p| p.0).collect();
+        assert_eq!(found, lines, "{src:?}");
+    }
+}
+
 #[test]
 fn directive_examples_inside_ordinary_comments_do_not_suppress() {
     let dir = tempfile::tempdir().unwrap();

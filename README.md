@@ -35,7 +35,7 @@ noslop works without a morphological-analysis dictionary. It judges text by char
 - **Dictionary optional**: runs as a single binary without loading any dictionary; with a hasami dictionary (`.hsd`), chains of 「の」 (P16) and kanji runs (P15) are judged by part of speech ([Morphological-analysis dictionary](#morphological-analysis-dictionary-optional))
 - **Calibrated thresholds**: only phrases and thresholds whose false-positive rates were measured on human and model-generated documents (7 models) are enabled by default; uncalibrated checks run only when you opt in as experimental rules
 - **Two lanes**: AI "slop" (`slop`) and reading-load hints (`readability`) are reported separately; only calibrated slop rules feed the naturalness score
-- **Markdown-aware**: skips code blocks, inline code, URLs and front matter, and tells headings, lists, tables and quotes apart
+- **Markdown-aware**: skips code blocks, inline code, URLs and front matter at the top of the document (YAML `---` or TOML `+++`), and tells headings, lists, tables and quotes apart. A `---` further down is read as a thematic break or a heading underline, so no text is dropped
 - **Bracket-aware sentence splitting**: uses the dictionary-free splitter of the morphological analyzer [hasami](https://github.com/owayo/hasami); it never splits at a full stop inside 「」 or （）, an unclosed bracket does not swallow the following sentences, and words that contain sentence-ending marks such as `Yahoo!ニュース` stay whole
 - **Records your decisions**: write why you keep a flagged spot, e.g. `<!-- noslop-disable-next-line P01 -- quoted remark -->`
 - **CI-friendly output**: colored text, JSON with a stable schema and GitHub Actions annotations; by default it never fails the job
