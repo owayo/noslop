@@ -4,7 +4,12 @@
 //! 独自ルール (`X01`) と `--only-rules` を使う。
 
 use std::fs;
-use std::path::Path;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -1275,4 +1280,273 @@ fn dictionary_settings_are_checked_and_auto_falls_back() {
     let v = json(&out.stdout);
     assert_eq!(v["settings"]["morphology"]["method"], "dictionary");
     assert_eq!(rule_count(&v, "P16"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 配布辞書の取得 (noslop dict)
+// ---------------------------------------------------------------------------
+
+/// リポジトリに同梱した辞書 (hasami の配布辞書 ipadic と同じもの)。
+fn bundled_dictionary() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("dict")
+        .join("ipadic.hsd")
+}
+
+/// プロキシの環境変数を外した noslop (通信は 127.0.0.1 のテスト用のサーバーとだけ行う)。
+fn noslop_offline() -> Command {
+    let mut cmd = noslop();
+    for var in [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+/// `/ipadic.hsd` への GET に `body` を返す (ほかは 404) テスト用の HTTP サーバー。URL と、受けた
+/// 要求の数を返す。
+fn serve_dictionary(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&requests);
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            count.fetch_add(1, Ordering::SeqCst);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            let _ = reader.read_line(&mut request_line);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if line == "\r\n" => break,
+                    Ok(_) => {}
+                }
+            }
+            let (status, body) = if request_line.starts_with("GET /ipadic.hsd ") {
+                ("200 OK", &body[..])
+            } else {
+                ("404 Not Found", &[][..])
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream
+                .write_all(head.as_bytes())
+                .and_then(|()| stream.write_all(body));
+        }
+    });
+    (url, requests)
+}
+
+/// `dict list` の表で、名前が `name` の行。
+fn dictionary_row<'a>(stdout: &'a str, name: &str) -> &'a str {
+    stdout
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(name))
+        .unwrap_or_else(|| panic!("{name} の行がない:\n{stdout}"))
+}
+
+/// ディレクトリに残った一時ファイル。
+fn partial_files(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".part"))
+        .collect()
+}
+
+#[test]
+fn dict_list_shows_whether_each_dictionary_is_downloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = || {
+        let out = noslop()
+            .args(["dict", "list", "--dir"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let stdout = list();
+    for name in ["ipadic", "ipadic-neologd", "ipadic-neologd-sudachi"] {
+        assert!(dictionary_row(&stdout, name).contains("未取得"), "{stdout}");
+    }
+
+    // 同梱の辞書は配布辞書の ipadic と同じなので、写せば取得済みになる
+    fs::copy(bundled_dictionary(), dir.path().join("ipadic.hsd")).unwrap();
+    let stdout = list();
+    assert!(
+        dictionary_row(&stdout, "ipadic").contains("取得済み (大きさと SHA-256 を確かめました)"),
+        "{stdout}"
+    );
+    assert!(dictionary_row(&stdout, "ipadic-neologd").contains("未取得"));
+}
+
+#[test]
+fn dict_download_fetches_and_verifies_a_dictionary_once() {
+    let expected = fs::read(bundled_dictionary()).unwrap();
+    let (url, requests) = serve_dictionary(expected.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let download = || {
+        noslop_offline()
+            .args(["dict", "download", "ipadic", "--dir"])
+            .arg(dir.path())
+            .args(["--source", &url])
+            .assert()
+    };
+    // 標準エラーは端末ではないので、受信の進み具合は出さない
+    download()
+        .code(0)
+        .stdout(predicate::str::contains(
+            "ipadic (18.1 MB) を取得しています: ",
+        ))
+        .stdout(predicate::str::contains(
+            "ipadic を取得しました (大きさ・SHA-256・辞書の形式を確かめました): ",
+        ))
+        .stdout(predicate::str::contains(
+            "--dict にこのファイルのパスを指定",
+        ))
+        .stderr(predicate::str::is_empty());
+    assert_eq!(fs::read(dir.path().join("ipadic.hsd")).unwrap(), expected);
+    assert!(partial_files(dir.path()).is_empty());
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    // 取得済みなら通信しない
+    download()
+        .code(0)
+        .stdout(predicate::str::contains(
+            "ipadic は取得済みです (大きさと SHA-256 を確かめました): ",
+        ))
+        .stdout(predicate::str::contains("を取得しています").not());
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    // 保存先を省くと share ディレクトリ ($XDG_DATA_HOME/hasami) に置き、share:<名前> を案内する
+    let data = tempfile::tempdir().unwrap();
+    noslop_offline()
+        .env("XDG_DATA_HOME", data.path())
+        .args(["dict", "download", "ipadic", "--source", &url])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains(
+            "使うときは --dict share:ipadic か、noslop.toml の [morphology] に dictionary = \"share:ipadic\" を書いてください",
+        ));
+    let placed = data.path().join("hasami").join("ipadic.hsd");
+    assert_eq!(fs::read(&placed).unwrap(), expected);
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn dict_download_rejects_unknown_names_and_failed_downloads() {
+    noslop()
+        .args(["dict", "download", "unidic"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("ipadic-neologd-sudachi"));
+
+    // 取得元にない辞書 (サーバーは ipadic だけを配る)
+    let (url, requests) = serve_dictionary(Vec::new());
+    let dir = tempfile::tempdir().unwrap();
+    noslop_offline()
+        .args(["dict", "download", "ipadic-neologd", "--dir"])
+        .arg(dir.path())
+        .args(["--source", &url])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("HTTP 404"));
+    // 中身の違うものは置かない (大きさが合わない)
+    noslop_offline()
+        .args(["dict", "download", "ipadic", "--dir"])
+        .arg(dir.path())
+        .args(["--source", &url])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("大きさが違います"));
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert!(!dir.path().join("ipadic-neologd.hsd").exists());
+    assert!(!dir.path().join("ipadic.hsd").exists());
+    assert!(partial_files(dir.path()).is_empty());
+}
+
+#[test]
+fn share_specs_point_to_the_share_directory() {
+    let data = tempfile::tempdir().unwrap();
+    let doc = data.path().join("doc.md");
+    fs::write(&doc, DOC_NO_CHAIN).unwrap();
+    let check = || {
+        let mut cmd = noslop();
+        cmd.env_remove("HASAMI_DICT")
+            .env("XDG_DATA_HOME", data.path())
+            .args([
+                "check",
+                "--no-config",
+                "--only-rules",
+                "P16",
+                "--format",
+                "json",
+                "--dict",
+                "share:ipadic",
+            ])
+            .arg(&doc);
+        cmd
+    };
+
+    // まだ取得していなければ、取得のコマンドを案内する
+    check()
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("share:ipadic の辞書がありません"))
+        .stderr(predicate::str::contains("`noslop dict download ipadic`"));
+
+    let placed = data.path().join("hasami").join("ipadic.hsd");
+    fs::create_dir_all(placed.parent().unwrap()).unwrap();
+    fs::copy(bundled_dictionary(), &placed).unwrap();
+    let out = check().output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = json(&out.stdout);
+    let morphology = &v["settings"]["morphology"];
+    assert_eq!(morphology["method"], "dictionary");
+    assert_eq!(morphology["dictionary"]["name"], "ipadic");
+    assert_eq!(morphology["dictionary"]["source"], "file");
+    assert_eq!(
+        morphology["dictionary"]["path"].as_str(),
+        placed.to_str(),
+        "share:<名前> は share ディレクトリのファイルに直す"
+    );
+    assert_eq!(rule_count(&v, "P16"), 1);
+
+    // 設定ファイルの share:<名前> も、設定ファイルのディレクトリ基準のパスにしない
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("noslop.toml"),
+        "[morphology]\ndictionary = \"share:ipadic\"\n",
+    )
+    .unwrap();
+    let out = noslop()
+        .env_remove("HASAMI_DICT")
+        .env("XDG_DATA_HOME", data.path())
+        .current_dir(project.path())
+        .args(["check", "--only-rules", "P16", "--format", "json"])
+        .arg(&doc)
+        .output()
+        .unwrap();
+    let v = json(&out.stdout);
+    assert_eq!(
+        v["settings"]["morphology"]["dictionary"]["path"].as_str(),
+        placed.to_str()
+    );
 }

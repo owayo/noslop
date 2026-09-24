@@ -531,8 +531,14 @@ fn receive(
             status: status.as_u16(),
         }));
     }
-    // 大きさが違うと分かっていれば、本体を読まずにやめる
-    if let Some(actual) = response.body().content_length()
+    // 大きさが違うと分かっていれば、本体を読まずにやめる。ヘッダーを直に読む (ureq は
+    // `Content-Length: 0` を本体なしとみなし、Body::content_length では None を返すため)
+    let declared = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    if let Some(actual) = declared
         && actual != dict.size
     {
         return Err(http(DownloadError::ContentLength {
@@ -1087,6 +1093,10 @@ mod tests {
             |e| matches!(e, DownloadError::ContentLength { actual, .. } if *actual == dict.size + 10),
         );
         assert!(message.contains("Content-Length"), "{message}");
+        // Content-Length: 0 (ureq は本体なしとみなす) も、大きさの違いとして報告する
+        assert_fails_and_leaves_nothing(&dict, Reply::Status(200, "OK"), |e| {
+            matches!(e, DownloadError::ContentLength { actual: 0, .. })
+        });
     }
 
     #[test]
@@ -1099,8 +1109,9 @@ mod tests {
             });
         assert!(message.contains("HTTP 404"), "{message}");
         assert!(message.contains("/test.hsd"), "{message}");
-        assert_fails_and_leaves_nothing(&dict, Reply::Status(301, "Moved Permanently"), |e| {
-            matches!(e, DownloadError::Status { status: 301, .. })
+        // ureq がたどらない 3xx も失敗にする (既定では成功として返ってくる)
+        assert_fails_and_leaves_nothing(&dict, Reply::Status(304, "Not Modified"), |e| {
+            matches!(e, DownloadError::Status { status: 304, .. })
         });
     }
 
