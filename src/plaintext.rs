@@ -250,6 +250,8 @@ impl Draft {
             in_quote: false,
             in_footnote: false,
             line_breaks: self.line_breaks,
+            // 箇条書きの行は、行ごとに別のブロックにしてある
+            sentence_breaks: Vec::new(),
             marks: Vec::new(),
             sentences: 0..0,
         }

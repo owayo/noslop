@@ -71,7 +71,7 @@ flowchart TD
 | `src/skill.rs`・`skills/SKILL.md` | `noslop skill-install`。`skills/SKILL.md` をバイナリに埋め込み、`~/.claude/skills/noslop/` か `~/.codex/skills/noslop/` に書く。`make install` もバイナリを入れたあとに両方へ入れる (`SKILL_TARGETS` で選ぶ)。CLI の使い方を変えたら SKILL.md も直す (本文に `$` の直後の数字や `$ARGUMENTS` を書かない。スキルの引数に置き換わる) |
 | `src/heading.rs` | 見出しの形 (コロン型・問い型・番号型) の分類。S07 と `noslop diff` で共有する |
 | `src/document.rs` | 文書モデル。解析用テキストと原文の対応 (`TextMap`)、行・列 (`LineIndex`) |
-| `src/markdown.rs` | Markdown をブロック (段落・リスト項目・見出し・表セル) に分け、コード・URL・装飾を解析用テキストから外す |
+| `src/markdown.rs` | Markdown をブロック (段落・リスト項目・見出し・表セル) に分け、コード・URL・装飾を解析用テキストから外す。front matter は文書の先頭のものだけを自前で見つけて解析から外す (pulldown-cmark のメタデータブロックの記法は文書の途中の `---` にも当たって本文を捨てるので、有効にしない) |
 | `src/plaintext.rs` | テキストをブロックに分ける (空行・字下げ・箇条書き記号。空行がほとんどない文書は 1 行 1 段落とみなし、文末記号のない短い 1 行は見出しと推定する。コメントだけの行は段落を切らない) |
 | `src/segment.rs` | 文分割。`hasami::sentence` への橋渡し (括弧の対応を取ってから、対応の取れた括弧の内側と例外表の語の内側では分割しない)。改行を文の区切りにするモードでは、`line_breaks` の位置を改行とみなして分割する (`split_with_breaks`)。組み込みの例外表の版 (`BUILTIN_EXCEPTIONS_VERSION`) をテストで固定し、表が変わったら気付けるようにしている |
 | `src/directive.rs` | `<!-- noslop-... -->` の読み取り |

@@ -49,20 +49,30 @@ static SPLITTER: LazyLock<Splitter> = LazyLock::new(Splitter::default);
 /// テキストを文に分割する。
 ///
 /// `line_breaks` は原文の改行があった位置 (バイトオフセット)。`mode` が
-/// [`LineBreakMode::Sentence`] のときだけ、括弧の外側にある改行を文の区切りにする。
-pub fn split(text: &str, line_breaks: &[usize], mode: LineBreakMode) -> Vec<Piece> {
-    let sentences = match mode {
-        LineBreakMode::Space => SPLITTER.split(text),
-        LineBreakMode::Sentence => {
-            // 文書モデルが作る位置は文字の境界にあるが、hasami は境界でない位置で panic するので、
-            // 崩れていても分割を止めないよう読み飛ばす
-            let breaks: Vec<usize> = line_breaks
-                .iter()
-                .copied()
-                .filter(|&at| text.is_char_boundary(at))
-                .collect();
-            SPLITTER.split_with_breaks(text, &breaks)
-        }
+/// [`LineBreakMode::Sentence`] のときは、括弧の外側にある改行をすべて文の区切りにする。
+/// `sentence_breaks` は、書式から文の区切りと分かる改行 (1 行 1 項目の箇条書きなど) の位置で、
+/// `mode` によらず括弧の外側なら文の区切りにする。
+pub fn split(
+    text: &str,
+    line_breaks: &[usize],
+    sentence_breaks: &[usize],
+    mode: LineBreakMode,
+) -> Vec<Piece> {
+    let breaks = match mode {
+        LineBreakMode::Space => sentence_breaks,
+        LineBreakMode::Sentence => line_breaks,
+    };
+    let sentences = if breaks.is_empty() {
+        SPLITTER.split(text)
+    } else {
+        // 文書モデルが作る位置は文字の境界にあるが、hasami は境界でない位置で panic するので、
+        // 崩れていても分割を止めないよう読み飛ばす
+        let breaks: Vec<usize> = breaks
+            .iter()
+            .copied()
+            .filter(|&at| text.is_char_boundary(at))
+            .collect();
+        SPLITTER.split_with_breaks(text, &breaks)
     };
     sentences
         .into_iter()
@@ -78,14 +88,14 @@ mod tests {
     use super::*;
 
     fn texts(text: &str) -> Vec<&str> {
-        split(text, &[], LineBreakMode::Space)
+        split(text, &[], &[], LineBreakMode::Space)
             .into_iter()
             .map(|p| &text[p.range])
             .collect()
     }
 
     fn texts_with<'a>(text: &'a str, line_breaks: &[usize], mode: LineBreakMode) -> Vec<&'a str> {
-        split(text, line_breaks, mode)
+        split(text, line_breaks, &[], mode)
             .into_iter()
             .map(|p| &text[p.range])
             .collect()
@@ -124,6 +134,7 @@ mod tests {
         let pieces = split(
             "彼は「行こう。」と言った。そうだ。",
             &[],
+            &[],
             LineBreakMode::Space,
         );
         assert!(pieces[0].embedded_enders);
@@ -134,6 +145,7 @@ mod tests {
     fn question_mark_of_a_url_in_brackets_is_not_an_embedded_ender() {
         let pieces = split(
             "資料（https://example.com/?q=1）を読む。",
+            &[],
             &[],
             LineBreakMode::Space,
         );
@@ -200,6 +212,20 @@ mod tests {
     }
 
     #[test]
+    fn sentence_breaks_split_whatever_the_line_break_mode() {
+        // 1 行 1 項目の箇条書き: 書式から分かる区切りは、改行をつなぐ設定でも切る
+        let text = "目的は次のとおり・通知を減らす・応答を速くする";
+        let item1 = text.find("・通知").unwrap();
+        let item2 = text.find("・応答").unwrap();
+        let pieces = split(text, &[item1, item2], &[item1, item2], LineBreakMode::Space);
+        let got: Vec<&str> = pieces.iter().map(|p| &text[p.range.clone()]).collect();
+        assert_eq!(
+            got,
+            vec!["目的は次のとおり", "・通知を減らす", "・応答を速くする"]
+        );
+    }
+
+    #[test]
     fn line_breaks_inside_brackets_do_not_split() {
         let text = "「前半を書いて後半を書く」と言った";
         let lb = [text.find("後半").unwrap()];
@@ -234,7 +260,7 @@ mod tests {
     fn many_unmatched_brackets_are_handled_in_linear_time() {
         // 開き括弧が大量に残ったまま、対応しない閉じ括弧が大量に続く
         let text = format!("{}{}。次の文。", "(".repeat(50_000), "]".repeat(50_000));
-        let pieces = split(&text, &[], LineBreakMode::Space);
+        let pieces = split(&text, &[], &[], LineBreakMode::Space);
         assert_eq!(pieces.len(), 2);
         assert!(!pieces[0].embedded_enders);
 

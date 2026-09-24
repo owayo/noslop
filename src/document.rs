@@ -182,6 +182,9 @@ pub struct Block {
     pub in_footnote: bool,
     /// 原文の改行 (ソフト改行・ハード改行) があった解析用テキスト上の位置。
     pub line_breaks: Vec<usize>,
+    /// 原文の改行のうち、書式から文の区切りと分かるものの位置 (`line_breaks` の一部)。
+    /// 1 行 1 項目で書いた箇条書きやラベルの行の後の改行で、改行の扱いの設定によらず文を切る。
+    pub sentence_breaks: Vec<usize>,
     /// インライン装飾。
     pub marks: Vec<InlineMark>,
     /// このブロックに属する文 ([`Document::sentences`] の添字範囲)。
@@ -355,7 +358,12 @@ impl Document {
         let mut sentences = Vec::new();
         for (idx, block) in blocks.iter_mut().enumerate() {
             let begin = sentences.len();
-            for piece in segment::split(&block.text, &block.line_breaks, options.line_breaks) {
+            for piece in segment::split(
+                &block.text,
+                &block.line_breaks,
+                &block.sentence_breaks,
+                options.line_breaks,
+            ) {
                 let span = block.to_source(piece.range.clone());
                 let body = &block.text[piece.range.clone()];
                 sentences.push(Sentence {
