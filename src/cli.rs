@@ -104,7 +104,7 @@ pub struct EngineArgs {
     /// 実験的な (未校正の) ルールと語句もすべて動かす
     #[arg(long)]
     pub experimental: bool,
-    /// 読解負荷のルールを止める
+    /// 読みやすさのルールを止める
     #[arg(long)]
     pub no_readability: bool,
     /// 語句ルールをリスト・表・引用にも当てる
@@ -263,7 +263,7 @@ pub struct ClaudeCodeArgs {
     /// 1 ルールあたりに返す箇所の上限
     #[arg(long, default_value_t = 3, value_parser = parse_limit, value_name = "N")]
     pub brief_limit: usize,
-    /// 読解負荷 (読みやすさ) の指摘も返す
+    /// 読みやすさの指摘も返す
     #[arg(long)]
     pub include_readability: bool,
     /// 実験的な (未校正の) ルールと語句も動かす
@@ -901,12 +901,13 @@ fn listing_engine(
     Engine::new(options)
 }
 
-fn lane_label(lane: Lane) -> &'static str {
-    match lane {
-        Lane::Slop => "AI 臭さ (自然度スコアに入る)",
-        Lane::Readability => "読解負荷 (スコアに入らない)",
-        Lane::Custom => "独自ルール (スコアに入らない)",
-    }
+/// explain と `rules --format markdown` に出すレーン (呼び名は [`Lane::label_ja`] にそろえる)。
+fn lane_label(lane: Lane) -> String {
+    let score = match lane {
+        Lane::Slop => "自然度スコアに入る",
+        Lane::Readability | Lane::Custom => "自然度スコアに入らない",
+    };
+    format!("{} ({score})", lane.label_ja())
 }
 
 fn status_label(status: RuleStatus) -> &'static str {
@@ -1440,6 +1441,19 @@ mod tests {
         assert!(explain_text(&engine, r05).contains("校正の基準  : 重大の指摘で数えた誤検知率"));
         let s01 = engine.find("S01").unwrap();
         assert!(!explain_text(&engine, s01).contains("校正の基準"));
+    }
+
+    #[test]
+    fn lanes_are_called_by_the_same_names_as_in_the_findings() {
+        assert_eq!(lane_label(Lane::Slop), "AI 臭さ (自然度スコアに入る)");
+        assert_eq!(
+            lane_label(Lane::Readability),
+            "読みやすさ (自然度スコアに入らない)"
+        );
+        assert_eq!(
+            lane_label(Lane::Custom),
+            "独自ルール (自然度スコアに入らない)"
+        );
     }
 
     #[test]

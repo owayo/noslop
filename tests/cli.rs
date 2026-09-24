@@ -203,7 +203,7 @@ fn github_output_emits_annotations() {
         .assert()
         .code(0)
         .stdout(predicate::str::starts_with(
-            "::warning file=docs/guide.md,line=3,col=7,endLine=3,endColumn=12,title=X01 TEAM_TERM::「ユーザー様」ではなく「利用者」と書きます%0A💡 用語集の表記に合わせてください",
+            "::warning file=docs/guide.md,line=3,col=7,endLine=3,endColumn=12,title=[独自ルール] X01 TEAM_TERM::「ユーザー様」ではなく「利用者」と書きます%0A💡 用語集の表記に合わせてください",
         ));
 }
 

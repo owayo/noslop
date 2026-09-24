@@ -6,7 +6,7 @@
 //! 2. CLI の明示 (`--ignore-rules` / `--enable-rules`) があればそれに従う。同じ層では無効が優先
 //! 3. 設定ファイルの明示 (`[rules] disable` / `enable`、`[rules.X] enabled`) があればそれに従う。
 //!    同じ層では無効が優先。CLI の明示は設定より優先する
-//! 4. どれもなければ既定: `--no-readability` なら読解負荷レーンは止め、それ以外は
+//! 4. どれもなければ既定: `--no-readability` なら読みやすさのレーンは止め、それ以外は
 //!    「校正済み (stable) か `--experimental`」かつ「そのジャンルで既定で動かすルール」なら動かす
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -744,7 +744,7 @@ pub(crate) mod tests {
             experimental: true,
             ..Default::default()
         });
-        // 100 字以上の文書に stable の T01 (warning) が 1 件、実験的な T02 と読解負荷の T03 が 1 件ずつ
+        // 100 字以上の文書に stable の T01 (warning) が 1 件、実験的な T02 と読みやすさのレーンの T03 が 1 件ずつ
         let filler = "これは十分な長さの文章を作るための文です。".repeat(6);
         let src = format!("{filler}\n\nそれは言えるでしょう。様々な上限の設定の検討。\n");
         let report = e.lint(Document::markdown(src));

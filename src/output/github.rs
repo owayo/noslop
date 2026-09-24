@@ -1,9 +1,10 @@
 //! GitHub Actions のワークフローコマンド (注釈) 形式。
 //!
-//! `::warning file=docs/a.md,line=3,col=4,endLine=3,endColumn=11,title=P01 AI_CONCLUSION::メッセージ`
+//! `::warning file=docs/a.md,line=3,col=4,endLine=3,endColumn=11,title=[AI 臭さ] P01 AI_CONCLUSION::メッセージ`
 //!
 //! 重大度は error → `error`、warning → `warning`、info → `notice` に対応させる。
-//! 抑制した指摘は出さない。
+//! 注釈の見出し (`title`) には、ルール ID の前にレーン名 (`[AI 臭さ]`・`[読みやすさ]`・
+//! `[独自ルール]`) を付ける。抑制した指摘は出さない。
 
 use std::io::{self, Write};
 
@@ -37,7 +38,12 @@ pub fn render(report: &RunReport, out: &mut dyn Write) -> io::Result<()> {
         for d in file.visible() {
             let (line, col) = file.doc.line_col(d.span.start);
             let (end_line, end_col) = file.doc.line_col(d.span.end);
-            let title = escape_property(&format!("{} {}", d.rule_id, d.rule_name));
+            let title = escape_property(&format!(
+                "[{}] {} {}",
+                d.lane.label_ja(),
+                d.rule_id,
+                d.rule_name
+            ));
             let mut message = d.message.clone();
             if let Some(hint) = &d.hint {
                 message.push('\n');
@@ -82,17 +88,23 @@ mod tests {
                 .unwrap();
         let mut report = RunReport::default();
         report.files.push(engine.lint(Document::markdown(
-            "これは言えるでしょう。\n\n<!-- noslop-disable-next-line -->\nそれも言えるでしょう。\n",
+            "これは言えるでしょう。上限の設定の検討をする。\n\n<!-- noslop-disable-next-line -->\nそれも言えるでしょう。\n",
         )));
         let mut buf = Vec::new();
         render(&report, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         let lines: Vec<_> = s.lines().collect();
-        assert_eq!(lines.len(), 1, "{s}");
+        assert_eq!(lines.len(), 2, "{s}");
         assert!(
             lines[0].starts_with(
-                "::warning file=<input>.md,line=1,col=4,endLine=1,endColumn=11,title=T01 STABLE_SLOP::"
+                "::warning file=<input>.md,line=1,col=4,endLine=1,endColumn=11,title=[AI 臭さ] T01 STABLE_SLOP::"
             ),
+            "{s}"
+        );
+        // どのレーンでも見出しにレーン名を付ける
+        assert!(
+            lines[1].starts_with("::notice file=<input>.md,line=1,")
+                && lines[1].contains(",title=[読みやすさ] T03 READABILITY::"),
             "{s}"
         );
     }

@@ -8,7 +8,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 - 文字種・語句パターン・文長の統計で判定する。品詞で数えるルール (P15・P16) は、バイナリに同梱した hasami の IPAdic の辞書 (`dict/ipadic.hsd`) で、元の校正と同じ条件で判定する (`morph.rs`)。`--no-dict` や同梱しないビルドでは辞書なしの近似で動く
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
-- AI 臭さ (`slop`) と読解負荷 (`readability`) の 2 つのレーンを混ぜない。自然度スコアに入るのは stable な slop だけ
+- AI 臭さ (`slop`) と読みやすさ (`readability`) の 2 つのレーンを混ぜない。自然度スコアに入るのは stable な slop だけ
 
 ## 技術スタック
 
@@ -63,7 +63,7 @@ flowchart TD
 | `src/morph.rs` | 形態素解析。`[morphology]`・`--dict`・`--no-dict` から辞書を決めて読み込む (`resolve`)。探す順は、明示のパス → `HASAMI_DICT` → 同梱の辞書 (`~/.local/share/hasami` は探さない。同梱しないビルドでは hasami の既定の場所を探し、`auto` で見つからなければ辞書なし)。指定した辞書が読めなければエラーにし、同梱の辞書に切り替えない。同梱の辞書はプロセスで 1 度だけ読んで共有する (`Morphology::bundled`)。文書ごとの解析器で、ルールが求めた文だけを解析して覚えておく。使った方式 (`MorphologyStatus`) は出力の `settings` に載る |
 | `src/suppress.rs` | 抑制コメントを診断に当てる。未知のルール名は警告にする |
 | `src/score.rs` | 自然度スコア (算式の版を持つ) |
-| `src/output/` | text (色付き)・json (安定スキーマ)・toon (JSON と同じデータを TOON で。符号化は `toon-format` クレート)・github (ワークフローコマンド、エスケープは出力器の責務)・brief (AI や編集者に渡す改稿指示。`Brief` のデータを組み立て、Markdown・JSON・TOON に描き分ける。データはルールの表と該当箇所の表に分け、TOON の表形式が効くようにしている) |
+| `src/output/` | text (色付き。ファイルの中をレーンごとの節に分け、要約もレーンごとに数える)・json (安定スキーマ)・toon (JSON と同じデータを TOON で。符号化は `toon-format` クレート)・github (ワークフローコマンド、エスケープは出力器の責務)・brief (AI や編集者に渡す改稿指示。`Brief` のデータを組み立て、Markdown・JSON・TOON に描き分ける。データはルールの表と該当箇所の表に分け、TOON の表形式が効くようにしている) |
 | `src/diff/` | `noslop diff`。指摘の突き合わせ (`mod.rs`、fingerprint を多重集合で)、事実の消失と追加 (`facts.rs`)、改稿の偏り (`shifts.rs`)、出力 (`render.rs`) |
 | `src/calibrate.rs` | `noslop calibrate`。人の文書と生成文書で、ルールごとの誤検知率・検出率、`Rule::measure` による閾値の掃引、昇格候補と見直しを出す (手順は `docs/calibration.md`) |
 | `src/mcp.rs` | `noslop mcp`。標準入出力の JSON-RPC で `check` / `diff` / `explain` / `rules` を提供する。`check` は `report` (既定 `brief`) と `format` (`markdown`・`json`・`toon`) で返すものを選ぶ (版の扱いは `docs/integrations.md`) |
@@ -79,7 +79,7 @@ flowchart TD
 | `src/genre.rs` | ジャンルと別名 |
 | `src/diagnostic.rs` | 診断・重大度・レーン・ステータス・原文上の範囲 |
 | `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |
-| `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/reading.rs` が読解負荷 (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
+| `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
 | `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas) |
 | `src/rules/structure.rs` | 構造系 (`S01`〜`S10`) |
 | `src/rules/custom.rs` | 設定ファイルの独自ルール (`[[custom]]`) |
@@ -150,6 +150,12 @@ mise exec -- make docs             # docs/rules.md を作り直す
 - テスト用の文章は、実在の文書や既存の資料を写さずに自分で書く
 - CI には形態素解析の辞書がない。辞書ありの判定のテストは hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする。同梱の辞書に依るテストは `cfg(feature = "bundled-dict")` で分け、同梱しないビルドも `mise exec -- cargo test --no-default-features` で確かめる
 - Rust の文字列の行継続 (`\`) は次の行の先頭の空白を消す。説明文を数字や `(` の前で折り返すときは、`\` の前に空白を入れる (「90 字台から 100 字」のように、数字の前後の空白が落ちるため)
+
+## 利用者に見せる文言
+
+- 出力・ヘルプ・ルールの説明文・ドキュメントでは、レーンを「AI 臭さ」「読みやすさ」「独自ルール」(`Lane::label_ja`) と呼ぶ。内部の ID (`slop` / `readability` / `custom`)、JSON のフィールド、オプション名 (`--no-readability` など) はそのまま使う
+- 1 件ずつの指摘は、どのレーンでも「指摘」と呼ぶ。数えるときは「読みやすさの指摘 13 件」のように「〜の指摘」を付ける (「読みやすさ 13 件」だけでは、読みやすい点が 13 あるという良い評価にも読める)。レーンやルールそのものを指すときは「読みやすさのレーン」「読みやすさのルール」のように「〜の」でつなぐ
+- 「指さし」「読解負荷」のような別の呼び方を作らない。出力ごとに呼び名が違うと、要約の件数と一覧の指摘が対応しなくなる
 
 ## 公開リポジトリとしての注意
 

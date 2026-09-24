@@ -3,10 +3,10 @@
 //! ```text
 //! 🔁 draft.md → draft-v2.md
 //!   自然度 58/100 (要修正) → 81/100 (良好)
-//!   指摘: 新規 1・解消 4・継続 2・抑制して残した 0
+//!   指摘: 新規 1・書き換えても残った 0・解消 4・継続 2・抑制して残した 0
 //!
 //! 新しく出た指摘 (1 件。優先して確認してください)
-//!   12:5  警告  P03 AI_CONJUNCTION
+//!   12:5  警告  [AI 臭さ]  P03 AI_CONJUNCTION
 //!     「さらに」で文をつないでいます
 //!     │ さらに、手順を見直した。
 //!
@@ -28,7 +28,7 @@ use std::io::{self, Write};
 use anstyle::{AnsiColor, Style};
 use serde::Serialize;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, RuleStatus, Severity, Span};
 use crate::document::Document;
 use crate::engine::FileReport;
 use crate::output::json::{COLUMN_UNIT, DiagnosticEntry, Range, ScoreEntry, Tool, format_name};
@@ -244,7 +244,9 @@ pub fn render_text(report: &DiffReport, out: &mut dyn Write) -> io::Result<()> {
 
 /// 指摘 1 件を、位置の行と抜粋で書く。`detailed` なら説明と直し方の案も書く。
 ///
-/// `prefix` は位置の前 (`前 ` など)、`suffix` は見出し行の末尾に付ける。
+/// 見出し行は `12:5  警告  [AI 臭さ]  P03 AI_CONJUNCTION` の形で、どのレーンでも重大度の
+/// 隣にレーン名を出す (`noslop check` の端末出力と同じ呼び名)。実験的なら末尾に淡色で
+/// `[実験的]` を付ける。`prefix` は位置の前 (`前 ` など)、`suffix` は見出し行の末尾に付ける。
 fn write_diagnostic(
     doc: &Document,
     d: &Diagnostic,
@@ -257,22 +259,14 @@ fn write_diagnostic(
     let (b, dm, sev) = (bold(), dim(), severity_style(d.severity));
     write!(
         out,
-        "  {dm}{prefix}{line}:{col}{dm:#}  {sev}{}{sev:#}  {b}{}{b:#} {}",
+        "  {dm}{prefix}{line}:{col}{dm:#}  {sev}{}{sev:#}  [{}]  {b}{}{b:#} {}",
         d.severity.label_ja(),
+        d.lane.label_ja(),
         d.rule_id,
         d.rule_name
     )?;
-    let mut tags = Vec::new();
-    match d.lane {
-        Lane::Readability => tags.push("読解負荷"),
-        Lane::Custom => tags.push("独自"),
-        Lane::Slop => {}
-    }
     if d.status == RuleStatus::Experimental {
-        tags.push("実験的");
-    }
-    for tag in tags {
-        write!(out, " {dm}[{tag}]{dm:#}")?;
+        write!(out, " {dm}[実験的]{dm:#}")?;
     }
     writeln!(out, "{suffix}")?;
     if detailed {
@@ -529,6 +523,7 @@ fn build(report: &DiffReport) -> Report<'_> {
 mod tests {
     use super::*;
     use crate::config::CustomRuleConfig;
+    use crate::diagnostic::Lane;
     use crate::diff::{compare, lint_pair};
     use crate::document::SourceFormat;
     use crate::engine::{Engine, EngineOptions, Input};
@@ -607,11 +602,11 @@ mod tests {
             "🔁 before.md → after.md",
             "指摘: 新規 1・書き換えても残った 1・解消 1・継続 0・抑制して残した 0",
             "新しく出た指摘 (1 件。優先して確認してください)",
-            "  5:4  警告  X03 HEAVY_WORD [独自]\n    重みだけを足す語です\n    │ 検証は非常に重要だ。\n    💡 何が重要かを書いてください\n",
+            "  5:4  警告  [独自ルール]  X03 HEAVY_WORD\n    重みだけを足す語です\n    │ 検証は非常に重要だ。\n    💡 何が重要かを書いてください\n",
             "文を書き換えても残った指摘 (1 件。直したつもりの文に残っています)",
-            "  3:8  警告  X01 CANNED_CLOSING [独自] (前 1:22)\n    定型の締めです\n    │ 満足度は8割だと言えるでしょう。\n    💡 言い切るか根拠を書いてください\n",
+            "  3:8  警告  [独自ルール]  X01 CANNED_CLOSING (前 1:22)\n    定型の締めです\n    │ 満足度は8割だと言えるでしょう。\n    💡 言い切るか根拠を書いてください\n",
             "解消した指摘 (1 件)",
-            "  前 1:1  警告  X02 OPENING_WORD [独自]\n    │ さて、問い合わせは40件あった。\n",
+            "  前 1:1  警告  [独自ルール]  X02 OPENING_WORD\n    │ さて、問い合わせは40件あった。\n",
             "事実の変化",
             "消えたもの (1 件。削ってよい情報か確かめてください)",
             "数値「40件」 1 → 0 回 (前 1 行)",
@@ -625,6 +620,39 @@ mod tests {
         // 解消した指摘には説明と直し方の案を出さない
         assert!(!text.contains("前置きの語です"), "{text}");
         assert!(!text.contains("削ってください"), "{text}");
+    }
+
+    #[test]
+    fn every_finding_names_its_lane_next_to_the_severity() {
+        let doc = Document::markdown("さらに、手順を見直した。\n");
+        let heading = |lane: Lane, status: RuleStatus, suffix: &str| {
+            let d = Diagnostic::new(
+                "P03",
+                "AI_CONJUNCTION",
+                Severity::Warning,
+                lane,
+                status,
+                Span::new(0, "さらに".len()),
+                "「さらに」で文をつないでいます",
+            );
+            let mut buf = Vec::new();
+            write_diagnostic(&doc, &d, "", suffix, false, &mut buf).unwrap();
+            let text = anstream::adapter::strip_str(&String::from_utf8(buf).unwrap()).to_string();
+            text.lines().next().unwrap().to_string()
+        };
+        assert_eq!(
+            heading(Lane::Slop, RuleStatus::Stable, ""),
+            "  1:1  警告  [AI 臭さ]  P03 AI_CONJUNCTION"
+        );
+        assert_eq!(
+            heading(Lane::Readability, RuleStatus::Stable, ""),
+            "  1:1  警告  [読みやすさ]  P03 AI_CONJUNCTION"
+        );
+        // 実験的の印はレーン名と別に末尾へ、改稿前の位置はさらにその後ろ
+        assert_eq!(
+            heading(Lane::Slop, RuleStatus::Experimental, " (前 2:1)"),
+            "  1:1  警告  [AI 臭さ]  P03 AI_CONJUNCTION [実験的] (前 2:1)"
+        );
     }
 
     #[test]

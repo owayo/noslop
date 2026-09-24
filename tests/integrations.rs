@@ -64,7 +64,7 @@ fn brief_lists_rules_occurrences_and_clean_files() {
     assert!(s.contains("noslop-disable-next-line <ID> -- 理由"), "{s}");
     assert!(s.contains("## docs/guide.md"), "{s}");
     assert!(s.contains("#### 1. X01 TEAM_TERM"), "{s}");
-    assert!(s.contains("(警告 3 件)"), "{s}");
+    assert!(s.contains("(独自ルール・警告 3 件)"), "{s}");
     assert!(
         s.contains("- 直し方の方向: 用語集の表記に合わせてください"),
         "{s}"
@@ -154,7 +154,14 @@ fn claude_code_hook_passes_findings_as_additional_context() {
     assert!(v.get("decision").is_none(), "失敗に見える block は使わない");
     let ctx = hso["additionalContext"].as_str().unwrap();
     assert!(ctx.contains("docs/guide.md"), "{ctx}");
-    assert!(ctx.contains("- X01 "), "{ctx}");
+    assert!(
+        ctx.contains("docs/guide.md に 独自ルールの指摘を 3 件見つけました"),
+        "独自ルールは AI 臭さの疑いに混ぜずに数える: {ctx}"
+    );
+    assert!(
+        ctx.contains("- X01 TEAM_TERM (独自ルール・警告 3 件)"),
+        "{ctx}"
+    );
     assert!(ctx.contains("  - ほか 2 件"), "{ctx}");
     assert!(ctx.contains("直さない判断もできます"), "{ctx}");
     assert!(ctx.contains("再実行は 1 回だけ"), "{ctx}");

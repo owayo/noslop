@@ -261,9 +261,9 @@ fn build<'a>(report: &'a RunReport, opts: &RenderOptions) -> Report<'a> {
             info: visible().filter(|d| d.severity == Severity::Info).count(),
         },
         by_lane: ByLane {
-            slop: visible().filter(|d| d.lane == Lane::Slop).count(),
-            readability: counts.readability,
-            custom: visible().filter(|d| d.lane == Lane::Custom).count(),
+            slop: counts.slop.total(),
+            readability: counts.readability.total(),
+            custom: counts.custom.total(),
         },
         suppressed: counts.suppressed,
         errors: report.errors.len(),

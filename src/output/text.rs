@@ -1,12 +1,26 @@
 //! 端末向けの出力。
 //!
+//! ファイルごとに、指摘をレーンの節 (AI 臭さ → 独自ルール → 読みやすさ) に分けて並べ、
+//! 各指摘の見出し行にもレーン名を付ける。末尾の要約も同じ呼び名でレーンごとに数えるので、
+//! 要約の件数が一覧のどの指摘に当たるかを見て取れる。
+//!
 //! ```text
 //! 📄 docs/meeting.md  自然度 64/100 (要修正)
-//!   3:35  警告  P01 AI_CONCLUSION
+//!   AI 臭さの指摘 1 件
+//!   3:35  警告  [AI 臭さ]  P01 AI_CONCLUSION
 //!     「と言えるだろう」は結論を定型句で押し付ける締めです
 //!     │ このように、定例会議を減らしたことはチーム全体にとって良い変化だったと言えるだろう。
 //!     │                                                                     ^^^^^^^^^^^^^^
 //!     💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
+//!
+//!   読みやすさの指摘 1 件 (自然度には入りません)
+//!   5:1  情報  [読みやすさ]  P15 KANJI_RUN
+//!     漢字が 8 字続いています (「全社業務改善計画」)
+//!     │ 全社業務改善計画に組み込む。
+//!     │ ^^^^^^^^^^^^^^^^
+//!     💡 語の切れ目が読み取れるか確かめ、助詞や動詞を補って開いてください
+//!
+//! ✖ AI 臭さの指摘 1 件 (警告 1)、読みやすさの指摘 1 件 (情報 1) — 1 ファイルを検査
 //! ```
 //!
 //! 色は ANSI エスケープで書き、端末でなければ呼び出し側 (anstream) が取り除く。
@@ -24,6 +38,9 @@ use crate::output::RenderOptions;
 const MAX_CONTEXT_WIDTH: usize = 100;
 /// 切り出すとき、指摘箇所の前に残す表示幅。
 const LEAD_WIDTH: usize = 24;
+
+/// 節と要約に並べるレーンの順。主目的の AI 臭さを先に、優先度の低い読みやすさを最後に置く。
+const LANES: [Lane; 3] = [Lane::Slop, Lane::Custom, Lane::Readability];
 
 fn severity_style(s: Severity) -> Style {
     match s {
@@ -47,7 +64,7 @@ pub fn render(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> 
         render_file(file, opts, out)?;
     }
     if !opts.quiet {
-        render_summary(report, out)?;
+        render_summary(report, opts, out)?;
     }
     Ok(())
 }
@@ -76,12 +93,49 @@ fn render_file(file: &FileReport, opts: &RenderOptions, out: &mut dyn Write) -> 
         write!(out, "  {d}指摘なし{d:#}")?;
     }
     writeln!(out)?;
-    for d in shown {
-        render_diagnostic(file, d, out)?;
+    let mut first = true;
+    for lane in LANES {
+        // 節の中は文書の順 (`diagnostics` は位置とルール ID の順に並んでいる)
+        let section: Vec<&Diagnostic> = shown.iter().copied().filter(|d| d.lane == lane).collect();
+        if section.is_empty() {
+            continue;
+        }
+        if !first {
+            writeln!(out)?;
+        }
+        first = false;
+        render_section_heading(lane, &section, out)?;
+        for d in section {
+            render_diagnostic(file, d, out)?;
+        }
     }
     for w in &file.warnings {
         let s = AnsiColor::Yellow.on_default();
         writeln!(out, "  {s}⚠ {w}{s:#}")?;
+    }
+    writeln!(out)
+}
+
+/// 節の見出し (「AI 臭さの指摘 1 件」)。要約と同じ呼び名で、抑制していない指摘を数える。
+/// 抑制した指摘を出しているときは、その件数を別に添える。
+fn render_section_heading(
+    lane: Lane,
+    section: &[&Diagnostic],
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let suppressed = section.iter().filter(|d| d.is_suppressed()).count();
+    let (b, dm) = (bold(), dim());
+    write!(
+        out,
+        "  {b}{}の指摘 {} 件{b:#}",
+        lane.label_ja(),
+        section.len() - suppressed
+    )?;
+    if suppressed > 0 {
+        write!(out, "、抑制 {suppressed} 件")?;
+    }
+    if lane != Lane::Slop {
+        write!(out, " {dm}(自然度には入りません){dm:#}")?;
     }
     writeln!(out)
 }
@@ -92,24 +146,17 @@ fn render_diagnostic(file: &FileReport, d: &Diagnostic, out: &mut dyn Write) -> 
     let sev = severity_style(d.severity);
     let dm = dim();
     let b = bold();
+    // 節の見出しが画面の外に流れても、どのレーンの指摘かが分かるよう、各行にもレーン名を出す
     write!(
         out,
-        "  {dm}{line}:{col}{dm:#}  {sev}{}{sev:#}  {b}{}{b:#} {}",
+        "  {dm}{line}:{col}{dm:#}  {sev}{}{sev:#}  [{}]  {b}{}{b:#} {}",
         d.severity.label_ja(),
+        d.lane.label_ja(),
         d.rule_id,
         d.rule_name
     )?;
-    let mut tags = Vec::new();
-    match d.lane {
-        Lane::Readability => tags.push("読解負荷"),
-        Lane::Custom => tags.push("独自"),
-        Lane::Slop => {}
-    }
     if d.status == RuleStatus::Experimental {
-        tags.push("実験的");
-    }
-    for tag in tags {
-        write!(out, " {dm}[{tag}]{dm:#}")?;
+        write!(out, " {dm}[実験的]{dm:#}")?;
     }
     writeln!(out)?;
     writeln!(out, "    {}", d.message)?;
@@ -219,13 +266,48 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-/// 件数の集計。
+/// 1 つのレーンの、抑制していない指摘の重大度ごとの件数。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Counts {
+pub(crate) struct SeverityCounts {
     pub error: usize,
     pub warning: usize,
     pub info: usize,
-    pub readability: usize,
+}
+
+impl SeverityCounts {
+    fn add(&mut self, severity: Severity) {
+        match severity {
+            Severity::Error => self.error += 1,
+            Severity::Warning => self.warning += 1,
+            Severity::Info => self.info += 1,
+        }
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        self.error + self.warning + self.info
+    }
+
+    /// 0 件でない重大度の内訳 (`警告 2・情報 1`)。重い順に並べる。
+    fn breakdown(&self) -> String {
+        [
+            (Severity::Error, self.error),
+            (Severity::Warning, self.warning),
+            (Severity::Info, self.info),
+        ]
+        .into_iter()
+        .filter(|&(_, n)| n > 0)
+        .map(|(s, n)| format!("{} {n}", s.label_ja()))
+        .collect::<Vec<_>>()
+        .join("・")
+    }
+}
+
+/// 件数の集計。抑制していない指摘はレーンごとに、抑制した指摘はまとめて数える。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Counts {
+    pub slop: SeverityCounts,
+    pub custom: SeverityCounts,
+    pub readability: SeverityCounts,
     pub suppressed: usize,
 }
 
@@ -235,45 +317,56 @@ impl Counts {
         for d in report.files.iter().flat_map(|f| f.diagnostics.iter()) {
             if d.is_suppressed() {
                 c.suppressed += 1;
-            } else if d.lane == Lane::Readability {
-                c.readability += 1;
-            } else {
-                match d.severity {
-                    Severity::Error => c.error += 1,
-                    Severity::Warning => c.warning += 1,
-                    Severity::Info => c.info += 1,
-                }
+                continue;
+            }
+            match d.lane {
+                Lane::Slop => c.slop.add(d.severity),
+                Lane::Custom => c.custom.add(d.severity),
+                Lane::Readability => c.readability.add(d.severity),
             }
         }
         c
     }
 
-    pub(crate) fn main(&self) -> usize {
-        self.error + self.warning + self.info
+    pub(crate) fn lane(&self, lane: Lane) -> SeverityCounts {
+        match lane {
+            Lane::Slop => self.slop,
+            Lane::Custom => self.custom,
+            Lane::Readability => self.readability,
+        }
     }
 }
 
-fn render_summary(report: &RunReport, out: &mut dyn Write) -> io::Result<()> {
+/// 要約の行。節の見出しと同じ呼び名で、レーンごとに件数と重大度の内訳を並べる。
+///
+/// AI 臭さは主目的なので 0 件でも出し、独自ルールと読みやすさは 1 件以上のときだけ出す。
+/// ✖ は、AI 臭さか独自ルールの指摘があるとき (読みやすさの指摘だけなら ✔) か、`--fail-on` に
+/// 当たったとき。既定の `--fail-on never` では指摘があっても終了コードは 0 なので、印を
+/// 終了コードだけで決めると AI 臭さの指摘があっても ✔ になってしまう。
+fn render_summary(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> io::Result<()> {
     let c = Counts::of(report);
-    let mut line = if c.main() == 0 {
-        let g = AnsiColor::Green.on_default().bold();
-        format!("{g}✔ AI 臭さの指摘はありません{g:#}")
-    } else {
+    let tripped = report.trips(opts.fail_on);
+    let mark = if c.slop.total() + c.custom.total() > 0 || tripped {
         let r = AnsiColor::Red.on_default().bold();
-        format!(
-            "{r}✖ {} 件の指摘{r:#} (重大 {}・警告 {}・情報 {})",
-            c.main(),
-            c.error,
-            c.warning,
-            c.info
-        )
+        format!("{r}✖{r:#}")
+    } else {
+        let g = AnsiColor::Green.on_default().bold();
+        format!("{g}✔{g:#}")
     };
-    if c.readability > 0 {
-        line.push_str(&format!("、読解負荷の指さし {} 件", c.readability));
+    let mut parts = Vec::new();
+    for lane in LANES {
+        let n = c.lane(lane);
+        if lane == Lane::Slop || n.total() > 0 {
+            parts.push(lane_count(lane, n));
+        }
     }
     if c.suppressed > 0 {
-        line.push_str(&format!("、抑制 {} 件", c.suppressed));
+        parts.push(format!("抑制 {} 件", c.suppressed));
     }
+    if tripped {
+        parts.push(format!("--fail-on {} に該当", opts.fail_on));
+    }
+    let mut line = format!("{mark} {}", parts.join("、"));
     line.push_str(&format!(" — {} ファイルを検査", report.files.len()));
     if !report.errors.is_empty() {
         line.push_str(&format!(
@@ -287,14 +380,65 @@ fn render_summary(report: &RunReport, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "{line}")
 }
 
+/// 要約の 1 レーンぶん (「AI 臭さの指摘 3 件 (警告 2・情報 1)」)。0 件なら内訳を付けない。
+fn lane_count(lane: Lane, n: SeverityCounts) -> String {
+    let mut s = format!("{}の指摘 {} 件", lane.label_ja(), n.total());
+    if n.total() > 0 {
+        s.push_str(&format!(" ({})", n.breakdown()));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::FailOn;
     use crate::document::Document;
     use crate::engine::{Engine, EngineOptions};
 
     fn plain(bytes: Vec<u8>) -> String {
         anstream::adapter::strip_str(&String::from_utf8(bytes).unwrap()).to_string()
+    }
+
+    fn engine() -> Engine {
+        Engine::with_rules(crate::engine::tests::test_rules(), EngineOptions::default()).unwrap()
+    }
+
+    fn report(files: Vec<FileReport>) -> RunReport {
+        RunReport {
+            files,
+            errors: Vec::new(),
+            morphology: Default::default(),
+        }
+    }
+
+    fn render_str(report: &RunReport, opts: &RenderOptions) -> String {
+        let mut buf = Vec::new();
+        render(report, opts, &mut buf).unwrap();
+        plain(buf)
+    }
+
+    /// 独自ルールの指摘 1 件を持つファイル (組み込みのテスト用ルールには独自ルールがないため)。
+    fn custom_file(source: &str, needle: &str) -> FileReport {
+        let doc = Document::markdown(source);
+        let start = doc.source.find(needle).unwrap();
+        let span = Span::new(start, start + needle.len());
+        let d = Diagnostic::new(
+            "X01",
+            "TEAM_TERM",
+            Severity::Warning,
+            Lane::Custom,
+            RuleStatus::Stable,
+            span,
+            "用語集と違う表記です",
+        )
+        .with_context(Span::new(0, doc.source.trim_end().len()));
+        FileReport {
+            doc,
+            diagnostics: vec![d],
+            warnings: Vec::new(),
+            score: None,
+        }
     }
 
     #[test]
@@ -336,68 +480,177 @@ mod tests {
 
     #[test]
     fn renders_file_diagnostics_and_summary() {
-        let engine =
-            Engine::with_rules(crate::engine::tests::test_rules(), EngineOptions::default())
-                .unwrap();
-        let report = RunReport {
-            files: vec![
-                engine.lint(Document::markdown(
-                    "これは言えるでしょう。上限の設定の検討。\n",
-                )),
-                engine.lint(Document::markdown("問題のない文。\n")),
-            ],
-            errors: Vec::new(),
-            morphology: Default::default(),
-        };
-        let mut buf = Vec::new();
-        render(&report, &RenderOptions::default(), &mut buf).unwrap();
-        let s = plain(buf);
+        let e = engine();
+        let report = report(vec![
+            e.lint(Document::markdown(
+                "これは言えるでしょう。上限の設定の検討。\n",
+            )),
+            e.lint(Document::markdown("問題のない文。\n")),
+        ]);
+        let s = render_str(&report, &RenderOptions::default());
         assert!(s.contains("📄 <input>.md"), "{s}");
-        assert!(s.contains("1:4  警告  T01 STABLE_SLOP"), "{s}");
-        assert!(s.contains("[読解負荷]"), "{s}");
+        assert!(s.contains("  AI 臭さの指摘 1 件\n"), "{s}");
+        assert!(s.contains("1:4  警告  [AI 臭さ]  T01 STABLE_SLOP\n"), "{s}");
+        assert!(
+            s.contains("  読みやすさの指摘 1 件 (自然度には入りません)\n"),
+            "{s}"
+        );
+        assert!(s.contains("  情報  [読みやすさ]  T03 READABILITY\n"), "{s}");
         assert!(s.contains("指摘なし"), "{s}");
         assert!(
             s.contains(
-                "✖ 1 件の指摘 (重大 0・警告 1・情報 0)、読解負荷の指さし 1 件 — 2 ファイルを検査"
+                "✖ AI 臭さの指摘 1 件 (警告 1)、読みやすさの指摘 1 件 (情報 1) — 2 ファイルを検査"
             ),
             "{s}"
         );
 
-        let mut buf = Vec::new();
         let quiet = RenderOptions {
             quiet: true,
             ..Default::default()
         };
-        render(&report, &quiet, &mut buf).unwrap();
-        let s = plain(buf);
+        let s = render_str(&report, &quiet);
         assert!(!s.contains("指摘なし"), "{s}");
         assert!(!s.contains("ファイルを検査"), "{s}");
     }
 
     #[test]
-    fn suppressed_diagnostics_are_hidden_unless_requested() {
-        let engine =
-            Engine::with_rules(crate::engine::tests::test_rules(), EngineOptions::default())
-                .unwrap();
-        let report = RunReport {
-            files: vec![engine.lint(Document::markdown(
-                "<!-- noslop-disable-next-line T01 -- 引用のため -->\nこれは言えるでしょう。\n",
-            ))],
-            errors: Vec::new(),
-            morphology: Default::default(),
+    fn diagnostics_are_grouped_by_lane_in_document_order() {
+        let e = engine();
+        // 文書の順では読みやすさの指摘が先に来るが、節は AI 臭さを先に並べる
+        let report = report(vec![e.lint(Document::markdown(
+            "上限の設定の検討をする。これは言えるでしょう。\n\n比較の設定の手順。また言えるでしょう。\n",
+        ))]);
+        let s = render_str(&report, &RenderOptions::default());
+        let slop = s.find("  AI 臭さの指摘 2 件\n").expect("AI 臭さの節");
+        let readability = s
+            .find("  読みやすさの指摘 2 件 (自然度には入りません)\n")
+            .expect("読みやすさの節");
+        assert!(slop < readability, "{s}");
+        // 節の中は文書の順
+        let first = s.find("1:16  警告  [AI 臭さ]  T01").expect("1 つ目の T01");
+        let second = s.find("3:12  警告  [AI 臭さ]  T01").expect("2 つ目の T01");
+        assert!(
+            slop < first && first < second && second < readability,
+            "{s}"
+        );
+        let t03 = s.find("1:3  情報  [読みやすさ]  T03").expect("T03");
+        assert!(readability < t03, "{s}");
+        // 節と節のあいだは空行で区切る
+        assert!(s.contains("\n\n  読みやすさの指摘 2 件"), "{s}");
+    }
+
+    #[test]
+    fn experimental_findings_keep_their_tag() {
+        let e = Engine::with_rules(
+            crate::engine::tests::test_rules(),
+            EngineOptions {
+                experimental: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let report = report(vec![e.lint(Document::markdown("様々な案がある。\n"))]);
+        let s = render_str(&report, &RenderOptions::default());
+        assert!(
+            s.contains("1:1  情報  [AI 臭さ]  T02 EXPERIMENTAL_SLOP [実験的]\n"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn custom_rules_get_their_own_section_and_count() {
+        let e = engine();
+        let report = report(vec![
+            e.lint(Document::markdown("上限の設定の検討。\n")),
+            custom_file("ユーザー様に連絡する。\n", "ユーザー様"),
+        ]);
+        let s = render_str(&report, &RenderOptions::default());
+        assert!(
+            s.contains("  独自ルールの指摘 1 件 (自然度には入りません)\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("1:1  警告  [独自ルール]  X01 TEAM_TERM\n"),
+            "{s}"
+        );
+        // 独自ルールの指摘があれば、AI 臭さが 0 件でも ✖
+        assert!(
+            s.contains(
+                "✖ AI 臭さの指摘 0 件、独自ルールの指摘 1 件 (警告 1)、読みやすさの指摘 1 件 (情報 1) — 2 ファイルを検査"
+            ),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn readability_alone_is_not_marked_as_a_failure() {
+        let e = engine();
+        let report = report(vec![e.lint(Document::markdown("上限の設定の検討。\n"))]);
+        let s = render_str(&report, &RenderOptions::default());
+        assert!(
+            s.contains("✔ AI 臭さの指摘 0 件、読みやすさの指摘 1 件 (情報 1) — 1 ファイルを検査"),
+            "{s}"
+        );
+
+        // --fail-on に当たれば、読みやすさの指摘だけでも ✖ にして理由を添える
+        let fail = RenderOptions {
+            fail_on: FailOn::At(Severity::Info),
+            ..Default::default()
         };
-        let mut buf = Vec::new();
-        render(&report, &RenderOptions::default(), &mut buf).unwrap();
-        let s = plain(buf);
+        let s = render_str(&report, &fail);
+        assert!(
+            s.contains(
+                "✖ AI 臭さの指摘 0 件、読みやすさの指摘 1 件 (情報 1)、--fail-on info に該当 — 1 ファイルを検査"
+            ),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn no_findings_say_so_in_the_summary() {
+        let e = engine();
+        let report = report(vec![e.lint(Document::markdown("問題のない文。\n"))]);
+        let s = render_str(&report, &RenderOptions::default());
+        assert!(s.contains("✔ AI 臭さの指摘 0 件 — 1 ファイルを検査"), "{s}");
+    }
+
+    #[test]
+    fn severity_breakdown_lists_only_present_levels_heaviest_first() {
+        let n = SeverityCounts {
+            error: 1,
+            warning: 0,
+            info: 2,
+        };
+        assert_eq!(n.breakdown(), "重大 1・情報 2");
+        assert_eq!(
+            lane_count(Lane::Slop, n),
+            "AI 臭さの指摘 3 件 (重大 1・情報 2)"
+        );
+        assert_eq!(
+            lane_count(Lane::Readability, SeverityCounts::default()),
+            "読みやすさの指摘 0 件"
+        );
+    }
+
+    #[test]
+    fn suppressed_diagnostics_are_hidden_unless_requested() {
+        let e = engine();
+        let report = report(vec![e.lint(Document::markdown(
+            "<!-- noslop-disable-next-line T01 -- 引用のため -->\nこれは言えるでしょう。\n",
+        ))]);
+        let s = render_str(&report, &RenderOptions::default());
         assert!(!s.contains("T01"), "{s}");
-        assert!(s.contains("抑制 1 件"), "{s}");
-        let mut buf = Vec::new();
+        assert!(
+            !s.contains("  AI 臭さの指摘"),
+            "抑制した指摘だけなら節を出さない: {s}"
+        );
+        assert!(s.contains("✔ AI 臭さの指摘 0 件、抑制 1 件"), "{s}");
         let show = RenderOptions {
             show_suppressed: true,
             ..Default::default()
         };
-        render(&report, &show, &mut buf).unwrap();
-        let s = plain(buf);
+        let s = render_str(&report, &show);
+        assert!(s.contains("  AI 臭さの指摘 0 件、抑制 1 件\n"), "{s}");
         assert!(s.contains("↳ 抑制済み (L1: 引用のため)"), "{s}");
     }
 }
