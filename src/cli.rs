@@ -20,6 +20,7 @@ use crate::diagnostic::{Lane, RuleStatus, Severity};
 use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
 use crate::genre::Genre;
+use crate::morph::{MorphologyMode, MorphologyOptions};
 use crate::output::{self, RenderOptions, RuleCatalog};
 use crate::rules::Scope;
 use crate::segment::LineBreakMode;
@@ -112,6 +113,12 @@ pub struct EngineArgs {
     /// 段落内の改行の扱い
     #[arg(long, value_enum, value_name = "MODE")]
     pub line_breaks: Option<LineBreaksArg>,
+    /// 形態素解析の辞書 (hasami の .hsd)。指定するとこの辞書を必ず使い、品詞で判定する
+    #[arg(long, value_name = "PATH", conflicts_with = "no_dict")]
+    pub dict: Option<PathBuf>,
+    /// 形態素解析の辞書を使わず、辞書なしの近似で判定する
+    #[arg(long)]
+    pub no_dict: bool,
 }
 
 #[derive(Debug, Args)]
@@ -546,6 +553,25 @@ pub(crate) fn config_engine_options(cfg: Option<&LoadedConfig>) -> EngineOptions
         },
         rule_tables: file.rules.tables,
         custom: file.custom,
+        morphology: MorphologyOptions {
+            mode: file.morphology.mode.unwrap_or_default(),
+            dictionary: file
+                .morphology
+                .dictionary
+                .map(|path| config_relative_path(cfg, path)),
+        },
+    }
+}
+
+/// 設定ファイルに書いたパスを解決する (`~/` はホームディレクトリ、相対パスは設定ファイルの
+/// ディレクトリが基準)。
+fn config_relative_path(cfg: Option<&LoadedConfig>, path: PathBuf) -> PathBuf {
+    if let (Ok(rest), Some(home)) = (path.strip_prefix("~"), std::env::home_dir()) {
+        return home.join(rest);
+    }
+    match cfg.and_then(|c| c.path.parent()) {
+        Some(dir) if path.is_relative() => dir.join(path),
+        _ => path,
     }
 }
 
@@ -566,6 +592,14 @@ fn engine_options(args: &EngineArgs, cfg: Option<&LoadedConfig>) -> EngineOption
     }
     if let Some(mode) = args.line_breaks {
         options.parse.line_breaks = mode.into();
+    }
+    if args.no_dict {
+        options.morphology.mode = MorphologyMode::Off;
+    } else if let Some(path) = &args.dict {
+        options.morphology = MorphologyOptions {
+            mode: MorphologyMode::Required,
+            dictionary: Some(path.clone()),
+        };
     }
     let selection = &mut options.selection;
     selection.cli_enable = args.enable_rules.clone();

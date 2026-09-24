@@ -281,6 +281,9 @@ fn render_summary(report: &RunReport, out: &mut dyn Write) -> io::Result<()> {
             report.errors.len()
         ));
     }
+    if let Some(method) = report.morphology.describe() {
+        line.push_str(&format!("、{method}"));
+    }
     writeln!(out, "{line}")
 }
 
@@ -344,6 +347,7 @@ mod tests {
                 engine.lint(Document::markdown("問題のない文。\n")),
             ],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let mut buf = Vec::new();
         render(&report, &RenderOptions::default(), &mut buf).unwrap();
@@ -380,6 +384,7 @@ mod tests {
                 "<!-- noslop-disable-next-line T01 -- 引用のため -->\nこれは言えるでしょう。\n",
             ))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         let mut buf = Vec::new();
         render(&report, &RenderOptions::default(), &mut buf).unwrap();

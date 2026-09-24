@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::document::Document;
 use crate::genre::Genre;
+use crate::morph::Morphology;
 use crate::rules::{Measure, Rule, RuleContext, Scope};
 
 /// ルールの実行条件。
@@ -43,6 +44,24 @@ pub fn run_doc(rule: &dyn Rule, doc: &Document, options: Options) -> Vec<Diagnos
         genre: options.genre,
         scope: options.scope,
         experimental: options.experimental,
+        morph: None,
+    };
+    let mut out = Vec::new();
+    rule.check(&ctx, &mut out);
+    out
+}
+
+/// Markdown に 1 ルールを、形態素解析の辞書を使って既定の条件で当てる。
+pub fn run_with_morphology(
+    rule: &dyn Rule,
+    markdown: &str,
+    morphology: &Morphology,
+) -> Vec<Diagnostic> {
+    let doc = Document::markdown(markdown);
+    let morph = morphology.for_document(&doc);
+    let ctx = RuleContext {
+        morph: Some(&morph),
+        ..RuleContext::new(&doc)
     };
     let mut out = Vec::new();
     rule.check(&ctx, &mut out);

@@ -18,6 +18,7 @@ use crate::config::{ConfigError, CustomRuleConfig, RuleTable};
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::document::{Document, ParseOptions, SourceFormat};
 use crate::genre::Genre;
+use crate::morph::{self, DocMorphology, Morphology, MorphologyOptions, MorphologyStatus};
 use crate::rules::custom::CustomRule;
 use crate::rules::{Rule, RuleContext, Scope, builtin_rules};
 use crate::score::{self, Score};
@@ -51,6 +52,8 @@ pub struct EngineOptions {
     /// `[rules.<ID か名前>]` の設定。
     pub rule_tables: BTreeMap<String, RuleTable>,
     pub custom: Vec<CustomRuleConfig>,
+    /// 形態素解析の辞書 (`[morphology]`・`--dict`・`--no-dict`)。
+    pub morphology: MorphologyOptions,
 }
 
 /// エンジンが持つルール 1 つ。
@@ -70,6 +73,9 @@ pub struct Engine {
     names: RuleNames,
     builtin_ids: HashSet<String>,
     options: EngineOptions,
+    /// 読み込んだ辞書 (辞書を使う有効なルールがあり、辞書が見つかったときだけ)。
+    morphology: Option<Morphology>,
+    morphology_status: MorphologyStatus,
 }
 
 impl Engine {
@@ -193,16 +199,35 @@ impl Engine {
             });
         }
 
+        // 辞書は、辞書を使う有効なルールがあるときだけ探して読む
+        let needed = entries
+            .iter()
+            .any(|e| e.enabled && e.rule.uses_morphology());
+        let (morphology, morphology_status) =
+            morph::resolve(&options.morphology, needed).map_err(ConfigError::Invalid)?;
+
         Ok(Self {
             entries,
             names,
             builtin_ids,
             options,
+            morphology,
+            morphology_status,
         })
     }
 
     pub fn options(&self) -> &EngineOptions {
         &self.options
+    }
+
+    /// この実行で使う判定の方式 (辞書の有無)。
+    pub fn morphology(&self) -> &MorphologyStatus {
+        &self.morphology_status
+    }
+
+    /// 文書の形態素の層 (辞書を読み込んでいるときだけ)。
+    pub fn doc_morphology<'a>(&self, doc: &'a Document) -> Option<DocMorphology<'a>> {
+        self.morphology.as_ref().map(|m| m.for_document(doc))
     }
 
     /// すべてのルール (有効・無効を問わず)。組み込みルール、独自ルールの順。
@@ -238,19 +263,23 @@ impl Engine {
 
     /// 読み込み済みの文書を lint する。
     pub fn lint(&self, doc: Document) -> FileReport {
-        let ctx = RuleContext {
-            doc: &doc,
-            genre: self.options.genre,
-            scope: self.options.scope,
-            experimental: self.options.experimental,
-        };
         let mut diagnostics = Vec::new();
-        for entry in self.entries.iter().filter(|e| e.enabled) {
-            let start = diagnostics.len();
-            entry.rule.check(&ctx, &mut diagnostics);
-            if let Some(severity) = entry.severity {
-                for d in &mut diagnostics[start..] {
-                    d.severity = severity;
+        {
+            let morph = self.doc_morphology(&doc);
+            let ctx = RuleContext {
+                doc: &doc,
+                genre: self.options.genre,
+                scope: self.options.scope,
+                experimental: self.options.experimental,
+                morph: morph.as_ref(),
+            };
+            for entry in self.entries.iter().filter(|e| e.enabled) {
+                let start = diagnostics.len();
+                entry.rule.check(&ctx, &mut diagnostics);
+                if let Some(severity) = entry.severity {
+                    for d in &mut diagnostics[start..] {
+                        d.severity = severity;
+                    }
                 }
             }
         }
@@ -285,7 +314,10 @@ impl Engine {
             .into_par_iter()
             .map(|input| self.process(input))
             .collect();
-        let mut report = RunReport::default();
+        let mut report = RunReport {
+            morphology: self.morphology_status.clone(),
+            ..Default::default()
+        };
         for result in results {
             match result {
                 Ok(file) => report.files.push(file),
@@ -365,6 +397,8 @@ pub struct FileError {
 pub struct RunReport {
     pub files: Vec<FileReport>,
     pub errors: Vec<FileError>,
+    /// 判定の方式 (形態素解析の辞書を使ったか)。
+    pub morphology: MorphologyStatus,
 }
 
 impl RunReport {
@@ -758,6 +792,7 @@ pub(crate) mod tests {
         let report = RunReport {
             files: vec![e.lint(Document::markdown("これは言えるでしょう。\n"))],
             errors: Vec::new(),
+            morphology: Default::default(),
         };
         assert!(!report.trips(crate::config::FailOn::At(Severity::Warning)));
         assert!(report.trips(crate::config::FailOn::At(Severity::Info)));

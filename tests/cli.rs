@@ -964,3 +964,216 @@ fn skill_install_writes_the_skill_for_each_agent() {
 
     noslop().args(["skill-install", "cursor"]).assert().code(2);
 }
+
+// ---------------------------------------------------------------------------
+// 形態素解析の辞書
+// ---------------------------------------------------------------------------
+
+/// 「の」の連鎖を品詞で数えるのに要る語だけの辞書 (hasami の .hsd) を書き出す。
+fn write_dictionary(path: &Path) {
+    use hasami::DictEntry;
+    use hasami::dict::DictBuilder;
+
+    let mut builder = DictBuilder::new();
+    for (surface, pos) in [
+        ("俺", "名詞,代名詞,一般,*"),
+        ("の", "助詞,連体化,*,*"),
+        ("魂", "名詞,一般,*,*"),
+        ("安静", "名詞,形容動詞語幹,*,*"),
+        ("ため", "名詞,非自立,副詞可能,*"),
+        ("に", "助詞,格助詞,一般,*"),
+        ("祈る", "動詞,自立,*,*"),
+        ("。", "記号,句点,*,*"),
+    ] {
+        builder.add_entry(DictEntry {
+            surface: surface.into(),
+            left_id: 1,
+            right_id: 1,
+            cost: 1000 - 10 * surface.chars().count() as i16,
+            pos: pos.into(),
+            base_form: surface.into(),
+            ..Default::default()
+        });
+    }
+    builder
+        .write_hsd(path, &builder.write_options(), |_, _| {})
+        .unwrap();
+}
+
+/// 辞書なしでは「ため」で連鎖が切れて拾えず、辞書ありでは拾う文書。
+const DOC_NO_CHAIN: &str = "# メモ\n\n俺の魂の安静のために祈る。\n";
+
+fn rule_count(v: &serde_json::Value, id: &str) -> usize {
+    v["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|f| f["diagnostics"].as_array().unwrap().iter())
+        .filter(|d| d["ruleId"] == id)
+        .count()
+}
+
+/// 辞書を探す場所を空にした noslop (手元に入れた辞書に左右されないように)。
+fn noslop_without_installed_dictionary(empty: &Path) -> Command {
+    let mut cmd = noslop();
+    cmd.env_remove("HASAMI_DICT").env("XDG_DATA_HOME", empty);
+    cmd
+}
+
+#[test]
+fn a_dictionary_switches_part_of_speech_rules_to_the_precise_method() {
+    let dir = tempfile::tempdir().unwrap();
+    let dict = dir.path().join("test.hsd");
+    write_dictionary(&dict);
+    let doc = dir.path().join("doc.md");
+    fs::write(&doc, DOC_NO_CHAIN).unwrap();
+    let base = [
+        "check",
+        "--no-config",
+        "--only-rules",
+        "P16",
+        "--format",
+        "json",
+    ];
+
+    let out = noslop()
+        .args(base)
+        .arg("--no-dict")
+        .arg(&doc)
+        .output()
+        .unwrap();
+    let v = json(&out.stdout);
+    assert_eq!(v["settings"]["morphology"]["method"], "surface");
+    assert_eq!(v["settings"]["morphology"]["reason"], "disabled");
+    assert_eq!(rule_count(&v, "P16"), 0);
+
+    let out = noslop()
+        .args(base)
+        .arg("--dict")
+        .arg(&dict)
+        .arg(&doc)
+        .output()
+        .unwrap();
+    let v = json(&out.stdout);
+    let morphology = &v["settings"]["morphology"];
+    assert_eq!(morphology["requested"], "required");
+    assert_eq!(morphology["method"], "dictionary");
+    assert!(
+        morphology["dictionary"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("test.hsd")
+    );
+    assert_eq!(rule_count(&v, "P16"), 1);
+
+    // 改稿指示には方式と辞書の名前だけを載せ、手元のパスは渡さない
+    let out = noslop()
+        .args([
+            "check",
+            "--no-config",
+            "--only-rules",
+            "P16",
+            "--report",
+            "brief",
+        ])
+        .args(["--format", "json", "--dict"])
+        .arg(&dict)
+        .arg(&doc)
+        .output()
+        .unwrap();
+    let v = json(&out.stdout);
+    assert_eq!(v["settings"]["method"], "dictionary");
+    assert!(!v["settings"].to_string().contains("test.hsd"));
+
+    // text は集計の行に方式を添える
+    noslop()
+        .args(["check", "--no-config", "--only-rules", "P16", "--dict"])
+        .arg(&dict)
+        .arg(&doc)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("辞書あり"));
+}
+
+#[test]
+fn dictionary_settings_are_checked_and_auto_falls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("doc.md");
+    fs::write(&doc, DOC_NO_CHAIN).unwrap();
+
+    // 指定した辞書が読めなければ設定の誤り
+    noslop()
+        .args(["check", "--no-config", "--dict", "missing.hsd"])
+        .arg(&doc)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("辞書"));
+    // --dict と --no-dict は同時に使えない
+    noslop()
+        .args(["check", "--no-config", "--dict", "x.hsd", "--no-dict"])
+        .arg(&doc)
+        .assert()
+        .code(2);
+
+    // auto で見つからなければ、辞書なしの近似で判定する
+    let out = noslop_without_installed_dictionary(empty.path())
+        .args([
+            "check",
+            "--no-config",
+            "--only-rules",
+            "P16",
+            "--format",
+            "json",
+        ])
+        .arg(&doc)
+        .output()
+        .unwrap();
+    let v = json(&out.stdout);
+    assert_eq!(v["settings"]["morphology"]["requested"], "auto");
+    assert_eq!(v["settings"]["morphology"]["reason"], "not-found");
+
+    // required で見つからなければ設定の誤り
+    fs::write(
+        dir.path().join("noslop.toml"),
+        "[morphology]\nmode = \"required\"\n",
+    )
+    .unwrap();
+    noslop_without_installed_dictionary(empty.path())
+        .current_dir(dir.path())
+        .args(["check", "--only-rules", "P16", "doc.md"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("辞書が見つかりません"));
+
+    // 辞書を使うルールが動かなければ、required でも辞書を探さない
+    noslop_without_installed_dictionary(empty.path())
+        .current_dir(dir.path())
+        .args(["check", "--only-rules", "P01", "doc.md"])
+        .assert()
+        .success();
+
+    // 設定ファイルの相対パスは、設定ファイルのディレクトリが基準
+    write_dictionary(&dir.path().join("test.hsd"));
+    fs::write(
+        dir.path().join("noslop.toml"),
+        "[morphology]\ndictionary = \"test.hsd\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("sub")).unwrap();
+    let out = noslop_without_installed_dictionary(empty.path())
+        .current_dir(dir.path().join("sub"))
+        .args([
+            "check",
+            "--only-rules",
+            "P16",
+            "--format",
+            "json",
+            "../doc.md",
+        ])
+        .output()
+        .unwrap();
+    let v = json(&out.stdout);
+    assert_eq!(v["settings"]["morphology"]["method"], "dictionary");
+    assert_eq!(rule_count(&v, "P16"), 1);
+}

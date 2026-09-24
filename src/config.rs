@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::diagnostic::{Lane, Severity};
 use crate::genre::Genre;
+use crate::morph::MorphologyMode;
 use crate::segment::LineBreakMode;
 
 /// 探索する設定ファイルの名前 (優先順)。
@@ -101,6 +102,17 @@ pub struct ScopeSection {
     pub lists: Option<bool>,
     pub tables: Option<bool>,
     pub blockquotes: Option<bool>,
+}
+
+/// `[morphology]` セクション。形態素解析の辞書の使い方。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MorphologySection {
+    /// `auto` (見つかれば使う、既定)・`required` (必ず使う)・`off` (使わない)。
+    pub mode: Option<MorphologyMode>,
+    /// 辞書のファイル (hasami の `.hsd`)。相対パスは設定ファイルのディレクトリが基準で、
+    /// `~/` はホームディレクトリ。なければ hasami の既定の場所を探す。
+    pub dictionary: Option<PathBuf>,
 }
 
 /// `[rules.<ID か名前>]` テーブル。
@@ -264,6 +276,8 @@ pub struct ConfigFile {
     pub rules: RulesSection,
     #[serde(default)]
     pub custom: Vec<CustomRuleConfig>,
+    #[serde(default)]
+    pub morphology: MorphologySection,
 }
 
 fn deserialize_fail_on<'de, D>(deserializer: D) -> Result<Option<FailOn>, D::Error>
@@ -360,6 +374,13 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # lists = false
 # tables = false
 # blockquotes = false
+
+[morphology]
+# 形態素解析の辞書 (hasami の .hsd)。あれば P15・P16 を品詞で判定する
+#   auto (既定。見つかれば使う) / required (必ず使う) / off (使わない)
+# mode = "auto"
+# 辞書のファイル。書かなければ HASAMI_DICT と ~/.local/share/hasami/*.hsd を探す
+# dictionary = "~/.local/share/hasami/ipadic.hsd"
 
 [rules]
 # 有効にするルール (実験的なルールも個別に有効にできる)

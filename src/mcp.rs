@@ -286,6 +286,7 @@ impl Server {
         let report = RunReport {
             files: vec![engine.lint_source(name, text.clone(), format)],
             errors: Vec::new(),
+            morphology: engine.morphology().clone(),
         };
         let opts = RenderOptions {
             genre: engine.options().genre,
