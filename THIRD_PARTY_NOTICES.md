@@ -36,6 +36,14 @@ noslop の文分割は、日本語の形態素解析器 [hasami](https://github.
 
 noslop splits sentences with the dictionary-free splitter (`hasami::sentence`) of hasami, a Japanese morphological analyzer, which is statically linked into the distributed binaries. hasami is by the same author as noslop; its copyright notice and license (MIT License, Copyright (c) 2026 Yohei) are the same as noslop's [LICENSE](LICENSE).
 
+### 同梱の形態素解析の辞書（IPAdic）
+
+noslop の既定のバイナリ（feature `bundled-dict`）には、hasami が mecab-ipadic 2.7.0-20070801 から作った形態素解析の辞書（`dict/ipadic.hsd`。hasami v26.9.102 の配布辞書で、出所と SHA-256 は [dict/README.md](dict/README.md)）が入っています。語彙・品詞・連接のデータは mecab-ipadic のもので、hasami が自分の形式（`.hsd`）へ変換し、記号の文字の分類と、ダッシュ・波ダッシュ・マイナスの CP932 側の異体字 33 字を足しています。
+
+mecab-ipadic の条文は Nara Institute of Science and Technology License (2003)（SPDX: NAIST-2003）です。条文の全文は、下の「hasami に組み込まれた例外表の表示」の「1. mecab-ipadic」にあるものと同じです。
+
+The default noslop binary (feature `bundled-dict`) includes a morphological-analysis dictionary built by hasami from mecab-ipadic 2.7.0-20070801 (`dict/ipadic.hsd`, the distributed dictionary of hasami v26.9.102; its origin and SHA-256 are in [dict/README.md](dict/README.md)). The lexicon, parts of speech and connection costs come from mecab-ipadic; hasami converted them to its own format (`.hsd`), added a character class for symbols and added 33 CP932-side variants of dashes, tildes and minus signs. mecab-ipadic is licensed under the Nara Institute of Science and Technology License (2003) (SPDX: NAIST-2003); the full text is the same as the one in section "1. mecab-ipadic" of the notice for hasami's exception table below.
+
 ### hasami に組み込まれた例外表の表示
 
 hasami の文分割は、表層に文末記号を含む語（`Yahoo!ニュース`、`モーニング娘。` など約 1 万 9 千語）の例外表を組み込んでおり、noslop のバイナリにも含まれます。例外表は辞書データ（mecab-ipadic・mecab-ipadic-NEologd・SudachiDict）から作った派生データで、配布するときに添える表示を hasami が NOTICE にまとめています。以下は hasami v26.9.101 の `src/sentence/builtin_exceptions.NOTICE` の写しです。NOTICE が求める Apache License 2.0 の全文は、このファイルの末尾にあります。

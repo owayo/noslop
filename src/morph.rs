@@ -1,10 +1,13 @@
 //! 形態素解析 (辞書を使う精密判定)。
 //!
-//! 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書 (`.hsd`) があれば、品詞で数える
-//! ルール (P15・P16) がこの層を使って判定する。辞書がなければ、それらのルールは辞書なしの近似で
-//! 判定する。
+//! 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書 (`.hsd`) で、品詞で数えるルール
+//! (P15・P16) を判定する。既定のビルド (feature `bundled-dict`) は IPAdic の辞書
+//! (`dict/ipadic.hsd`) をバイナリに埋め込んでいるので、何も指定しなくても辞書で判定する。
+//! 辞書を使わないとき (`--no-dict`・同梱しないビルドで辞書が見つからないとき) は、それらのルールは
+//! 辞書なしの近似で判定する。
 //!
-//! - 辞書は実行ごとに 1 度だけ読む ([`resolve`])。読み込みは mmap なので速い
+//! - 辞書は実行ごとに 1 度だけ読む ([`resolve`])。ファイルは mmap で、同梱の辞書はプロセスで
+//!   1 度だけ読み込んで共有する
 //! - 辞書を使う有効なルールがなければ、辞書を探さない (フックのように起動の速さが要る場面のため)
 //! - 文書ごとに解析器を作り ([`DocMorphology`])、ルールが求めた文だけを解析して覚えておく
 
@@ -13,6 +16,8 @@ use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "bundled-dict")]
+use std::sync::OnceLock;
 
 use hasami::{Analyzer, CoarsePos, DictError, Dictionary};
 use serde::{Deserialize, Serialize};
@@ -46,7 +51,8 @@ impl MorphologyMode {
 #[derive(Debug, Clone, Default)]
 pub struct MorphologyOptions {
     pub mode: MorphologyMode,
-    /// 辞書のパス。なければ hasami の既定の場所を探す (`HASAMI_DICT`、`~/.local/share/hasami`)。
+    /// 辞書のパス。なければ `HASAMI_DICT`、次に同梱の辞書を使う (同梱しないビルドでは
+    /// hasami の既定の場所 `~/.local/share/hasami` を探す)。
     pub dictionary: Option<PathBuf>,
 }
 
@@ -72,13 +78,25 @@ pub enum FallbackReason {
     NotNeeded,
 }
 
+/// 辞書の出所。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DictionarySource {
+    /// noslop に同梱した辞書 (`dict/ipadic.hsd`)。
+    Bundled,
+    /// 指定されたファイル (`--dict`・設定の `dictionary`・`HASAMI_DICT`・hasami の既定の場所)。
+    File,
+}
+
 /// 使った辞書。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DictionaryInfo {
     /// 辞書の名前 (辞書に記録された `name`。例: `ipadic`)。
     pub name: String,
-    /// 辞書のファイル。
-    pub path: PathBuf,
+    /// 辞書の出所。
+    pub source: DictionarySource,
+    /// 辞書のファイル (同梱の辞書なら `null`)。
+    pub path: Option<PathBuf>,
 }
 
 /// この実行で使った判定の方式 (出力に載せる)。
@@ -108,6 +126,9 @@ impl MorphologyStatus {
     /// 人に見せる 1 行 (辞書を使うルールが動かなかったなら `None`)。
     pub fn describe(&self) -> Option<String> {
         match (&self.dictionary, self.reason) {
+            (Some(dict), _) if dict.source == DictionarySource::Bundled => {
+                Some(format!("辞書あり (同梱の {})", dict.name))
+            }
             (Some(dict), _) => Some(format!("辞書あり ({})", dict.name)),
             (None, Some(FallbackReason::NotFound)) => {
                 Some("辞書なし (辞書が見つからないため、近似で判定)".into())
@@ -145,9 +166,29 @@ impl Morphology {
         let dictionary = Dictionary::load(path)?;
         let info = DictionaryInfo {
             name: dictionary.meta().name().to_string(),
-            path: path.to_path_buf(),
+            source: DictionarySource::File,
+            path: Some(path.to_path_buf()),
         };
         Ok(Self::from_dictionary(dictionary, info))
+    }
+
+    /// 同梱の辞書 (`dict/ipadic.hsd`)。プロセスで 1 度だけ読み込み、以後は同じ辞書を共有する
+    /// (MCP サーバーの呼び出しをまたいでも)。
+    #[cfg(feature = "bundled-dict")]
+    pub fn bundled() -> Result<Self, String> {
+        static BUNDLED: OnceLock<Result<Morphology, String>> = OnceLock::new();
+        BUNDLED
+            .get_or_init(|| {
+                let dictionary = Dictionary::from_bytes(BUNDLED_HSD)
+                    .map_err(|e| format!("同梱の形態素解析の辞書を読めません: {e}"))?;
+                let info = DictionaryInfo {
+                    name: dictionary.meta().name().to_string(),
+                    source: DictionarySource::Bundled,
+                    path: None,
+                };
+                Ok(Self::from_dictionary(dictionary, info))
+            })
+            .clone()
     }
 
     /// 組み立て済みの辞書から作る。
@@ -172,11 +213,21 @@ impl Morphology {
     }
 }
 
+/// 同梱の辞書の中身 (hasami の `.hsd`。出所と更新の手順は `dict/README.md`)。
+#[cfg(feature = "bundled-dict")]
+static BUNDLED_HSD: &[u8] = include_bytes!("../dict/ipadic.hsd");
+
 /// 設定から辞書を決めて読み込み、使う方式を返す。
 ///
-/// `needed` は辞書を使う有効なルールがあるか。なければ辞書を探さない。辞書の指定の誤り
-/// (指定したファイルがない・`required` なのに見つからない・読めない) は `Err` にする。
-/// `auto` で見つからないときだけ、辞書なしの近似に戻る。
+/// `needed` は辞書を使う有効なルールがあるか。なければ辞書を探さない。
+///
+/// 探す順は、明示のパス (`--dict`・設定の `dictionary`) → `HASAMI_DICT` → 同梱の辞書。
+/// `~/.local/share/hasami` は探さない (同じ版の noslop なら、手元に入れた辞書によらず同じ結果に
+/// するため)。同梱しないビルドでは、同梱の辞書の代わりに hasami の既定の場所を探す。
+///
+/// 指定した辞書が読めないときは `Err` にし、同梱の辞書や近似に黙って切り替えない。
+/// 同梱しないビルドで、`auto` なのに辞書が見つからないときだけ、辞書なしの近似に戻る
+/// (`required` なら `Err`)。
 pub fn resolve(
     options: &MorphologyOptions,
     needed: bool,
@@ -194,27 +245,23 @@ pub fn resolve(
             MorphologyStatus::surface(requested, FallbackReason::NotNeeded),
         ));
     }
-    let path = match &options.dictionary {
-        Some(path) => path.clone(),
-        None => match hasami::analyzer::default_dict_path() {
-            Ok(path) => path,
-            Err(DictError::NotFound(_)) if requested == MorphologyMode::Auto => {
+    let explicit = options.dictionary.clone().or_else(|| {
+        std::env::var_os(hasami::analyzer::DICT_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    });
+    let morphology = match explicit {
+        Some(path) => load_file(&path)?,
+        None => match fallback(requested)? {
+            Some(morphology) => morphology,
+            None => {
                 return Ok((
                     None,
                     MorphologyStatus::surface(requested, FallbackReason::NotFound),
                 ));
             }
-            Err(DictError::NotFound(searched)) => {
-                return Err(format!(
-                    "形態素解析の辞書が見つかりません (探した場所: {})",
-                    searched.join("、")
-                ));
-            }
-            Err(e) => return Err(format!("形態素解析の辞書を探せません: {e}")),
         },
     };
-    let morphology = Morphology::load(&path)
-        .map_err(|e| format!("形態素解析の辞書を読めません: {}: {e}", path.display()))?;
     let status = MorphologyStatus {
         requested,
         method: Method::Dictionary,
@@ -222,6 +269,31 @@ pub fn resolve(
         reason: None,
     };
     Ok((Some(morphology), status))
+}
+
+fn load_file(path: &Path) -> Result<Morphology, String> {
+    Morphology::load(path)
+        .map_err(|e| format!("形態素解析の辞書を読めません: {}: {e}", path.display()))
+}
+
+/// 明示の指定がないときの辞書 (同梱の辞書)。
+#[cfg(feature = "bundled-dict")]
+fn fallback(_requested: MorphologyMode) -> Result<Option<Morphology>, String> {
+    Morphology::bundled().map(Some)
+}
+
+/// 明示の指定がないときの辞書 (同梱しないビルドでは hasami の既定の場所)。
+#[cfg(not(feature = "bundled-dict"))]
+fn fallback(requested: MorphologyMode) -> Result<Option<Morphology>, String> {
+    match hasami::analyzer::default_dict_path() {
+        Ok(path) => load_file(&path).map(Some),
+        Err(DictError::NotFound(_)) if requested == MorphologyMode::Auto => Ok(None),
+        Err(DictError::NotFound(searched)) => Err(format!(
+            "形態素解析の辞書が見つかりません (探した場所: {})",
+            searched.join("、")
+        )),
+        Err(e) => Err(format!("形態素解析の辞書を探せません: {e}")),
+    }
 }
 
 /// 形態素 1 つ。
@@ -298,7 +370,8 @@ pub(crate) mod testing {
             dictionary,
             DictionaryInfo {
                 name: "test".into(),
-                path: PathBuf::from("test.hsd"),
+                source: DictionarySource::File,
+                path: Some(PathBuf::from("test.hsd")),
             },
         )
     }
@@ -372,6 +445,26 @@ mod tests {
             let err = resolve(&options, true).unwrap_err();
             assert!(err.contains("missing.hsd"), "{err}");
         }
+    }
+
+    /// 同梱の辞書は hasami の IPAdic (出所と更新の手順は dict/README.md)。辞書を差し替えたら、
+    /// 手元の文書で P15・P16 の指摘の差分を確かめてから、ここに固定した値を書き換える。
+    #[cfg(feature = "bundled-dict")]
+    #[test]
+    fn the_bundled_dictionary_is_ipadic_from_hasami() {
+        assert_eq!(BUNDLED_HSD.len(), 18_117_590);
+        let m = Morphology::bundled().unwrap();
+        assert_eq!(m.info().name, "ipadic");
+        assert_eq!(m.info().source, DictionarySource::Bundled);
+        assert_eq!(m.info().path, None);
+        assert_eq!(
+            m.dictionary.meta().get("sources"),
+            Some("ipadic@61b90ba6e669")
+        );
+        assert_eq!(m.dictionary.entry_count(), 390_668);
+        // 2 度目からは同じ辞書を共有する
+        let again = Morphology::bundled().unwrap();
+        assert!(Arc::ptr_eq(&m.dictionary, &again.dictionary));
     }
 
     #[test]

@@ -376,11 +376,11 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # blockquotes = false
 
 [morphology]
-# 形態素解析の辞書 (hasami の .hsd)。あれば P15・P16 を品詞で判定する
-#   auto (既定。見つかれば使う) / required (必ず使う) / off (使わない)
+# 形態素解析の辞書 (hasami の .hsd)。P15・P16 を品詞で判定する。既定は同梱の IPAdic
+#   auto (既定。HASAMI_DICT か同梱の辞書を使う) / required (必ず使う) / off (使わない)
 # mode = "auto"
-# 辞書のファイル。書かなければ HASAMI_DICT と ~/.local/share/hasami/*.hsd を探す
-# dictionary = "~/.local/share/hasami/ipadic.hsd"
+# 同梱の辞書の代わりに使う辞書のファイル
+# dictionary = "~/.local/share/hasami/ipadic-neologd.hsd"
 
 [rules]
 # 有効にするルール (実験的なルールも個別に有効にできる)
