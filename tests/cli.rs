@@ -85,9 +85,7 @@ fn check_reports_but_exits_zero_by_default() {
         .assert()
         .code(0)
         .stdout(predicate::str::contains("📄 docs/guide.md"))
-        .stdout(predicate::str::contains(
-            "  独自ルールの指摘 1 件 (自然度には入りません)\n",
-        ))
+        .stdout(predicate::str::contains("  独自ルールの指摘 1 件\n"))
         .stdout(predicate::str::contains(
             "3:7  警告  [独自ルール]  X01 TEAM_TERM",
         ))
@@ -182,7 +180,7 @@ fn json_output_has_a_stable_schema() {
         .stdout
         .clone();
     let v = json(&out);
-    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["schemaVersion"], 2);
     assert_eq!(v["tool"]["name"], "noslop");
     assert_eq!(v["columnUnit"], "unicode-scalar");
     assert_eq!(v["settings"]["genre"], "general");
@@ -657,11 +655,19 @@ fn builtin_rules_separate_the_bundled_examples() {
     for id in ["P01", "P02", "R05"] {
         assert!(ids.contains(&id), "{id} が出ていない: {ids:?}");
     }
-    assert!(smelly["score"]["value"].as_f64().unwrap() < 70.0);
+    // 文書全体の点数は出さず、AI 臭さの指摘をレーン・重大度ごとに数える
+    assert!(smelly.get("score").is_none(), "{smelly}");
+    let slop = &smelly["counts"]["slop"];
+    let serious = slop["error"].as_u64().unwrap() + slop["warning"].as_u64().unwrap();
+    assert!(serious >= 5, "重大と警告が少ない: {slop}");
 
     let natural = run("examples/natural.md");
     assert_eq!(natural["diagnostics"].as_array().unwrap().len(), 0);
-    assert_eq!(natural["score"]["value"].as_f64().unwrap(), 100.0);
+    for lane in ["slop", "readability", "custom"] {
+        for severity in ["error", "warning", "info"] {
+            assert_eq!(natural["counts"][lane][severity], 0, "{lane} {severity}");
+        }
+    }
 }
 
 #[test]
@@ -952,7 +958,7 @@ fn full_report_comes_as_toon_and_bad_combinations_are_errors() {
         .assert()
         .success()
         .stdout(
-            predicate::str::starts_with("schemaVersion: 1\n")
+            predicate::str::starts_with("schemaVersion: 2\n")
                 .and(predicate::str::contains("diagnostics["))
                 .and(predicate::str::contains("TEAM_TERM")),
         );
@@ -1004,7 +1010,7 @@ fn diff_comes_as_toon() {
         .assert()
         .success()
         .stdout(
-            predicate::str::starts_with("schemaVersion: 1\nkind: diff\n")
+            predicate::str::starts_with("schemaVersion: 2\nkind: diff\n")
                 .and(predicate::str::contains("hasConcerns: true")),
         );
 }

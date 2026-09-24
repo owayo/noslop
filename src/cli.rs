@@ -18,7 +18,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{self, ConfigError, FailOn, LoadedConfig};
-use crate::diagnostic::{Lane, RuleStatus, Severity};
+use crate::diagnostic::{RuleStatus, Severity};
 use crate::dictionaries::{self, Check, Distributed, Outcome};
 use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
@@ -964,15 +964,6 @@ fn listing_engine(
     Engine::new(options)
 }
 
-/// explain と `rules --format markdown` に出すレーン (呼び名は [`Lane::label_ja`] にそろえる)。
-fn lane_label(lane: Lane) -> String {
-    let score = match lane {
-        Lane::Slop => "自然度スコアに入る",
-        Lane::Readability | Lane::Custom => "自然度スコアに入らない",
-    };
-    format!("{} ({score})", lane.label_ja())
-}
-
 fn status_label(status: RuleStatus) -> &'static str {
     match status {
         RuleStatus::Stable => "校正済み (既定で有効)",
@@ -1122,7 +1113,7 @@ fn rules_markdown(engine: &Engine) -> String {
         let m = e.rule.meta();
         s.push_str(&format!("\n## {}\n\n", m.id));
         s.push_str(&format!("**{}** — {}\n\n", m.name, m.title));
-        s.push_str(&format!("- レーン: {}\n", lane_label(m.lane)));
+        s.push_str(&format!("- レーン: {}\n", m.lane.label_ja()));
         s.push_str(&format!("- 状態: {}\n", status_label(m.status)));
         s.push_str(&format!("- 既定の重大度: {}\n", m.default_severity));
         if let Some(basis) = calibration_basis(e) {
@@ -1189,7 +1180,7 @@ pub(crate) fn explain_text(engine: &Engine, entry: &RuleEntry) -> String {
     let m = entry.rule.meta();
     let genre = engine.options().genre;
     let mut s = format!("{} {} — {}\n\n", m.id, m.name, m.title);
-    s.push_str(&format!("  レーン      : {}\n", lane_label(m.lane)));
+    s.push_str(&format!("  レーン      : {}\n", m.lane.label_ja()));
     let status = if entry.builtin {
         status_label(m.status)
     } else {
@@ -1770,19 +1761,6 @@ mod tests {
         assert!(explain_text(&engine, r05).contains("校正の基準  : 重大の指摘で数えた誤検知率"));
         let s01 = engine.find("S01").unwrap();
         assert!(!explain_text(&engine, s01).contains("校正の基準"));
-    }
-
-    #[test]
-    fn lanes_are_called_by_the_same_names_as_in_the_findings() {
-        assert_eq!(lane_label(Lane::Slop), "AI 臭さ (自然度スコアに入る)");
-        assert_eq!(
-            lane_label(Lane::Readability),
-            "読みやすさ (自然度スコアに入らない)"
-        );
-        assert_eq!(
-            lane_label(Lane::Custom),
-            "独自ルール (自然度スコアに入らない)"
-        );
     }
 
     #[test]

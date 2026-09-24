@@ -8,7 +8,8 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 - 文字種・語句パターン・文長の統計で判定する。品詞で数えるルール (P15・P16) は、バイナリに同梱した hasami の IPAdic の辞書 (`dict/ipadic.hsd`) で、元の校正と同じ条件で判定する (`morph.rs`)。`--no-dict` や同梱しないビルドでは辞書なしの近似で動く
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
-- AI 臭さ (`slop`) と読みやすさ (`readability`) の 2 つのレーンを混ぜない。自然度スコアに入るのは stable な slop だけ
+- AI 臭さ (`slop`) と読みやすさ (`readability`) の 2 つのレーンを混ぜない
+- 文書全体の点数は出さない。指摘を 1 件ずつ並べ、レーンと重大度ごとの件数を数えるだけにする (以前の「自然度スコア」は校正しておらず、人の文書と AI の文書を見分けていなかったので外した。README の「文書全体の点数を出さない理由」)
 
 ## 技術スタック
 
@@ -38,7 +39,6 @@ flowchart TD
     ENG --> MORPH[morph.rs<br/>形態素解析 (辞書は同梱)]
     RULES --> MORPH
     ENG --> SUP[suppress.rs<br/>抑制の適用]
-    ENG --> SCORE[score.rs<br/>自然度スコア]
     ENG --> OUT[output/<br/>text・json・toon・github・brief]
     CLI --> DIFF[diff/<br/>改稿の前後の比較]
     CLI --> CAL[calibrate.rs<br/>コーパスでの校正]
@@ -65,7 +65,6 @@ flowchart TD
 | `src/engine.rs` | ルールの選択 (stable / experimental / ジャンル / 明示の有効化・無効化)、設定値の適用、実行、重大度の上書き、fingerprint、並べ替え。辞書を使う有効なルール (`Rule::uses_morphology`) があるときだけ辞書を読み、文書ごとに `DocMorphology` を作ってルールに渡す |
 | `src/morph.rs` | 形態素解析。`[morphology]`・`--dict`・`--no-dict` から辞書を決めて読み込む (`resolve`)。探す順は、明示のパス → `HASAMI_DICT` → 同梱の辞書 (`~/.local/share/hasami` は探さない。同梱しないビルドでは hasami の既定の場所を探し、`auto` で見つからなければ辞書なし)。明示の指定が `share:<名前>` なら share ディレクトリの辞書に直す (`dictionaries::resolve_share`。`HASAMI_DICT` には当てない)。指定した辞書が読めなければエラーにし、同梱の辞書に切り替えない。同梱の辞書は埋め込んだバイト列を複製せずに読み (`Dictionary::from_static`)、組み立てはプロセスで 1 度だけにして共有する (`Morphology::bundled`)。文書ごとの解析器で、ルールが求めた文だけを解析して覚えておく。使った方式 (`MorphologyStatus`) は出力の `settings` に載る |
 | `src/suppress.rs` | 抑制コメントを診断に当てる。未知のルール名は警告にする |
-| `src/score.rs` | 自然度スコア (算式の版を持つ) |
 | `src/output/` | text (色付き。ファイルの中をレーンごとの節に分け、要約もレーンごとに数える)・json (安定スキーマ)・toon (JSON と同じデータを TOON で。符号化は `toon-format` クレート)・github (ワークフローコマンド、エスケープは出力器の責務)・brief (AI や編集者に渡す改稿指示。`Brief` のデータを組み立て、Markdown・JSON・TOON に描き分ける。データはルールの表と該当箇所の表に分け、TOON の表形式が効くようにしている) |
 | `src/diff/` | `noslop diff`。指摘の突き合わせ (`mod.rs`、fingerprint を多重集合で)、事実の消失と追加 (`facts.rs`)、改稿の偏り (`shifts.rs`)、出力 (`render.rs`) |
 | `src/calibrate.rs` | `noslop calibrate`。人の文書と生成文書で、ルールごとの誤検知率・検出率、`Rule::measure` による閾値の掃引、昇格候補と見直しを出す (手順は `docs/calibration.md`) |
@@ -132,7 +131,7 @@ flowchart TD
 - **閾値はデータなしに変えない**。変えるなら、人間の文書での誤検知率と AI の文書での検出率を `noslop calibrate` で測り (手順は [docs/calibration.md](docs/calibration.md))、根拠を `explanation` の「根拠」に書く。コーパスはリポジトリに入れない
 - **未校正のものは experimental にする**。辞書なしの近似で元の校正条件から外れるものも同じ
 - **辞書ありの判定は元の校正条件 (品詞で数える) に合わせる**。辞書あり・なしで結果が変わるルールは、元の検出器と比べた両方の一致率を `explanation` の「根拠」に書く。辞書で精度が上がらないルール (R06 など) は辞書を使わない
-- **スコアに入れるのは stable な slop だけ**。readability・experimental・独自ルールは入れない。算式を変えたら `score.rs` の算式の版を上げる
+- **文書単位の指標を足すなら、先に検証する**。ルールごとの誤検知率の校正は、指摘を足し合わせた値が文書を見分けることを保証しない。文書全体の点数や判定を出すなら、ジャンルと長さを分けた保留のデータで見分けられることを示してから、目的と名前を決める
 - **統計系ルールは地の文だけで集計する**。校正を地の文 (見出し・リスト・引用・表・コードを除く) で行ったため
 - **語句ルールの既定のスコープは段落だけ**。リスト・表・引用は設定で広げる
 - 人間のほうが多く使うと分かった語は外す。人間にも一定数ある語は `info` に下げる
@@ -152,7 +151,7 @@ mise exec -- make docs             # docs/rules.md を作り直す
 - CI (ubuntu) は `docs/rules.md` を生成し直して差分がないことも確かめる。ルールの定義や説明文を変えたら `make docs` を忘れない
 - 統合テストは `tests/cli.rs` (サブコマンドの入出力・終了コード) と `tests/integrations.rs` (MCP サーバーとフック) にある。組み込みルールの増減で壊れないよう、件数は設定ファイルの独自ルールと `--only-rules` で確かめる
 - テスト用の文章は、実在の文書や既存の資料を写さずに自分で書く
-- CI には形態素解析の辞書がない。辞書ありの判定のテストは hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする。同梱の辞書に依るテストは `cfg(feature = "bundled-dict")` で分け、同梱しないビルドも `mise exec -- cargo test --no-default-features` で確かめる
+- 辞書ありの判定のテストは、既定の探索や同梱の辞書に頼らず、hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。ただし小さな辞書は hasami の既定の文字種で動くので、全角空白 (U+3000) がトークンにならないなど配布の IPAdic と違う点がある。全角空白のトークンに依る処理は形態素を手で組んで確かめる。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする。同梱の辞書に依るテストは `cfg(feature = "bundled-dict")` で分け、同梱しないビルドも `mise exec -- cargo test --no-default-features` で確かめる
 - Rust の文字列の行継続 (`\`) は次の行の先頭の空白を消す。説明文を数字や `(` の前で折り返すときは、`\` の前に空白を入れる (「90 字台から 100 字」のように、数字の前後の空白が落ちるため)
 
 ## 利用者に見せる文言

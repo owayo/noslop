@@ -21,7 +21,6 @@ pub mod morph;
 pub mod output;
 pub mod plaintext;
 pub mod rules;
-pub mod score;
 pub mod segment;
 pub mod skill;
 pub mod suppress;
