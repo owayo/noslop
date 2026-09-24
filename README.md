@@ -93,6 +93,8 @@ After installing the binary, `make install` uses it to install the skills for Cl
 | `noslop mcp` | Run as an MCP server over stdio so AI agents can call the linter |
 | `noslop hook claude-code` | Act as a Claude Code PostToolUse hook and hand back findings for the edited file |
 | `noslop skill-install <claude\|codex>` | Install the noslop skill for Claude Code or Codex CLI |
+| `noslop dict download [NAME]` | Download a dictionary distributed by hasami (default `ipadic-neologd-sudachi`) into the share directory, verifying its size and SHA-256 before placing it |
+| `noslop dict list` | List the distributed dictionaries and whether each is downloaded (no network access) |
 | `noslop calibrate --human <PATH> --ai <PATH>` | Measure false-positive and detection rates and thresholds on a corpus |
 
 ```bash
@@ -177,6 +179,8 @@ When a directory is given, files with the extensions `md` / `markdown` / `txt` a
 | `noslop mcp` | `--config <PATH>` / `--no-config` | Configuration file to use. Tools and registration are described in [docs/integrations.md](docs/integrations.md) |
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | Spots returned per rule (default 3), whether to include readability findings, and whether to look at the whole file instead of the changed lines. See [docs/integrations.md](docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | Where to put the skill (default `~/.claude/skills` or `~/.codex/skills`; use `.claude/skills` or similar for a project). Writes `noslop/SKILL.md`, overwriting an existing one |
+| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--force` | NAME is `ipadic`, `ipadic-neologd` or `ipadic-neologd-sudachi` (default). Where to save it (default: the hasami share directory, `$XDG_DATA_HOME/hasami` or `~/.local/share/hasami`), the source URL (for a mirror), and whether to download again even when a correct file is present (also needed to replace a file with different contents). See [Using another dictionary](#using-another-dictionary) |
+| `noslop dict list` | `--dir <DIR>` | Where to look for downloaded dictionaries (default: the share directory) |
 | `noslop calibrate` | `--human <PATH>` / `--ai <PATH>` (required, repeatable), `--genre`, `--target-fp`, `--holdout`, `--min-detection`, `--no-experimental`, `-f, --format <text\|json\|markdown>` | How the corpus is measured. The procedure is in [docs/calibration.md](docs/calibration.md) |
 
 ### Exit Codes
@@ -644,30 +648,51 @@ The bundled dictionary adds about 18 MB to the binary (about 23 MB in total). It
 | Nothing (`mode = "auto"`) | Use the dictionary in `HASAMI_DICT` if set, otherwise the bundled one |
 | `mode = "off"` / `--no-dict` | Do not use a dictionary; judge with the dictionary-free approximations |
 | `dictionary = "<path>"` / `--dict <path>` | Use this dictionary (a hasami `.hsd`). `--dict` also implies `required`. A relative path in the configuration is resolved from the configuration file's directory |
+| `dictionary = "share:<name>"` / `--dict share:<name>` | Use `<name>.hsd` in the hasami share directory (`$XDG_DATA_HOME/hasami`, or `~/.local/share/hasami` when it is not set), where `noslop dict download` puts dictionaries (not accepted in `HASAMI_DICT`) |
 | `mode = "required"` | Always use a dictionary; in a build without the bundled one, a missing dictionary is a configuration error (exit code 2) |
 
-A dictionary that was named explicitly (`--dict`, `dictionary`, `HASAMI_DICT`) but cannot be read is a configuration error; noslop does not silently fall back to the bundled one. Dictionaries placed in `~/.local/share/hasami/` are not picked up automatically, so the same noslop version gives the same results regardless of what is installed locally.
+A dictionary that was named explicitly (`--dict`, `dictionary`, `HASAMI_DICT`) but cannot be read is a configuration error; noslop does not silently fall back to the bundled one. Dictionaries placed in `~/.local/share/hasami/` are not picked up automatically, so the same noslop version gives the same results regardless of what is installed locally. Name one with `share:<name>` to use it.
 
 ```toml
 [morphology]
 mode = "auto"
-# A dictionary to use instead of the bundled one
-# dictionary = "~/.local/share/hasami/ipadic-neologd.hsd"
+# A dictionary to use instead of the bundled one (share:<name> is one downloaded with noslop dict download)
+# dictionary = "share:ipadic-neologd-sudachi"
 ```
 
 The method used appears on the text summary line (for example 「辞書あり (同梱の ipadic)」), in `settings.morphology` of the JSON report and in `settings.method` and `settings.dictionary` of the revision brief.
 
 ### Using another dictionary
 
-The hasami repository ships other prebuilt dictionaries through Git LFS. `ipadic-neologd.hsd` and `ipadic-neologd-sudachi.hsd` include NEologd and know more words, but that makes them large (over 220 MB each), so they are not bundled.
+hasami distributes other prebuilt dictionaries as well. `ipadic-neologd` and `ipadic-neologd-sudachi` include NEologd and know more words, but that makes them large (over 220 MB each), so they are not bundled. `noslop dict download` fetches them into the hasami share directory (`$XDG_DATA_HOME/hasami`, or `~/.local/share/hasami` when it is not set).
+
+| Name | Size | Contents |
+|---|---:|---|
+| `ipadic` | about 18 MB | IPAdic (the same as the one bundled with noslop) |
+| `ipadic-neologd` | about 222 MB | IPAdic + NEologd |
+| `ipadic-neologd-sudachi` | about 238 MB | IPAdic + NEologd + SudachiDict (recommended by hasami; the largest vocabulary) |
 
 ```bash
-git lfs install
-git clone https://github.com/owayo/hasami
-noslop check docs/ --dict hasami/dict/ipadic-neologd.hsd
+# Download into the share directory (~/.local/share/hasami); without a name, ipadic-neologd-sudachi
+noslop dict download ipadic-neologd-sudachi
+
+# See which dictionaries are downloaded (no network access)
+noslop dict list
+
+# Lint with the downloaded dictionary
+noslop check docs/ --dict share:ipadic-neologd-sudachi
 ```
 
-`cargo build --release --no-default-features` builds a binary without the bundled dictionary. It then looks at `--dict`, `dictionary`, `HASAMI_DICT` and `~/.local/share/hasami/*.hsd`, and falls back to the dictionary-free approximations when none is found.
+In the configuration file, write `dictionary = "share:ipadic-neologd-sudachi"` under `[morphology]`. Downloading a dictionary does not make noslop use it; without an explicit setting, the bundled dictionary is used as before.
+
+- The source is hasami's Git LFS, pinned to the tag of the hasami version noslop depends on (shown on the first line of `noslop dict list`). The downloaded contents are checked against the size and SHA-256 recorded for that tag, and must load as a hasami dictionary before they are put in place. A failed download never removes or damages an existing file
+- A file with different contents at the destination (for example from another hasami version) is replaced only with `--force`. `--force` also downloads again when a correct file is present
+- LFS downloads count against the bandwidth quota of the hasami repository's owner. If a mirror is available, switch to it with `--source <URL>` (noslop fetches `<URL>/<name>.hsd` and checks the size and SHA-256 whatever the source)
+- The thresholds of the rules that count parts of speech (P15, P16) were calibrated with the bundled IPAdic. Other dictionaries segment words and assign parts of speech differently, so the number and positions of findings may change
+
+A dictionary outside the share directory is named by its file path (`--dict path/to/ipadic-neologd.hsd`).
+
+`cargo build --release --no-default-features` builds a binary without the bundled dictionary. It then looks at `--dict`, `dictionary`, `HASAMI_DICT` and the `*.hsd` files in the share directory (in hasami's order of preference, so dictionaries downloaded with `noslop dict download` are used automatically), and falls back to the dictionary-free approximations when none is found.
 
 ## How the Rules Were Calibrated
 

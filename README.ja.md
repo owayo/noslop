@@ -93,6 +93,8 @@ make install   # /usr/local/bin にインストール（INSTALL_PATH で変更�
 | `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
 | `noslop hook claude-code` | Claude Code の PostToolUse フックとして、書き換えたファイルの指摘を返す |
 | `noslop skill-install <claude\|codex>` | Claude Code・Codex CLI に noslop のスキルを入れる |
+| `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。大きさと SHA-256 を確かめてから置く |
+| `noslop dict list` | 配布辞書と、取得済みかを表示する（通信しない） |
 | `noslop calibrate --human <PATH> --ai <PATH>` | 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率と閾値を測る |
 
 ```bash
@@ -177,6 +179,8 @@ noslop explain R01
 | `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
+| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ `$XDG_DATA_HOME/hasami`、未設定なら `~/.local/share/hasami`）、取得元の URL（ミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](#別の辞書を使う) |
+| `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
 | `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`--min-detection`、`--no-experimental`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](docs/calibration.md) |
 
 ### 終了コード
@@ -644,30 +648,51 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 | なにも指定しない（`mode = "auto"`） | `HASAMI_DICT` があればその辞書、なければ同梱の辞書を使う |
 | `mode = "off"` / `--no-dict` | 辞書を使わず、辞書なしの近似で判定する |
 | `dictionary = "<パス>"` / `--dict <パス>` | この辞書（hasami の `.hsd`）を使う。`--dict` は `required` を兼ねる。設定ファイルの相対パスは設定ファイルのディレクトリが基準 |
+| `dictionary = "share:<名前>"` / `--dict share:<名前>` | hasami の share ディレクトリ（`$XDG_DATA_HOME/hasami`、未設定なら `~/.local/share/hasami`）の `<名前>.hsd` を使う。`noslop dict download` で取得した辞書を指す（`HASAMI_DICT` には書けない） |
 | `mode = "required"` | 辞書を必ず使う。同梱しないビルドで辞書が見つからなければ設定の誤り（終了コード 2） |
 
-指定した辞書（`--dict`・`dictionary`・`HASAMI_DICT`）が読めないときは、同梱の辞書に切り替えず、設定の誤りにします。`~/.local/share/hasami/` に置いた辞書は自動では使いません（同じ版の noslop なら、手元に入れた辞書によらず同じ結果になるように）。
+指定した辞書（`--dict`・`dictionary`・`HASAMI_DICT`）が読めないときは、同梱の辞書に切り替えず、設定の誤りにします。`~/.local/share/hasami/` に置いた辞書は自動では使いません（同じ版の noslop なら、手元に入れた辞書によらず同じ結果になるように）。使うときは `share:<名前>` で指定します。
 
 ```toml
 [morphology]
 mode = "auto"
-# 同梱の辞書の代わりに使う辞書
-# dictionary = "~/.local/share/hasami/ipadic-neologd.hsd"
+# 同梱の辞書の代わりに使う辞書（share:<名前> は noslop dict download で取得した辞書）
+# dictionary = "share:ipadic-neologd-sudachi"
 ```
 
 使った方式は、text の集計の行（「辞書あり (同梱の ipadic)」など）、JSON の `settings.morphology`、改稿指示の `settings.method` と `settings.dictionary` に出ます。
 
 ### 別の辞書を使う
 
-hasami のリポジトリに、ほかのビルド済みの辞書が Git LFS で入っています。NEologd の語彙を含む `ipadic-neologd.hsd` と `ipadic-neologd-sudachi.hsd` は、収録語が多い分だけ大きく、どちらも 220MB を超えるため同梱していません。
+hasami は、ほかにもビルド済みの辞書を配布しています。NEologd の語彙を含む `ipadic-neologd` と `ipadic-neologd-sudachi` は、収録語が多い分だけ大きく、どちらも 220MB を超えるため同梱していません。`noslop dict download` で hasami の share ディレクトリ（`$XDG_DATA_HOME/hasami`、未設定なら `~/.local/share/hasami`）に取得できます。
+
+| 名前 | 大きさ | 中身 |
+|---|---:|---|
+| `ipadic` | 約 18MB | IPAdic（noslop が同梱しているものと同じ） |
+| `ipadic-neologd` | 約 222MB | IPAdic + NEologd |
+| `ipadic-neologd-sudachi` | 約 238MB | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
 
 ```bash
-git lfs install
-git clone https://github.com/owayo/hasami
-noslop check docs/ --dict hasami/dict/ipadic-neologd.hsd
+# share ディレクトリ（~/.local/share/hasami）に取得する（名前を省くと ipadic-neologd-sudachi）
+noslop dict download ipadic-neologd-sudachi
+
+# 取得済みかを確かめる（通信しない）
+noslop dict list
+
+# 取得した辞書で検査する
+noslop check docs/ --dict share:ipadic-neologd-sudachi
 ```
 
-辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときは、`--dict`・`dictionary`・`HASAMI_DICT` に加えて `~/.local/share/hasami/*.hsd` を探し、見つからなければ辞書なしの近似で判定します。
+設定ファイルなら `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます。取得しただけでは使いません。指定しないときは、これまでどおり同梱の辞書を使います。
+
+- 取得元は、noslop が依存する hasami の版のタグ（`noslop dict list` の 1 行目に出ます）に固定した Git LFS です。取得した中身は、そのタグに記録された大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
+- 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
+- LFS のダウンロードは、hasami のリポジトリの持ち主の帯域の枠に数えられます。ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
+- 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります
+
+share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
+
+辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときは、`--dict`・`dictionary`・`HASAMI_DICT` に加えて share ディレクトリの `*.hsd` を探し（hasami の推奨順。`noslop dict download` で取得した辞書も自動で使います）、見つからなければ辞書なしの近似で判定します。
 
 ## 校正の考え方
 

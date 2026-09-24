@@ -461,9 +461,16 @@ fn download_with(
     // 置き場所と同じディレクトリに書き、確かめてから rename で置き換える。失敗したら (エラーでも
     // パニックでも) 一時ファイルは drop で消え、置き場所にある既存のファイルには触れない
     let prefix = part_prefix(dict);
-    let mut part = tempfile::Builder::new()
-        .prefix(&prefix)
-        .suffix(PART_SUFFIX)
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(&prefix).suffix(PART_SUFFIX);
+    // 置いた辞書は、普通に作ったファイルと同じく umask に従わせる (tempfile の既定は所有者だけが
+    // 読み書きできる 0600 で、共有の場所に置くとほかの利用者が読めない)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut part = builder
         .tempfile_in(dir)
         .map_err(|source| DownloadError::TempFile {
             dir: dir.to_path_buf(),
@@ -988,6 +995,15 @@ mod tests {
         assert_eq!(calls.first(), Some(&(0, dict.size)));
         assert_eq!(calls.last(), Some(&(dict.size, dict.size)));
         assert!(hasami::Dictionary::load(&path).is_ok());
+        // 権限は普通に作ったファイルと同じ (一時ファイルの 0600 のままにしない)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let reference = dir.join("reference");
+            File::create(&reference).unwrap();
+            let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&path), mode(&reference));
+        }
 
         // 取得済みなら通信しない
         let again = download_with(&test_agent(), &dict, &dir, &source, false, &mut |r, t| {
