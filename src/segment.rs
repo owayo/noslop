@@ -325,7 +325,7 @@ mod tests {
     fn builtin_exception_table_version_is_pinned() {
         assert_eq!(
             hasami::sentence::BUILTIN_EXCEPTIONS_VERSION,
-            "18918-1da7a834bf345567"
+            "18762-7d322bb030026de2"
         );
     }
 }
