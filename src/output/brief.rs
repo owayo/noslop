@@ -262,8 +262,15 @@ impl<'a> RuleSummary<'a> {
         }
     }
 
+    /// ルールの見出しに添える件数 (`AI 臭さ・警告 2 件`、実験的な指摘だけなら `・実験的` を
+    /// 足す)。どのレーンの指摘かを、ほかの出力と同じ呼び名で先頭に置く。
     fn count_label(&self) -> String {
-        let mut s = format!("{} {} 件", self.max_severity.label_ja(), self.count);
+        let mut s = format!(
+            "{}・{} {} 件",
+            self.lane.label_ja(),
+            self.max_severity.label_ja(),
+            self.count
+        );
         if self.experimental_only {
             s.push_str("・実験的");
         }
@@ -391,8 +398,14 @@ fn render_file(brief: &Brief, file: &BriefFile, out: &mut dyn Write) -> io::Resu
     let c = &file.counts;
     writeln!(
         out,
-        "- 指摘: AI 臭さ (校正済み) {} 件 / AI 臭さ (実験的) {} 件 / 独自ルール {} 件 / 読みやすさ {} 件",
-        c.stable_slop, c.experimental_slop, c.custom, c.readability
+        "- 指摘: {slop} (校正済み) {} 件 / {slop} (実験的) {} 件 / {custom} {} 件 / {readability} {} 件",
+        c.stable_slop,
+        c.experimental_slop,
+        c.custom,
+        c.readability,
+        slop = Lane::Slop.label_ja(),
+        custom = Lane::Custom.label_ja(),
+        readability = Lane::Readability.label_ja(),
     )?;
     for w in brief.warnings_of(file.path) {
         writeln!(out, "- 抑制コメントの注意: {w}")?;
@@ -411,11 +424,16 @@ fn render_file(brief: &Brief, file: &BriefFile, out: &mut dyn Write) -> io::Resu
     }
     if !readability.is_empty() {
         writeln!(out)?;
-        writeln!(out, "### 読みやすさの指さし (優先度は低い)")?;
+        writeln!(
+            out,
+            "### {}の指摘 (優先度は低い)",
+            Lane::Readability.label_ja()
+        )?;
         writeln!(out)?;
         writeln!(
             out,
-            "AI 臭さとは別の、読みにくさの指さしです。読んで引っかからない文はそのままにしてください。"
+            "{}とは別の観点の指摘です。読んで引っかからない文はそのままにしてください。",
+            Lane::Slop.label_ja()
         )?;
         for r in readability {
             writeln!(out)?;
@@ -498,14 +516,16 @@ fn render_compact(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write)
     let brief = Brief::build(report, opts, opts.brief_limit.unwrap_or(COMPACT_LIMIT));
     for file in &brief.files {
         let c = &file.counts;
-        let slop = c.stable_slop + c.experimental_slop + c.custom;
-        let mut found = Vec::new();
-        if slop > 0 {
-            found.push(format!("AI 臭さの疑いを {slop} 件"));
-        }
-        if c.readability > 0 {
-            found.push(format!("読みやすさの指さしを {} 件", c.readability));
-        }
+        // レーンごとに分けて数える (独自ルールを AI 臭さに混ぜると、各行の件数と合わなくなる)
+        let found: Vec<String> = [
+            (Lane::Slop, "疑い", c.stable_slop + c.experimental_slop),
+            (Lane::Custom, "指摘", c.custom),
+            (Lane::Readability, "指摘", c.readability),
+        ]
+        .into_iter()
+        .filter(|&(_, _, n)| n > 0)
+        .map(|(lane, noun, n)| format!("{}の{noun}を {n} 件", lane.label_ja()))
+        .collect();
         writeln!(
             out,
             "noslop が {} に {}見つけました。直すかどうかは文脈で判断してください。直さない判断もできます。",
@@ -522,10 +542,8 @@ fn render_compact(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write)
                 line.push(' ');
                 line.push_str(title);
             }
+            // レーン名は件数の括弧に入る
             line.push_str(&format!(" ({})", r.count_label()));
-            if r.lane == Lane::Readability {
-                line.push_str(" [読みやすさ]");
-            }
             if let Some(hint) = r.hints.first() {
                 line.push_str(": ");
                 line.push_str(hint);
@@ -800,16 +818,25 @@ mod tests {
         let stable = s.find("#### 1. T01 STABLE_SLOP").expect("T01");
         let experimental = s.find("#### 2. T02 EXPERIMENTAL_SLOP").expect("T02");
         assert!(stable < experimental, "{s}");
-        assert!(s.contains("(警告 2 件)"), "{s}");
-        assert!(s.contains("(情報 1 件・実験的)"), "{s}");
+        assert!(s.contains("(AI 臭さ・警告 2 件)"), "{s}");
+        assert!(s.contains("(AI 臭さ・情報 1 件・実験的)"), "{s}");
         assert!(s.contains("  - L1: 「言えるでしょう」があります"), "{s}");
         assert!(s.contains("    - 原文: これは言えるでしょう。"), "{s}");
         assert!(
             s.contains("  - L3: 同上\n    - 原文: やはり言えるでしょう。"),
             "同じ文面は繰り返さない: {s}"
         );
-        assert!(s.contains("### 読みやすさの指さし (優先度は低い)"), "{s}");
-        assert!(s.contains("#### T03 READABILITY"), "{s}");
+        assert!(
+            s.contains(
+                "### 読みやすさの指摘 (優先度は低い)\n\nAI 臭さとは別の観点の指摘です。読んで引っかからない文はそのままにしてください。\n"
+            ),
+            "{s}"
+        );
+        assert!(
+            s.contains("#### T03 READABILITY — テスト (読みやすさ・情報 1 件)"),
+            "{s}"
+        );
+        assert!(!s.contains("指さし"), "{s}");
         assert!(s.contains("## 編集の問い"), "{s}");
         assert!(s.contains("固有名詞・数字・実例は足りていますか"), "{s}");
     }
@@ -871,7 +898,7 @@ mod tests {
             morphology: Default::default(),
         };
         let s = render_str(&report, &opts(&e));
-        assert!(s.contains("(警告 1 件)"), "{s}");
+        assert!(s.contains("(AI 臭さ・警告 1 件)"), "{s}");
         assert!(!s.contains("L2: "), "抑制した指摘は出さない: {s}");
         assert!(s.contains("## 指摘のないファイル\n\n- b.md"), "{s}");
 
@@ -937,9 +964,58 @@ mod tests {
         assert!(s.contains("AI 臭さの疑いを 2 件見つけました"), "{s}");
         assert!(s.contains("直さない判断もできます"), "{s}");
         assert!(s.contains("再実行は 1 回だけ"), "{s}");
-        assert!(s.contains("- T01 テスト (警告 2 件)"), "{s}");
+        assert!(s.contains("- T01 テスト (AI 臭さ・警告 2 件)"), "{s}");
         assert!(s.contains("  - ほか 1 件"), "{s}");
         assert!(!s.contains("## "), "短縮版には見出しを付けない: {s}");
+    }
+
+    #[test]
+    fn compact_brief_counts_each_lane_separately() {
+        let e = Engine::with_rules(
+            crate::engine::tests::test_rules(),
+            EngineOptions {
+                custom: vec![crate::config::CustomRuleConfig {
+                    id: "X01".to_string(),
+                    name: Some("TEAM_TERM".to_string()),
+                    pattern: "ユーザー様".to_string(),
+                    regex: false,
+                    message: "「ユーザー様」ではなく「利用者」と書きます".to_string(),
+                    hint: None,
+                    severity: None,
+                    lane: None,
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let report = RunReport {
+            files: vec![e.lint(Document::parse(
+                "draft.md",
+                "これは言えるでしょう。上限の設定の検討をする。ユーザー様に届ける。\n\nまた言えるでしょう。\n",
+                crate::document::SourceFormat::Markdown,
+                &Default::default(),
+            ))],
+            errors: Vec::new(),
+            morphology: Default::default(),
+        };
+        let o = RenderOptions {
+            brief_compact: true,
+            ..opts(&e)
+        };
+        let s = render_str(&report, &o);
+        assert!(
+            s.starts_with(
+                "noslop が draft.md に AI 臭さの疑いを 2 件、独自ルールの指摘を 1 件、読みやすさの指摘を 1 件見つけました。"
+            ),
+            "独自ルールを AI 臭さに混ぜて数えない: {s}"
+        );
+        assert!(s.contains("- T01 テスト (AI 臭さ・警告 2 件)"), "{s}");
+        assert!(s.contains("- X01 TEAM_TERM (独自ルール・警告 1 件)"), "{s}");
+        assert!(
+            s.contains("- T03 テスト (読みやすさ・情報 1 件)\n"),
+            "レーン名は括弧の中だけに出す: {s}"
+        );
+        assert!(!s.contains("指さし"), "{s}");
     }
 
     /// JSON と TOON が描くデータ (Markdown と同じ組み立て)。
