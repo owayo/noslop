@@ -588,16 +588,22 @@ noslop bundles the IPAdic dictionary of the morphological analyzer [hasami](http
 
 | Rule | With the dictionary (default) | Without a dictionary (`--no-dict`) |
 |---|---|---|
-| P16 chains of 「の」 | Counts the case particle 「の」 and treats particles at most two morphemes apart as one chain | Counts only 「の」 between words made of kanji, katakana or alphanumerics, so it misses chains through words with hiragana (「の家の大きな犬の」) and chains that end in a hiragana word (「魂の安静のため」) |
+| P16 chains of 「の」 | Counts the adnominal 「の」 and treats particles at most two words apart as one chain. Words the dictionary splits finely (words with suffixes such as 「必要性」 and 「話し方」, numbers, katakana words) count as one word | Counts only 「の」 between words made of kanji, katakana or alphanumerics, so it misses chains through words with hiragana (「の家の大きな犬の」) and chains that end in a hiragana word (「魂の安静のため」) |
 | P15 kanji runs | Excludes runs that contain proper nouns (era names, personal names and so on) by part of speech | Excludes only runs that end with common institution suffixes (委員会, 株式会社, ...) |
 
-Compared with the original detector, which counts with morphological analysis, on 382 local documents:
+Compared with the original detector, which counts with morphological analysis, on 373 local documents:
 
 | | Without | With (ipadic) |
 |---|---:|---:|
-| P16 share of the original's findings that were caught | 39% | 90% |
-| P16 agreement of the flagged spots | 0.38 | 0.84 |
-| P15 agreement of the flagged spots | 0.69 | 0.81 |
+| P16 share of the original's findings that were caught | 38% | 93% |
+| P15 agreement of the flagged spots | 0.76 | 0.90 |
+
+Judging each disagreement against the rule's definition, the precision (share of findings that are correct) and recall (share of the correct findings of both tools that were caught) with the dictionary were:
+
+| | noslop (with the dictionary) | Original detector |
+|---|---|---|
+| P16 precision / recall | 0.99 / 1.00 | 0.95 / 0.83 |
+| P15 precision / recall | 0.88 / 0.96 | 0.86 / 0.97 |
 
 Other rules do not change with a dictionary, and sentence splitting never uses one. Noun endings (R06) keep the dictionary-free estimate because the per-document verdicts were identical with and without a dictionary.
 
