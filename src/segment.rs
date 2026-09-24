@@ -8,18 +8,19 @@
 //! - 括弧類 (「」『』（）【】など) の内側の文末記号では分割しない。括弧は先に対応を取り、
 //!   対応の取れた組だけを「分割しない範囲」にするので、閉じ忘れた括弧が後続の文を巻き込まない
 //! - ASCII の `!` `?` は、直後が英数字・ASCII 記号なら文末にしない (URL の `?id=1`)
+//! - 数字に挟まれた全角ピリオドは文末にしない (`３．１４`)
 //! - 組み込みの例外表に載っている語の内側では分割しない (`Yahoo!ニュース`)
 //!
 //! 段落内の改行は、既定では文の区切りにしない (Markdown の折り返しは見た目上の改行で、
 //! 一文一行の文書は改行の直前に句点がある)。句点を打たずに一文一行で書く文書向けに
 //! [`LineBreakMode::Sentence`] を用意している。解析用テキストには改行の字が残らず、位置だけを
-//! [`crate::document::Block::line_breaks`] に持つので、このモードでは改行の位置に改行の字を
-//! 差し込んでから分割し、得た範囲を解析用テキストの位置に戻す。
+//! [`crate::document::Block::line_breaks`] に持つので、このモードではその位置を改行とみなして
+//! 分割する (`Splitter::split_with_breaks`)。
 
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use hasami::sentence::{LineBreaks, SplitOptions, Splitter};
+use hasami::sentence::Splitter;
 use serde::Deserialize;
 
 /// 段落内の改行の扱い。
@@ -42,65 +43,39 @@ pub struct Piece {
     pub embedded_enders: bool,
 }
 
-/// 改行で区切らない分割器。例外表の照合器はプロセスで 1 度だけ組み立てる。
-static JOINING: LazyLock<Splitter> = LazyLock::new(|| splitter(LineBreaks::Join));
-/// 括弧の外側の改行で区切る分割器。
-static SPLITTING: LazyLock<Splitter> = LazyLock::new(|| splitter(LineBreaks::Split));
-
-fn splitter(line_breaks: LineBreaks) -> Splitter {
-    Splitter::new(&SplitOptions {
-        line_breaks,
-        ..SplitOptions::default()
-    })
-}
+/// 分割器 (改行の字では区切らず、組み込みの例外表を使う既定の設定)。
+static SPLITTER: LazyLock<Splitter> = LazyLock::new(Splitter::default);
 
 /// テキストを文に分割する。
 ///
-/// `line_breaks` は原文の改行があった位置 (バイトオフセット、昇順)。`mode` が
+/// `line_breaks` は原文の改行があった位置 (バイトオフセット)。`mode` が
 /// [`LineBreakMode::Sentence`] のときだけ、括弧の外側にある改行を文の区切りにする。
 pub fn split(text: &str, line_breaks: &[usize], mode: LineBreakMode) -> Vec<Piece> {
-    if mode == LineBreakMode::Space || line_breaks.is_empty() {
-        return JOINING.split(text).into_iter().map(piece).collect();
-    }
-    // 改行の位置に改行の字を差し込む。差し込んだ字の位置 (差し込んだ後のテキスト上) を昇順で
-    // 覚えておき、分割した範囲の端を、それより前に差し込んだ字の数だけ前へ戻す。文の範囲は
-    // 前後の空白を含まないので、端が差し込んだ字の上に来ることはない
-    let mut joined = String::with_capacity(text.len() + line_breaks.len());
-    let mut inserted = Vec::with_capacity(line_breaks.len());
-    let mut copied = 0;
-    for &at in line_breaks {
-        // 文書モデルが作る位置は昇順で文字の境界にあるが、崩れていても分割は止めない
-        if at < copied || !text.is_char_boundary(at) {
-            continue;
+    let sentences = match mode {
+        LineBreakMode::Space => SPLITTER.split(text),
+        LineBreakMode::Sentence => {
+            // 文書モデルが作る位置は文字の境界にあるが、hasami は境界でない位置で panic するので、
+            // 崩れていても分割を止めないよう読み飛ばす
+            let breaks: Vec<usize> = line_breaks
+                .iter()
+                .copied()
+                .filter(|&at| text.is_char_boundary(at))
+                .collect();
+            SPLITTER.split_with_breaks(text, &breaks)
         }
-        joined.push_str(&text[copied..at]);
-        inserted.push(joined.len());
-        joined.push('\n');
-        copied = at;
-    }
-    joined.push_str(&text[copied..]);
-    let restore = |pos: usize| pos - inserted.partition_point(|&p| p < pos);
-    SPLITTING
-        .split(&joined)
+    };
+    sentences
         .into_iter()
         .map(|s| Piece {
-            range: restore(s.range.start)..restore(s.range.end),
+            range: s.range,
             embedded_enders: s.embedded_enders,
         })
         .collect()
 }
 
-fn piece(sentence: hasami::sentence::Sentence) -> Piece {
-    Piece {
-        range: sentence.range,
-        embedded_enders: sentence.embedded_enders,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text;
 
     fn texts(text: &str) -> Vec<&str> {
         split(text, &[], LineBreakMode::Space)
@@ -235,11 +210,11 @@ mod tests {
     }
 
     #[test]
-    fn line_breaks_at_the_edges_or_repeated_map_back_to_the_text() {
+    fn line_breaks_at_the_edges_repeated_or_unordered_are_accepted() {
         let text = "一文目。二文目";
         let mid = text.find("二").unwrap();
         assert_eq!(
-            texts_with(text, &[0, mid, mid, text.len()], LineBreakMode::Sentence),
+            texts_with(text, &[text.len(), mid, 0, mid], LineBreakMode::Sentence),
             vec!["一文目。", "二文目"]
         );
     }
@@ -247,8 +222,8 @@ mod tests {
     #[test]
     fn broken_line_break_positions_do_not_panic() {
         let text = "一文目。二文目";
-        // 文字の途中・前より小さい・範囲外の位置は読み飛ばす
-        let lb = [1, text.find("二").unwrap(), 3, 100];
+        // 文字の途中・範囲外の位置は読み飛ばす
+        let lb = [1, text.find("二").unwrap(), 100];
         assert_eq!(
             texts_with(text, &lb, LineBreakMode::Sentence),
             vec!["一文目。", "二文目"]
@@ -281,34 +256,41 @@ mod tests {
         assert!(texts("   ").is_empty());
     }
 
-    /// ルールが使う文末記号・括弧の判定 ([`crate::text`]) が、文分割と同じ字の集合であること。
     #[test]
-    fn character_sets_of_rules_agree_with_the_splitter() {
-        let plain = Splitter::new(&SplitOptions {
-            use_builtin_exceptions: false,
-            ..SplitOptions::default()
-        });
-        let count = |s: &str| plain.split(s).len();
-        for c in (0..=0xFFFF).filter_map(char::from_u32) {
-            // 文末記号なら、日本語の間で文が 2 つに分かれる
-            let s = format!("前{c}後");
-            assert_eq!(
-                count(&s) == 2,
-                text::is_sentence_ender(c),
-                "文末記号の判定が文分割と食い違う: {c:?}"
-            );
-            // 閉じ括弧なら、文末記号の直後にあるとき前の文に付く
-            let s = format!("前。{c}後");
-            let first = plain.split(&s)[0].range.clone();
-            assert_eq!(
-                s[first].ends_with(c),
-                text::is_closing_bracket(c) || text::is_sentence_ender(c),
-                "閉じ括弧の判定が文分割と食い違う: {c:?}"
-            );
-            // 開き括弧なら、対応する閉じ括弧との間の文末記号で分割しない
-            if let Some(close) = text::closing_bracket(c) {
-                assert_eq!(count(&format!("{c}中。{close}後。")), 1, "{c:?}{close:?}");
-            }
-        }
+    fn short_exception_words_do_not_merge_ordinary_sentences() {
+        // 例外表の短い語 (「べる。」「すぎ。」) と同じ形の文末でも、次の文とつなげない
+        assert_eq!(
+            texts("高すぎ。でも買った。"),
+            vec!["高すぎ。", "でも買った。"]
+        );
+        assert_eq!(
+            texts("意見を述べる。では次に進む。"),
+            vec!["意見を述べる。", "では次に進む。"]
+        );
+    }
+
+    #[test]
+    fn decimal_points_and_full_width_exception_words_are_kept() {
+        assert_eq!(
+            texts("円周率は３．１４です。次の文。"),
+            vec!["円周率は３．１４です。", "次の文。"]
+        );
+        assert_eq!(
+            texts("Ｙａｈｏｏ！ニュースを見た。次の文。"),
+            vec!["Ｙａｈｏｏ！ニュースを見た。", "次の文。"]
+        );
+    }
+
+    /// 組み込みの例外表が変わると文の数が変わり、文長などの統計 (校正の前提) が変わる。
+    ///
+    /// hasami を上げてここが落ちたら、手元の文書で分割の差分 (区切りが増えた・消えた箇所) を
+    /// 確かめてから値を書き換える。例外表の出典の表示が変わっていないかも確かめ、変わっていれば
+    /// THIRD_PARTY_NOTICES.md の写しを直す。
+    #[test]
+    fn builtin_exception_table_version_is_pinned() {
+        assert_eq!(
+            hasami::sentence::BUILTIN_EXCEPTIONS_VERSION,
+            "18918-1da7a834bf345567"
+        );
     }
 }

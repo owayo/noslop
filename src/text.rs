@@ -62,76 +62,13 @@ pub fn is_comma(c: char) -> bool {
     matches!(c, '、' | '，' | '､')
 }
 
-/// 文末記号 (文分割に使う `hasami::sentence` と同じ集合)。
+/// 文末記号 (`is_sentence_ender`)・開き括弧に対応する閉じ括弧 (`closing_bracket`)・閉じ括弧
+/// (`is_closing_bracket`) の判定。
 ///
-/// 字だけで判定する。ASCII の `!` `?` は URL やコード片にも現れるため、文分割
-/// ([`crate::segment`]) は直後の文字も見て文末かどうかを決める。
-pub fn is_sentence_ender(c: char) -> bool {
-    matches!(
-        c,
-        '。' | '！' | '？' | '!' | '?' | '‼' | '⁇' | '⁈' | '⁉' | '．' | '｡'
-    )
-}
-
-/// 開き括弧に対応する閉じ括弧を返す (文分割に使う `hasami::sentence` と同じ括弧類)。
-///
-/// ASCII の `"` `'` は開閉が同じ字で、アポストロフィや寸法表記にも使われるため含めない。
-pub fn closing_bracket(open: char) -> Option<char> {
-    Some(match open {
-        '「' => '」',
-        '『' => '』',
-        '（' => '）',
-        '(' => ')',
-        '〔' => '〕',
-        '［' => '］',
-        '[' => ']',
-        '｛' => '｝',
-        '{' => '}',
-        '〈' => '〉',
-        '《' => '》',
-        '【' => '】',
-        '〖' => '〗',
-        '〘' => '〙',
-        '〚' => '〛',
-        '｟' => '｠',
-        '“' => '”',
-        '‘' => '’',
-        '«' => '»',
-        '‹' => '›',
-        '｢' => '｣',
-        '〝' => '〟',
-        _ => return None,
-    })
-}
-
-/// 閉じ括弧か。
-pub fn is_closing_bracket(c: char) -> bool {
-    matches!(
-        c,
-        '」' | '』'
-            | '）'
-            | ')'
-            | '〕'
-            | '］'
-            | ']'
-            | '｝'
-            | '}'
-            | '〉'
-            | '》'
-            | '】'
-            | '〗'
-            | '〙'
-            | '〛'
-            | '｠'
-            | '”'
-            | '’'
-            | '»'
-            | '›'
-            | '｣'
-            | '〟'
-            | '〞'
-    )
-}
+/// ルールと文分割 ([`crate::segment`]) で字の集合がずれないよう、文分割に使う `hasami::sentence`
+/// の判定をそのまま使う。どれも字だけで決まり、ASCII の `!` `?` が URL の `?id=1` のように
+/// 文末として働かない場合 (直後の字で決まる) は区別しない。
+pub use hasami::sentence::{closing_bracket, is_closing_bracket, is_sentence_ender};
 
 /// 読み手が実際に読む文字数の近似。
 ///
@@ -203,13 +140,6 @@ mod tests {
         assert_eq!(reading_length("今日は 晴れ。"), 5);
         assert_eq!(reading_length("本当！？"), 2);
         assert_eq!(reading_length("\u{FFFC}を実行する。"), 6);
-    }
-
-    #[test]
-    fn brackets_pair_up() {
-        assert_eq!(closing_bracket('「'), Some('」'));
-        assert_eq!(closing_bracket('a'), None);
-        assert!(is_closing_bracket('）'));
     }
 
     #[test]

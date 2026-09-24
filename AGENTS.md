@@ -14,7 +14,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 - Rust (edition 2024)。ツールチェーンの版は `mise.toml` が正
 - Markdown: `pulldown-cmark`
-- 文分割: [hasami](https://github.com/owayo/hasami) の `hasami::sentence` (辞書を使わない)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。上げるときはタグを書き換えて `cargo update -p hasami` を実行する
+- 文分割: [hasami](https://github.com/owayo/hasami) の `hasami::sentence` (辞書を使わない)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。`default-features = false` なら依存は増えない。上げるときはタグを書き換えて `cargo update -p hasami` を実行し、例外表の版を固定したテスト (`segment.rs`) が落ちたら分割の差分と THIRD_PARTY_NOTICES.md の NOTICE の写しを確かめる
 - 語句の照合: `aho-corasick` / `regex`
 - ファイル探索: `ignore` (.gitignore を尊重)、並列化: `rayon`
 - CLI: `clap`、設定: `toml` + `serde`、出力の色: `anstream` / `anstyle`
@@ -70,9 +70,9 @@ flowchart TD
 | `src/document.rs` | 文書モデル。解析用テキストと原文の対応 (`TextMap`)、行・列 (`LineIndex`) |
 | `src/markdown.rs` | Markdown をブロック (段落・リスト項目・見出し・表セル) に分け、コード・URL・装飾を解析用テキストから外す |
 | `src/plaintext.rs` | テキストをブロックに分ける (空行・字下げ・箇条書き記号。空行がほとんどない文書は 1 行 1 段落とみなし、文末記号のない短い 1 行は見出しと推定する。コメントだけの行は段落を切らない) |
-| `src/segment.rs` | 文分割。`hasami::sentence` への橋渡し (括弧の対応を取ってから、対応の取れた括弧の内側と例外表の語の内側では分割しない)。改行を文の区切りにするモードでは、`line_breaks` の位置に改行の字を差し込んで分割し、範囲を解析用テキストの位置に戻す。ルールが使う `text.rs` の文末記号・括弧の判定は、hasami と同じ字の集合であることをテストで確かめている |
+| `src/segment.rs` | 文分割。`hasami::sentence` への橋渡し (括弧の対応を取ってから、対応の取れた括弧の内側と例外表の語の内側では分割しない)。改行を文の区切りにするモードでは、`line_breaks` の位置を改行とみなして分割する (`split_with_breaks`)。組み込みの例外表の版 (`BUILTIN_EXCEPTIONS_VERSION`) をテストで固定し、表が変わったら気付けるようにしている |
 | `src/directive.rs` | `<!-- noslop-... -->` の読み取り |
-| `src/text.rs` | 文字種の判定と文長の数え方。文末の記号を除いた本体と、名詞らしい終止 (体言止め) の推定もここに置き、R06・R12 と `noslop diff` で共有する |
+| `src/text.rs` | 文字種の判定と文長の数え方。文末記号・括弧の判定は、文分割と字の集合がずれないよう `hasami::sentence` のものを再公開する。文末の記号を除いた本体と、名詞らしい終止 (体言止め) の推定もここに置き、R06・R12 と `noslop diff` で共有する |
 | `src/genre.rs` | ジャンルと別名 |
 | `src/diagnostic.rs` | 診断・重大度・レーン・ステータス・原文上の範囲 |
 | `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |

@@ -27,8 +27,8 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
 globset = "0.4.20"
 # 文分割 (辞書を使わない hasami::sentence)。crates.io の同名クレートは別物なので、git のタグで入れる。
-# 既定の feature (cli) は辞書の構築と CLI の依存を引くので切る (残る依存は memmap2 と bytemuck)
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.100", default-features = false }
+# 既定の feature (cli) は辞書の構築と CLI、analyzer は形態素解析の依存を引くので切る (文分割だけなら依存なし)
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.101", default-features = false }
 ignore = "0.4.33"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rayon = "1.12.0"
