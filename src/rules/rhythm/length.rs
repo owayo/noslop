@@ -212,7 +212,8 @@ fn longest_fragment(doc: &Document, s: &Sentence) -> Longest {
 /// 同じ分割器なので、どの文末記号が文末として働くかは文分割と同じ判定になり、URL の `?id=1`、
 /// 例外表の語 (`Yahoo!` など)、小数点 (`１．５`) では区切らない。`chunk_ends` は直後の閉じ括弧を
 /// 次の区間に入れ、改行の字でも区切るので、閉じ括弧は前の断片に移し、文末記号の直後でない区切りは
-/// 使わない。
+/// 使わない。`chunk_ends` は形態素解析の前分割向けの関数なので、括弧の中でも区切る文分割を
+/// hasami に求めている (owayo/hasami#9)。
 fn fragment_ranges(text: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut start = 0;
