@@ -80,14 +80,19 @@ fn check_reports_but_exits_zero_by_default() {
         .assert()
         .code(0)
         .stdout(predicate::str::contains("📄 docs/guide.md"))
-        .stdout(predicate::str::contains("3:7  警告  X01 TEAM_TERM"))
+        .stdout(predicate::str::contains(
+            "  独自ルールの指摘 1 件 (自然度には入りません)\n",
+        ))
+        .stdout(predicate::str::contains(
+            "3:7  警告  [独自ルール]  X01 TEAM_TERM",
+        ))
         .stdout(predicate::str::contains("^^^^^^^^^^"))
         .stdout(predicate::str::contains(
             "💡 用語集の表記に合わせてください",
         ))
         .stdout(predicate::str::contains("📄 docs/memo.md"))
         .stdout(predicate::str::contains(
-            "✖ 1 件の指摘 (重大 0・警告 1・情報 0) — 2 ファイルを検査",
+            "✖ AI 臭さの指摘 0 件、独自ルールの指摘 1 件 (警告 1) — 2 ファイルを検査",
         ));
 }
 

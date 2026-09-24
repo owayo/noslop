@@ -317,21 +317,49 @@ A suppression without a reason abandons the decision. Even a short reason such a
 
 ```text
 📄 docs/meeting.md
-  3:1  情報  P03 AI_CONJUNCTION
+  AI 臭さの指摘 2 件
+  3:1  情報  [AI 臭さ]  P03 AI_CONJUNCTION
     「このように」は前の内容を機械的に束ねる接続です（人間の文章にもよく出るため、弱い手掛かりとして扱っています）
     │ このように、定例会議を減らしたことはチーム全体にとって良い変化だったと言えるだろう。
     │ ^^^^^^^^^^
     💡 接続語に頼らず、前の内容の具体的な事実や疑問から次の話へつないでください
-  3:35  警告  P01 AI_CONCLUSION
+  3:35  警告  [AI 臭さ]  P01 AI_CONCLUSION
     「と言えるだろう」は結論を定型句で押し付ける締めです
     │ このように、定例会議を減らしたことはチーム全体にとって良い変化だったと言えるだろう。
     │                                                                     ^^^^^^^^^^^^^^
     💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
 
-✖ 2 件の指摘 (重大 0・警告 1・情報 1) — 1 ファイルを検査
+✖ AI 臭さの指摘 2 件 (警告 1・情報 1) — 1 ファイルを検査、辞書あり (同梱の ipadic)
 ```
 
-Messages are in Japanese. Lines and columns are 1-based, and columns count characters. Documents with at least 100 characters get a naturalness score next to the file name (e.g. `自然度 56/100 (要修正)`). Findings from experimental entries are marked `[実験的]`.
+Messages are in Japanese. Lines and columns are 1-based, and columns count characters.
+
+- Findings are grouped per file into lane sections, in the order AI smell (`AI 臭さ`) → custom rules (`独自ルール`) → readability (`読みやすさ`). Within a section they follow the document order. Lanes without findings get no section
+- Every finding shows its lane (`[AI 臭さ]`, `[独自ルール]`, `[読みやすさ]`) next to its severity. Findings from experimental entries are also marked `[実験的]` at the end
+- The summary at the bottom counts each lane with the same names as the section headings, followed by a severity breakdown. AI smell is always shown, even at 0; custom rules and readability appear only when they have findings
+- The leading ✖ means there are AI-smell or custom-rule findings, or `--fail-on` was tripped. Readability findings alone get ✔
+- Documents with at least 100 characters get a naturalness score next to the file name (e.g. `自然度 56/100 (要修正)`)
+
+When there are readability findings, the readability section follows the AI-smell section. In the example below the readability finding (line 3) comes first in the document, but the AI-smell section is still listed first.
+
+```text
+📄 docs/plan.md
+  AI 臭さの指摘 1 件
+  5:26  警告  [AI 臭さ]  P01 AI_CONCLUSION
+    「と言えるだろう」は結論を定型句で押し付ける締めです
+    │ 会議を減らしたことは、チームにとって良い変化だったと言えるだろう。
+    │                                                   ^^^^^^^^^^^^^^
+    💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
+
+  読みやすさの指摘 1 件 (自然度には入りません)
+  3:4  情報  [読みやすさ]  P15 KANJI_RUN
+    漢字が 8 字続いています (「全社業務改善計画」)
+    │ 来期は全社業務改善計画に沿って、会議の数を半分にします。
+    │       ^^^^^^^^^^^^^^^^
+    💡 語の切れ目が読み取れるか確かめ、助詞や動詞を補って開いてください
+
+✖ AI 臭さの指摘 1 件 (警告 1)、読みやすさの指摘 1 件 (情報 1) — 1 ファイルを検査、辞書あり (同梱の ipadic)
+```
 
 ### json
 
