@@ -36,29 +36,268 @@ noslop の文分割は、日本語の形態素解析器 [hasami](https://github.
 
 noslop splits sentences with the dictionary-free splitter (`hasami::sentence`) of hasami, a Japanese morphological analyzer, which is statically linked into the distributed binaries. hasami is by the same author as noslop; its copyright notice and license (MIT License, Copyright (c) 2026 Yohei) are the same as noslop's [LICENSE](LICENSE).
 
-### hasami に組み込まれた例外表の出典
+### hasami に組み込まれた例外表の表示
 
-hasami の文分割は、表層に文末記号を含む語（`Yahoo!ニュース`、`モーニング娘。` など約 2 万 2 千語）の例外表を組み込んでおり、noslop のバイナリにも含まれます。この表は hasami の統合辞書（ipadic-neologd-sudachi）の表層形から抽出したもので、辞書は次のデータに由来します。NEologd が使っているデータソースの一覧などの詳細は、hasami の [THIRD_PARTY_LICENSES.md](https://github.com/owayo/hasami/blob/main/THIRD_PARTY_LICENSES.md) にあります。
+hasami の文分割は、表層に文末記号を含む語（`Yahoo!ニュース`、`モーニング娘。` など約 1 万 9 千語）の例外表を組み込んでおり、noslop のバイナリにも含まれます。例外表は辞書データ（mecab-ipadic・mecab-ipadic-NEologd・SudachiDict）から作った派生データで、配布するときに添える表示を hasami が NOTICE にまとめています。以下は hasami v26.9.101 の `src/sentence/builtin_exceptions.NOTICE` の写しです。NOTICE が求める Apache License 2.0 の全文は、このファイルの末尾にあります。
 
-The splitter embeds an exception table of about 22,000 words that contain sentence-ending marks (such as `Yahoo!ニュース` and `モーニング娘。`), and the table is included in noslop's binaries. It was extracted from the surface forms of hasami's combined dictionary (ipadic-neologd-sudachi), which derives from the data below. Further details, including the data sources used by NEologd, are in hasami's [THIRD_PARTY_LICENSES.md](https://github.com/owayo/hasami/blob/main/THIRD_PARTY_LICENSES.md).
-
-- [SudachiDict](https://github.com/WorksApplications/SudachiDict) — Copyright (c) 2017-2023 Works Applications Co., Ltd. Apache License, Version 2.0（全文は末尾）
-  - 語彙の一部は [UniDic](https://unidic.ninjal.ac.jp/)（Copyright (c) 2011-2013, The UniDic Consortium）に由来し、BSD 3-Clause License（全文は末尾）のもとで使われています
-  - 語彙の一部は [NEologd](https://github.com/neologd/mecab-unidic-neologd)（Copyright (C) 2015-2019 Toshinori Sato (@overlast)、Apache License, Version 2.0）に由来します
-- [mecab-ipadic](https://taku910.github.io/mecab/) — Copyright 2000, 2001, 2002, 2003 Nara Institute of Science and Technology. 条件は mecab-ipadic に同梱の COPYING によります
-- [mecab-ipadic-NEologd](https://github.com/neologd/mecab-ipadic-neologd) — Copyright (C) 2015-2019 Toshinori Sato (@overlast). Apache License, Version 2.0（全文は末尾）
-
-## 参考にしたもの（コードは含まない）
-
-- [textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)（MIT）— AI が書いた文章に出やすい癖を textlint のルールとして集めたプリセットです。チャット応答の名残・誇張表現・コロンでの列挙の導入・見出しの装飾など、観点の洗い出しの参考にしました。noslop のルールと語句は独自に選び直したもので、プリセットのコードと語句の一覧は含みません。
-
-  A textlint preset that collects habits common in AI-written text. It informed which aspects to look at (chat-reply leftovers, hype, colon-led lists, decorated headings and so on). noslop's rules and phrases were selected independently; no code or phrase lists from the preset are included.
-
-## ライセンスの全文
-
-### BSD 3-Clause License（UniDic）
+The splitter embeds an exception table of about 19,000 words that contain sentence-ending marks (such as `Yahoo!ニュース` and `モーニング娘。`), and the table is included in noslop's binaries. The table is derived from dictionary data (mecab-ipadic, mecab-ipadic-NEologd and SudachiDict), and hasami collects the notices required for redistribution in a NOTICE file. The following is a copy of `src/sentence/builtin_exceptions.NOTICE` from hasami v26.9.101. The full text of the Apache License 2.0 that the NOTICE requires is at the end of this file.
 
 ```text
+hasami: 文分割の組み込みの例外表の NOTICE
+================================================================================
+
+対象: hasami（https://github.com/owayo/hasami）の src/sentence/builtin_exceptions.txt
+
+この NOTICE は、hasami の文分割の組み込みの例外表を含むものを配布するときに添える表示を
+まとめたものである。例外表（と、表から作る照合の索引）は hasami のライブラリに埋め込まれ、文分割
+（hasami::sentence）や形態素解析（Analyzer。入力を例外表の語の内側で割らないように前分割する）を
+使うバイナリに入る。辞書ファイル（.hsd）を同梱しなくても入る。
+このファイルをそのまま、または内容を配布物の NOTICE やサードパーティライセンスの一覧に写して使う。
+hasami 自体のライセンス（MIT License。hasami の LICENSE）の表示は、これとは別に要る。
+
+
+例外表について
+--------------
+
+例外表は、表層に文末記号（。！？!?‼⁇⁈⁉．｡）を含む語（「モーニング娘。」「Yahoo!ニュース」など）
+の一覧で、文分割がこれらの語の内側で文を切らないために使う。hasami は、配布辞書
+dict/ipadic-neologd-sudachi.hsd の全表層形から文末記号を含む語を規則で選び、表記を整えて
+1 行 1 語で並べた（hasami export-sentence-exceptions。規則は表の先頭のコメントにある）。
+元のデータから語を選び、表記を整えて表層形以外を除いた派生データである。
+
+その辞書は次のデータから作られており、例外表の語はこれらのデータの表層形から作ったものである。
+
+  1. mecab-ipadic 2.7.0-20070801                                  NAIST-2003
+  2. mecab-ipadic-NEologd（seed）                                 Apache-2.0
+  3. SudachiDict（raw 辞書 20260723 の small_lex・core_lex）      Apache-2.0
+     SudachiDict は UniDic（BSD-3-Clause）と NEologd（mecab-unidic-neologd、Apache-2.0）の
+     一部を含む
+
+例外表に掛かるライセンスを SPDX の式で書くと NAIST-2003 AND Apache-2.0 AND BSD-3-Clause である
+（hasami が語を選んで並べた部分は MIT）。
+ソースごとの語数は hasami の THIRD_PARTY_LICENSES.md にある。表は抽出規則を変えて作り直すことが
+あるが、元になるデータが変わらなければこの NOTICE はそのまま使える。
+
+Apache License 2.0 の全文は https://www.apache.org/licenses/LICENSE-2.0.txt にある。
+2・3 を含むものを配布するときは、この全文の写しを添える（Apache License 2.0 第 4 条 (a)）。
+
+
+================================================================================
+1. mecab-ipadic
+================================================================================
+
+https://taku910.github.io/mecab/
+（条文は https://github.com/taku910/mecab の mecab-ipadic/COPYING）
+ライセンス: Nara Institute of Science and Technology License (2003)（SPDX: NAIST-2003）
+
+NAIST-2003 は、元の形でも改変したものでも、すべての写しに次の著作権表示とそれに続くすべての段落
+（ICOT Free Software の条件と NO WARRANTY を含む）を含めることを求める。以下は COPYING の全文である。
+
+Copyright 2000, 2001, 2002, 2003 Nara Institute of Science
+and Technology.  All Rights Reserved.
+
+Use, reproduction, and distribution of this software is permitted.
+Any copy of this software, whether in its original form or modified,
+must include both the above copyright notice and the following
+paragraphs.
+
+Nara Institute of Science and Technology (NAIST),
+the copyright holders, disclaims all warranties with regard to this
+software, including all implied warranties of merchantability and
+fitness, in no event shall NAIST be liable for
+any special, indirect or consequential damages or any damages
+whatsoever resulting from loss of use, data or profits, whether in an
+action of contract, negligence or other tortuous action, arising out
+of or in connection with the use or performance of this software.
+
+A large portion of the dictionary entries
+originate from ICOT Free Software.  The following conditions for ICOT
+Free Software applies to the current dictionary as well.
+
+Each User may also freely distribute the Program, whether in its
+original form or modified, to any third party or parties, PROVIDED
+that the provisions of Section 3 ("NO WARRANTY") will ALWAYS appear
+on, or be attached to, the Program, which is distributed substantially
+in the same form as set out herein and that such intended
+distribution, if actually made, will neither violate or otherwise
+contravene any of the laws and regulations of the countries having
+jurisdiction over the User or the intended distribution itself.
+
+NO WARRANTY
+
+The program was produced on an experimental basis in the course of the
+research and development conducted during the project and is provided
+to users as so produced on an experimental basis.  Accordingly, the
+program is provided without any warranty whatsoever, whether express,
+implied, statutory or otherwise.  The term "warranty" used herein
+includes, but is not limited to, any warranty of the quality,
+performance, merchantability and fitness for a particular purpose of
+the program and the nonexistence of any infringement or violation of
+any right of any third party.
+
+Each user of the program will agree and understand, and be deemed to
+have agreed and understood, that there is no warranty whatsoever for
+the program and, accordingly, the entire risk arising from or
+otherwise connected with the program is assumed by the user.
+
+Therefore, neither ICOT, the copyright holder, or any other
+organization that participated in or was otherwise related to the
+development of the program and their respective officials, directors,
+officers and other employees shall be held liable for any and all
+damages, including, without limitation, general, special, incidental
+and consequential damages, arising out of or otherwise in connection
+with the use or inability to use the program or any product, material
+or result produced or otherwise obtained by using the program,
+regardless of whether they have been advised of, or otherwise had
+knowledge of, the possibility of such damages at any time during the
+project or thereafter.  Each user will be deemed to have agreed to the
+foregoing by his or her commencement of use of the program.  The term
+"use" as used herein includes, but is not limited to, the use,
+modification, copying and distribution of the program and the
+production of secondary products from the program.
+
+In the case where the program, whether in its original form or
+modified, was distributed or delivered to or received by a user from
+any person, organization or entity other than ICOT, unless it makes or
+grants independently of ICOT any specific warranty to the user in
+writing, such person, organization or entity, will also be exempted
+from and not be held liable to the user for any such damages as noted
+above as far as the program is concerned.
+
+================================================================================
+2. mecab-ipadic-NEologd
+================================================================================
+
+https://github.com/neologd/mecab-ipadic-neologd
+ライセンス: Apache License, Version 2.0（SPDX: Apache-2.0）
+
+上流に NOTICE ファイルは無い。以下は上流の COPYING の全文（著作権表示とデータの出典の表示）である。
+
+Copyright (C) 2015-2019 Toshinori Sato (@overlast)
+
+      https://github.com/neologd/mecab-ipadic-neologd
+
+    i. 本データは、株式会社はてなが提供するはてなキーワード一覧ファイル
+       中の表記、及び、読み仮名の大半を使用している。
+
+       はてなキーワード一覧ファイルの著作権は、株式会社はてなにある。
+
+       はてなキーワード一覧ファイルの使用条件に基づき、また、
+       データ使用の許可を頂いたことに対する感謝の意を込めて、
+       以下に株式会社はてなおよびはてなキーワードへの参照をURLで示す。
+
+       株式会社はてな : http://hatenacorp.jp/information/outline
+
+       はてなキーワード :
+       http://developer.hatena.ne.jp/ja/documents/keyword/misc/catalog
+
+   ii. 本データは、日本郵便株式会社が提供する郵便番号データ中の表記、
+       及び、読み仮名を使用している。
+
+       日本郵便株式会社は、郵便番号データに限っては著作権を主張しないと
+       述べている。
+
+       日本郵便株式会社の郵便番号データに対する感謝の意を込めて、
+       以下に日本郵便株式会社および郵便番号データへの参照をURLで示す。
+
+       日本郵便株式会社 :
+         http://www.post.japanpost.jp/about/profile.html
+
+       郵便番号データ :
+         http://www.post.japanpost.jp/zipcode/dl/readme.html
+
+  iii. 本データは、スナフキん氏が提供する日本全国駅名一覧中の表記、及び
+       読み仮名を使用している。
+
+       日本全国駅名一覧の著作権は、スナフキん氏にある。
+
+       スナフキん氏は 「このデータを利用されるのは自由ですが、その際に
+       不利益を被ったりした場合でも、スナフキんは一切責任は負えません
+       ことをご承知おき下さい」と述べている。
+
+       スナフキん氏に対する感謝の意を込めて、
+       以下に日本全国駅名一覧のコーナーへの参照をURLで示す。
+
+       日本全国駅名一覧のコーナー :
+         http://www5a.biglobe.ne.jp/~harako/data/station.htm
+
+   iv. 本データは、工藤拓氏が提供する人名(姓/名)エントリデータ中の、
+       漢字表記の姓・名とそれに対応する読み仮名を使用している。
+
+       人名(姓/名)エントリデータは被災者・安否不明者の人名の
+       表記揺れ対策として、Mozcの人名辞書を活用できるという
+       工藤氏の考えによって提供されている。
+
+       工藤氏に対する感謝の意を込めて、
+       以下にデータ本体と経緯が分かる情報への参照をURLで示す。
+
+       人名(姓/名)エントリデータ :
+         http://chasen.org/~taku/software/misc/personal_name.zip
+
+       上記データが提供されることになった経緯
+         http://togetter.com/li/111529
+
+    v. 本データは、Web上からクロールした大量の文書データから抽出した
+       表記とそれに対応する読み仮名のデータを含んでいる。
+
+       抽出した表記とそれに対応する読み仮名の組は、上記の i. から iv.
+       の言語資源の組み合わせによって得られる組のみを採録した。
+
+       Web 上に文書データを公開して下さっている皆様に感謝いたします。
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+================================================================================
+3. SudachiDict（UniDic と NEologd の一部を含む）
+================================================================================
+
+https://github.com/WorksApplications/SudachiDict
+ライセンス: Apache License, Version 2.0（SPDX: Apache-2.0）。含まれる UniDic は BSD-3-Clause、
+NEologd（mecab-unidic-neologd）は Apache-2.0。
+
+以下は SudachiDict の README にあるライセンスの表示である。
+
+   Copyright (c) 2017-2023 Works Applications Co., Ltd.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+This project includes UniDic and a part of NEologd.
+
+SudachiDict には NOTICE という名前のファイルは無く、帰属表示は LEGAL（LEGAL NOTICE INFORMATION）に
+ある。以下は LEGAL の全文である。例外表の元になったのは small_lex.csv と core_lex.csv で、
+matrix.def.zip と notcore_lex.csv は使っていない。
+
+LEGAL NOTICE INFORMATION
+========================
+
+- All the files in this distribution are covered under the Apache License
+version 2.0. (see the file LICENSE-2.0.txt)
+
+
+- src/main/text/small_lex.csv contains a part
+  of UniDic (https://unidic.ninjal.ac.jp/).
+- src/main/text/matrix.def.zip is a part of UniDic.
+
 Copyright (c) 2011-2013, The UniDic Consortium
 All rights reserved.
 
@@ -89,9 +328,105 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+- src/main/text/core_lex.csv and src/main/text/notcore_lex.csv contain
+a part of NEologd (https://github.com/neologd/mecab-unidic-neologd).
+
+Copyright (C) 2015-2019 Toshinori Sato (@overlast)
+
+      https://github.com/neologd/mecab-unidic-neologd
+
+    i. 本データは、株式会社はてなが提供するはてなキーワード一覧ファイル
+       中の表記、及び、読み仮名の大半を使用している。
+
+       はてなキーワード一覧ファイルの著作権は、株式会社はてなにある。
+
+       はてなキーワード一覧ファイルの使用条件に基づき、また、
+       データ使用の許可を頂いたことに対する感謝の意を込めて、
+       以下に株式会社はてなおよびはてなキーワードへの参照をURLで示す。
+
+       株式会社はてな : http://hatenacorp.jp/information/outline
+
+       はてなキーワード :
+       http://developer.hatena.ne.jp/ja/documents/keyword/misc/catalog
+
+   ii. 本データは、日本郵便株式会社が提供する郵便番号データ中の表記、
+       及び、読み仮名を使用している。
+
+       日本郵便株式会社は、郵便番号データに限っては著作権を主張しないと
+       述べている。
+
+       日本郵便株式会社の郵便番号データに対する感謝の意を込めて、
+       以下に日本郵便株式会社および郵便番号データへの参照をURLで示す。
+
+       日本郵便株式会社 :
+         http://www.post.japanpost.jp/about/profile.html
+
+       郵便番号データ :
+         http://www.post.japanpost.jp/zipcode/dl/readme.html
+
+  iii. 本データは、スナフキん氏が提供する日本全国駅名一覧中の表記、及び
+       読み仮名を使用している。
+
+       日本全国駅名一覧の著作権は、スナフキん氏にある。
+
+       スナフキん氏は 「このデータを利用されるのは自由ですが、その際に
+       不利益を被ったりした場合でも、スナフキんは一切責任は負えません
+       ことをご承知おき下さい」と述べている。
+
+       スナフキん氏に対する感謝の意を込めて、
+       以下に日本全国駅名一覧のコーナーへの参照をURLで示す。
+
+       日本全国駅名一覧のコーナー :
+         http://www5a.biglobe.ne.jp/~harako/data/station.htm
+
+   iv. 本データは、工藤拓氏が提供する人名(姓/名)エントリデータ中の、
+       漢字表記の姓・名とそれに対応する読み仮名を使用している。
+
+       人名(姓/名)エントリデータは被災者・安否不明者の人名の
+       表記揺れ対策として、Mozcの人名辞書を活用できるという
+       工藤氏の考えによって提供されている。
+
+       工藤氏に対する感謝の意を込めて、
+       以下にデータ本体と経緯が分かる情報への参照をURLで示す。
+
+       人名(姓/名)エントリデータ :
+         http://chasen.org/~taku/software/misc/personal_name.zip
+
+       上記データが提供されることになった経緯
+         http://togetter.com/li/111529
+
+    v. 本データは、Web上からクロールした大量の文書データから抽出した
+       表記とそれに対応する読み仮名のデータを含んでいる。
+
+       抽出した表記とそれに対応する読み仮名の組は、上記の i. から iv.
+       の言語資源の組み合わせによって得られる組のみを採録した。
+
+       Web 上に文書データを公開して下さっている皆様に感謝いたします。
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 ```
 
-### Apache License, Version 2.0（SudachiDict・NEologd・mecab-ipadic-NEologd）
+## 参考にしたもの（コードは含まない）
+
+- [textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)（MIT）— AI が書いた文章に出やすい癖を textlint のルールとして集めたプリセットです。チャット応答の名残・誇張表現・コロンでの列挙の導入・見出しの装飾など、観点の洗い出しの参考にしました。noslop のルールと語句は独自に選び直したもので、プリセットのコードと語句の一覧は含みません。
+
+  A textlint preset that collects habits common in AI-written text. It informed which aspects to look at (chat-reply leftovers, hype, colon-led lists, decorated headings and so on). noslop's rules and phrases were selected independently; no code or phrase lists from the preset are included.
+
+## ライセンスの全文
+
+### Apache License, Version 2.0（hasami の例外表の NOTICE の 2・3）
 
 ```text
 
@@ -145,7 +480,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
       "Contribution" shall mean any work of authorship, including
       the original version of the Work and any modifications or additions
       to that Work or Derivative Works thereof, that is intentionally
-      submitted to the Licensor for inclusion in the Work by the copyright owner
+      submitted to Licensor for inclusion in the Work by the copyright owner
       or by an individual or Legal Entity authorized to submit on behalf of
       the copyright owner. For the purposes of this definition, "submitted"
       means any form of electronic, verbal, or written communication sent
@@ -157,7 +492,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
       designated in writing by the copyright owner as "Not a Contribution."
 
       "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by the Licensor and
+      on behalf of whom a Contribution has been received by Licensor and
       subsequently incorporated within the Work.
 
    2. Grant of Copyright License. Subject to the terms and conditions of
@@ -203,7 +538,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
       (d) If the Work includes a "NOTICE" text file as part of its
           distribution, then any Derivative Works that You distribute must
           include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding any notices that do not
+          within such NOTICE file, excluding those notices that do not
           pertain to any part of the Derivative Works, in at least one
           of the following places: within a NOTICE text file distributed
           as part of the Derivative Works; within the Source form or
@@ -278,20 +613,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
       boilerplate notice, with the fields enclosed by brackets "[]"
       replaced with your own identifying information. (Don't include
       the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. Please also get an
-      information on the current year for the copyright below.
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
 
-      Copyright [yyyy] [name of copyright owner]
+   Copyright [yyyy] [name of copyright owner]
 
-      Licensed under the Apache License, Version 2.0 (the "License");
-      you may not use this file except in compliance with the License.
-      You may obtain a copy of the License at
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
 
-          http://www.apache.org/licenses/LICENSE-2.0
+       http://www.apache.org/licenses/LICENSE-2.0
 
-      Unless required by applicable law or agreed to in writing, software
-      distributed under the License is distributed on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-      See the License for the specific language governing permissions and
-      limitations under the License.
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
 ```
