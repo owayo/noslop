@@ -635,7 +635,7 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 
 ほかのルールは辞書の有無で変わりません。文分割も辞書を使いません。体言止め（R06）は、文書単位の判定が辞書なし・ありで変わらなかったため、辞書なしの推定のままです。
 
-同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB、配布の tar.gz は約 9MB）。読み込みはプロセスで 1 度だけで、文書 1 本の検査は約 3ms 遅くなる程度です。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を読みません。
+同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を読みません。
 
 ### 使い方の指定
 
@@ -659,7 +659,7 @@ mode = "auto"
 
 ### 別の辞書を使う
 
-hasami のリポジトリに、ほかのビルド済みの辞書が Git LFS で入っています。NEologd の語彙を含む `ipadic-neologd.hsd` と `ipadic-neologd-sudachi.hsd` は収録語が多い一方で、「どうでしょう」「作りました」のようなありふれた表現を 1 語の固有名詞として解析することがあるため、同梱していません（hasami の [#1](https://github.com/owayo/hasami/issues/1)〜[#3](https://github.com/owayo/hasami/issues/3)）。
+hasami のリポジトリに、ほかのビルド済みの辞書が Git LFS で入っています。NEologd の語彙を含む `ipadic-neologd.hsd` と `ipadic-neologd-sudachi.hsd` は、収録語が多い分だけ大きく、どちらも 220MB を超えるため同梱していません。
 
 ```bash
 git lfs install

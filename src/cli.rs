@@ -4,19 +4,22 @@
 //!
 //! - 0: 完了 (指摘の有無は問わない)
 //! - 1: `--fail-on` に指定した重大度以上の、抑制していない指摘がある
-//! - 2: 引数・設定・入出力のエラー (読めないファイルがあっても他のファイルは処理して出力する)
+//! - 2: 引数・設定・入出力・通信のエラー (読めないファイルがあっても他のファイルは処理して出力する)
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anstream::{AutoStream, ColorChoice};
+use clap::builder::{PossibleValue, PossibleValuesParser};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{self, ConfigError, FailOn, LoadedConfig};
 use crate::diagnostic::{Lane, RuleStatus, Severity};
+use crate::dictionaries::{self, Check, Distributed, Outcome};
 use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
 use crate::genre::Genre;
@@ -73,6 +76,13 @@ pub enum Command {
     /// 既定の置き場は ~/.claude/skills/noslop/SKILL.md (claude) か
     /// ~/.codex/skills/noslop/SKILL.md (codex)。すでにあれば上書きする。
     SkillInstall(SkillInstallArgs),
+    /// hasami の配布辞書 (形態素解析の辞書) を取得する・一覧する
+    ///
+    /// 置き場は hasami の share ディレクトリ ($XDG_DATA_HOME/hasami、未設定なら ~/.local/share/hasami)。
+    /// 取得しただけでは使わない。
+    /// 使うときは --dict share:<名前> か、noslop.toml の [morphology] に dictionary = "share:<名前>" を書く。
+    #[command(subcommand)]
+    Dict(DictCommand),
 }
 
 /// 設定ファイルの指定。
@@ -113,7 +123,8 @@ pub struct EngineArgs {
     /// 段落内の改行の扱い
     #[arg(long, value_enum, value_name = "MODE")]
     pub line_breaks: Option<LineBreaksArg>,
-    /// 形態素解析の辞書 (hasami の .hsd)。指定するとこの辞書を必ず使い、品詞で判定する
+    /// 形態素解析の辞書 (hasami の .hsd)。指定するとこの辞書を必ず使い、品詞で判定する。
+    /// share:<名前> で、noslop dict download で取得した辞書を指す
     #[arg(long, value_name = "PATH", conflicts_with = "no_dict")]
     pub dict: Option<PathBuf>,
     /// 形態素解析の辞書を使わず、辞書なしの近似で判定する
@@ -308,6 +319,53 @@ impl From<SkillTarget> for crate::skill::Target {
     }
 }
 
+#[derive(Debug, Subcommand)]
+pub enum DictCommand {
+    /// hasami の配布辞書を取得する (大きさ・SHA-256・辞書の形式を確かめてから置く)
+    ///
+    /// 取得元は、noslop が依存する hasami の版のタグに固定した Git LFS。
+    /// 取得した中身は、そのタグに記録された大きさと SHA-256 で確かめ、辞書として読めることも確かめてから置く。
+    /// 途中で失敗しても、すでにあるファイルは消さず、壊さない。
+    Download(DictDownloadArgs),
+    /// 配布辞書と、取得済みかを表示する (通信しない)
+    List(DictListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DictDownloadArgs {
+    /// 取得する辞書
+    #[arg(
+        value_name = "NAME",
+        default_value = dictionaries::RECOMMENDED,
+        value_parser = dictionary_names()
+    )]
+    pub name: String,
+    /// 保存先 (既定は hasami の share ディレクトリ)
+    #[arg(long, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+    /// 取得元の URL の接頭辞 (ミラーを使うとき。この後に /<名前>.hsd を付けて取得する。
+    /// どの取得元でも大きさと SHA-256 を確かめる)
+    #[arg(long, value_name = "URL", default_value = dictionaries::DEFAULT_SOURCE)]
+    pub source: String,
+    /// 正しいファイルがあっても取り直す。中身の違うファイルも置き換える
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DictListArgs {
+    /// 取得済みかを確かめる場所 (既定は hasami の share ディレクトリ)
+    #[arg(long, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+}
+
+/// `dict download` の NAME に書ける名前 (配布辞書の表から作る)。
+fn dictionary_names() -> PossibleValuesParser {
+    PossibleValuesParser::new(
+        dictionaries::DICTIONARIES.map(|d| PossibleValue::new(d.name).help(d.summary)),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FormatArg {
     /// 端末向け
@@ -494,6 +552,8 @@ pub fn run() -> ExitCode {
         Command::Mcp(args) => mcp(args),
         Command::Hook(HookCommand::ClaudeCode(args)) => crate::hook::claude_code(&args),
         Command::SkillInstall(args) => skill_install(args),
+        Command::Dict(DictCommand::Download(args)) => dict_download(args),
+        Command::Dict(DictCommand::List(args)) => dict_list(args),
     };
     ExitCode::from(code)
 }
@@ -564,8 +624,11 @@ pub(crate) fn config_engine_options(cfg: Option<&LoadedConfig>) -> EngineOptions
 }
 
 /// 設定ファイルに書いたパスを解決する (`~/` はホームディレクトリ、相対パスは設定ファイルの
-/// ディレクトリが基準)。
+/// ディレクトリが基準)。`share:<名前>` は share ディレクトリの辞書の指定なので、そのまま残す。
 fn config_relative_path(cfg: Option<&LoadedConfig>, path: PathBuf) -> PathBuf {
+    if dictionaries::share_name(&path).is_some() {
+        return path;
+    }
     if let (Ok(rest), Some(home)) = (path.strip_prefix("~"), std::env::home_dir()) {
         return home.join(rest);
     }
@@ -1214,6 +1277,276 @@ fn skill_install(args: SkillInstallArgs) -> u8 {
     }
 }
 
+/// 進み具合の行を書き換える間隔。
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
+
+/// hasami の推奨順 (同梱しないビルドが share ディレクトリの辞書を選ぶ順)。
+const HASAMI_PREFERENCE: &str = "ipadic-neologd-sudachi → ipadic-neologd → ipadic";
+
+fn dict_download(args: DictDownloadArgs) -> u8 {
+    let Some(dict) = dictionaries::find(&args.name) else {
+        return error(format!("配布辞書ではありません: {}", args.name));
+    };
+    let share = dictionaries::share_dir();
+    let Some(dir) = args.dir.or_else(|| share.clone()) else {
+        return error(
+            "share ディレクトリが分かりません (XDG_DATA_HOME も HOME も設定されていません)。--dir で保存先を指定してください",
+        );
+    };
+    let mut progress = DownloadProgress::new(dict, &dir, io::stderr().is_terminal());
+    let result = dictionaries::download(dict, &dir, &args.source, args.force, &mut |r, t| {
+        progress.update(r, t)
+    });
+    progress.finish();
+    let message = match result {
+        Ok(Outcome::Present(path)) => format!(
+            "{} は取得済みです (大きさと SHA-256 を確かめました): {}",
+            dict.name,
+            display_path(&path)
+        ),
+        Ok(Outcome::Downloaded(path)) => format!(
+            "{} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): {}",
+            dict.name,
+            display_path(&path)
+        ),
+        Err(e) => return error(e),
+    };
+    let mut out = io::stdout();
+    let _ = writeln!(out, "{message}");
+    let usage = if is_share_dir(&dir, share.as_deref()) {
+        share_usage(&format!("{}{}", dictionaries::SHARE_PREFIX, dict.name))
+    } else {
+        "使うときは --dict にこのファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)".to_string()
+    };
+    let _ = writeln!(out, "{usage}");
+    EXIT_OK
+}
+
+/// `share:<名前>` の辞書の使い方の行。
+fn share_usage(spec: &str) -> String {
+    format!(
+        "使うときは --dict {spec} か、noslop.toml の [morphology] に dictionary = \"{spec}\" を書いてください"
+    )
+}
+
+/// `dir` が share ディレクトリか (相対パスや末尾の区切りの違いは問わない)。
+fn is_share_dir(dir: &Path, share: Option<&Path>) -> bool {
+    let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    share.is_some_and(|share| absolute(dir) == absolute(share))
+}
+
+/// `dict download` の進み具合の表示。
+///
+/// 取得を始めたら (最初の呼び出しで) 取得する辞書と保存先を標準出力に書く。受信量は標準エラーが
+/// 端末のときだけ、`\r` で 1 行を書き換えて出す (0.2 秒以上の間隔で。受信し終えたときは必ず出す)。
+struct DownloadProgress<'a> {
+    dict: &'a Distributed,
+    dir: &'a Path,
+    terminal: bool,
+    started: bool,
+    shown: Option<Instant>,
+}
+
+impl<'a> DownloadProgress<'a> {
+    fn new(dict: &'a Distributed, dir: &'a Path, terminal: bool) -> Self {
+        Self {
+            dict,
+            dir,
+            terminal,
+            started: false,
+            shown: None,
+        }
+    }
+
+    fn update(&mut self, received: u64, total: u64) {
+        if !self.started {
+            self.started = true;
+            let mut out = io::stdout();
+            let _ = writeln!(
+                out,
+                "{} ({} MB) を取得しています: {}",
+                self.dict.name,
+                megabytes(self.dict.size),
+                display_path(self.dir)
+            );
+            let _ = out.flush();
+        }
+        if !self.terminal {
+            return;
+        }
+        let now = Instant::now();
+        let due = self
+            .shown
+            .is_none_or(|last| now.duration_since(last) >= PROGRESS_INTERVAL);
+        if !due && received < total {
+            return;
+        }
+        self.shown = Some(now);
+        let percent = if total == 0 {
+            100
+        } else {
+            received * 100 / total
+        };
+        let mut err = io::stderr();
+        let _ = write!(
+            err,
+            "\r受信 {} / {} MB ({percent}%)",
+            megabytes(received),
+            megabytes(total)
+        );
+        let _ = err.flush();
+    }
+
+    /// 進み具合の行を閉じる (後の出力が同じ行に続かないように)。
+    fn finish(&mut self) {
+        if self.shown.take().is_some() {
+            let _ = writeln!(io::stderr());
+        }
+    }
+}
+
+/// 大きさを 10 進の MB (1,000,000 バイト) で、小数 1 桁で表す。
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1_000_000.0)
+}
+
+/// 利用者に見せるパス。ホームディレクトリの下なら `~` から書く。
+fn display_path(path: &Path) -> String {
+    if let Some(home) = std::env::home_dir()
+        && !home.as_os_str().is_empty()
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+        };
+    }
+    path.display().to_string()
+}
+
+fn dict_list(args: DictListArgs) -> u8 {
+    let share = dictionaries::share_dir();
+    let Some(dir) = args.dir.or_else(|| share.clone()) else {
+        return error(
+            "share ディレクトリが分かりません (XDG_DATA_HOME も HOME も設定されていません)。--dir で確かめる場所を指定してください",
+        );
+    };
+    let listed = dictionaries::list(&dir);
+    let text = dict_list_text(
+        &dir,
+        is_share_dir(&dir, share.as_deref()),
+        &listed,
+        cfg!(feature = "bundled-dict"),
+    );
+    let mut out = io::stdout().lock();
+    let written = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+    if let Err(e) = written
+        && e.kind() != io::ErrorKind::BrokenPipe
+    {
+        return error(format!("出力に失敗しました: {e}"));
+    }
+    if listed.iter().any(|entry| entry.check.is_err()) {
+        EXIT_ERROR
+    } else {
+        EXIT_OK
+    }
+}
+
+/// `dict list` の表。`in_share` は `dir` が share ディレクトリか、`bundled` は辞書を同梱したビルドか。
+fn dict_list_text(
+    dir: &Path,
+    in_share: bool,
+    listed: &[dictionaries::Listed],
+    bundled: bool,
+) -> String {
+    let mut rows = vec![[
+        "名前".to_string(),
+        "大きさ".to_string(),
+        "状態".to_string(),
+        "中身".to_string(),
+    ]];
+    for entry in listed {
+        let state = match &entry.check {
+            Ok(Check::Missing) => "未取得".to_string(),
+            Ok(Check::Verified) => "取得済み (大きさと SHA-256 を確かめました)".to_string(),
+            Ok(Check::Differs) => "中身が違う (hasami の別の版か、壊れています)".to_string(),
+            Err(e) => format!("確かめられません ({e})"),
+        };
+        rows.push([
+            entry.dictionary.name.to_string(),
+            format!("{} MB", megabytes(entry.dictionary.size)),
+            state,
+            entry.dictionary.summary.to_string(),
+        ]);
+    }
+    let width = |column: usize| rows.iter().map(|r| r[column].width()).max().unwrap_or(0);
+    let widths = [width(0), width(1), width(2)];
+
+    let mut s = format!(
+        "hasami {} の配布辞書 (保存先: {})\n\n",
+        dictionaries::HASAMI_TAG,
+        display_path(dir)
+    );
+    for (i, row) in rows.iter().enumerate() {
+        // 大きさは右にそろえる (見出しは左)
+        let size = if i == 0 {
+            pad(&row[1], widths[1])
+        } else {
+            pad_start(&row[1], widths[1])
+        };
+        s.push_str(&format!(
+            "{}  {}  {}  {}\n",
+            pad(&row[0], widths[0]),
+            size,
+            pad(&row[2], widths[2]),
+            row[3]
+        ));
+    }
+    s.push('\n');
+    if in_share {
+        s.push_str(&format!(
+            "取得するときは noslop dict download <名前> (名前を省くと {})\n",
+            dictionaries::RECOMMENDED
+        ));
+        s.push_str(&share_usage("share:<名前>"));
+        s.push('\n');
+    } else {
+        s.push_str(&format!(
+            "取得するときは noslop dict download <名前> --dir {} (名前を省くと {})\n",
+            dir.display(),
+            dictionaries::RECOMMENDED
+        ));
+        s.push_str(
+            "使うときは --dict にファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)\n",
+        );
+    }
+    let fallback = match (bundled, in_share) {
+        (true, _) => {
+            "指定しないときは同梱の ipadic を使います (ここにある辞書は使いません)".to_string()
+        }
+        (false, true) => format!(
+            "このビルドは辞書を同梱していないので、指定しないときはここにある辞書を hasami の推奨順 ({HASAMI_PREFERENCE}) で使います"
+        ),
+        (false, false) => format!(
+            "このビルドは辞書を同梱していないので、指定しないときは share ディレクトリの辞書を hasami の推奨順 ({HASAMI_PREFERENCE}) で使います (ここにある辞書は使いません)"
+        ),
+    };
+    s.push_str(&fallback);
+    s.push('\n');
+    s
+}
+
+/// 右にそろえる ([`pad`] の逆)。
+fn pad_start(s: &str, width: usize) -> String {
+    let w = s.width();
+    if w >= width {
+        s.to_string()
+    } else {
+        format!("{}{s}", " ".repeat(width - w))
+    }
+}
+
 fn mcp(args: McpArgs) -> u8 {
     // Claude Code は起動したサーバーの環境変数 CLAUDE_PROJECT_DIR にプロジェクトのルートを渡す。
     // サーバーの作業ディレクトリは登録したスコープによって変わるので、あればそこから探す。
@@ -1454,6 +1787,127 @@ mod tests {
             lane_label(Lane::Custom),
             "独自ルール (自然度スコアに入らない)"
         );
+    }
+
+    #[test]
+    fn parses_dict_subcommands() {
+        let cli = Cli::try_parse_from(["noslop", "dict", "download"]).unwrap();
+        let Command::Dict(DictCommand::Download(args)) = cli.command else {
+            panic!("dict download");
+        };
+        assert_eq!(args.name, "ipadic-neologd-sudachi");
+        assert_eq!(args.dir, None);
+        assert_eq!(args.source, dictionaries::DEFAULT_SOURCE);
+        assert!(!args.force);
+
+        let cli = Cli::try_parse_from([
+            "noslop",
+            "dict",
+            "download",
+            "ipadic",
+            "--dir",
+            "d",
+            "--source",
+            "https://mirror.example.com/hasami",
+            "--force",
+        ])
+        .unwrap();
+        let Command::Dict(DictCommand::Download(args)) = cli.command else {
+            panic!("dict download");
+        };
+        assert_eq!(args.name, "ipadic");
+        assert_eq!(args.dir, Some(PathBuf::from("d")));
+        assert_eq!(args.source, "https://mirror.example.com/hasami");
+        assert!(args.force);
+        // 名前は配布辞書の表にあるものだけ
+        for name in dictionaries::DICTIONARIES.map(|d| d.name) {
+            assert!(Cli::try_parse_from(["noslop", "dict", "download", name]).is_ok());
+        }
+        let err = Cli::try_parse_from(["noslop", "dict", "download", "unidic"]).unwrap_err();
+        assert!(err.to_string().contains("ipadic-neologd-sudachi"), "{err}");
+
+        let cli = Cli::try_parse_from(["noslop", "dict", "list", "--dir", "d"]).unwrap();
+        let Command::Dict(DictCommand::List(args)) = cli.command else {
+            panic!("dict list");
+        };
+        assert_eq!(args.dir, Some(PathBuf::from("d")));
+    }
+
+    #[test]
+    fn share_specs_in_the_config_are_not_relative_paths() {
+        let loaded = LoadedConfig {
+            path: Path::new("conf").join("noslop.toml"),
+            base_dir: PathBuf::from("conf"),
+            file: config::ConfigFile::default(),
+        };
+        let resolve = |path: &str| config_relative_path(Some(&loaded), PathBuf::from(path));
+        assert_eq!(
+            resolve("share:ipadic-neologd"),
+            PathBuf::from("share:ipadic-neologd")
+        );
+        assert_eq!(resolve("test.hsd"), Path::new("conf").join("test.hsd"));
+    }
+
+    #[test]
+    fn sizes_are_shown_in_decimal_megabytes() {
+        assert_eq!(megabytes(18_125_804), "18.1");
+        assert_eq!(megabytes(237_760_279), "237.8");
+        assert_eq!(megabytes(0), "0.0");
+    }
+
+    #[test]
+    fn paths_under_the_home_directory_start_with_a_tilde() {
+        let Some(home) = std::env::home_dir().filter(|h| h.is_absolute()) else {
+            return;
+        };
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            display_path(&home.join(".local").join("share")),
+            format!("~{sep}.local{sep}share")
+        );
+        assert_eq!(display_path(&home), "~");
+        assert_eq!(display_path(Path::new("rel")), "rel");
+    }
+
+    #[test]
+    fn dict_list_shows_the_state_of_each_dictionary() {
+        let listed: Vec<dictionaries::Listed> = dictionaries::DICTIONARIES
+            .iter()
+            .zip([Ok(Check::Verified), Ok(Check::Differs), Ok(Check::Missing)])
+            .map(|(dictionary, check)| dictionaries::Listed {
+                dictionary,
+                path: PathBuf::from(dictionary.file_name()),
+                check,
+            })
+            .collect();
+        let text = dict_list_text(Path::new("share"), true, &listed, true);
+        let line = |name: &str| {
+            text.lines()
+                .find(|l| l.split_whitespace().next() == Some(name))
+                .unwrap_or_else(|| panic!("{name}\n{text}"))
+        };
+        assert!(text.starts_with("hasami v26.9.103 の配布辞書 (保存先: share)\n"));
+        assert!(line("ipadic").contains(" 18.1 MB  取得済み (大きさと SHA-256 を確かめました)"));
+        assert!(line("ipadic-neologd").contains("中身が違う (hasami の別の版か、壊れています)"));
+        assert!(line("ipadic-neologd-sudachi").contains("237.8 MB  未取得"));
+        assert!(line("ipadic-neologd-sudachi").ends_with("(hasami の推奨、最大の語彙)"));
+        assert!(text.contains("noslop dict download <名前> (名前を省くと ipadic-neologd-sudachi)"));
+        assert!(text.contains("dictionary = \"share:<名前>\""));
+        assert!(
+            text.ends_with(
+                "指定しないときは同梱の ipadic を使います (ここにある辞書は使いません)\n"
+            )
+        );
+
+        let text = dict_list_text(Path::new("elsewhere"), false, &listed, false);
+        assert!(text.contains("--dir elsewhere"), "{text}");
+        assert!(!text.contains("dictionary = \"share:"), "{text}");
+        assert!(
+            text.contains("share ディレクトリの辞書を hasami の推奨順"),
+            "{text}"
+        );
+        let text = dict_list_text(Path::new("share"), true, &listed, false);
+        assert!(text.contains("ここにある辞書を hasami の推奨順 (ipadic-neologd-sudachi → ipadic-neologd → ipadic) で使います"), "{text}");
     }
 
     #[test]

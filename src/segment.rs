@@ -11,6 +11,9 @@
 //! - 数字に挟まれた全角ピリオドは文末にしない (`３．１４`)
 //! - 組み込みの例外表に載っている語の内側では分割しない (`Yahoo!ニュース`)
 //!
+//! 文を括弧の中の文末記号でもさらに区切った断片 ([`fragments`]) も求められる。R03 が、括弧ごと
+//! 1 文にした会話などの長さを、括弧の中の文ごとに測るのに使う。
+//!
 //! 段落内の改行は、既定では文の区切りにしない (Markdown の折り返しは見た目上の改行で、
 //! 一文一行の文書は改行の直前に句点がある)。句点を打たずに一文一行で書く文書向けに
 //! [`LineBreakMode::Sentence`] を用意している。解析用テキストには改行の字が残らず、位置だけを
@@ -83,13 +86,23 @@ pub fn split(
         .collect()
 }
 
-/// 括弧の対応を見ずに、文末として働く文末記号で区切った区間の終わりの位置。
+/// テキストを、括弧の中の文末記号でも区切った断片に分ける (断片のテキスト上の範囲)。
 ///
-/// 文分割 ([`split`]) と同じ分割器の判定なので、URL の `?`、例外表の語 (`Yahoo!`)、小数点
-/// (`１．５`) では区切らない。直後の閉じ括弧は次の区間に入り、改行の字でも区切る
-/// (`Splitter::chunk_ends`)。R03 が括弧の中の文を断片に分けて長さを測るのに使う。
-pub fn chunk_ends(text: &str) -> Vec<usize> {
-    SPLITTER.chunk_ends(text)
+/// 文分割 ([`split`]) の文を、括弧の内側で文末として働く文末記号の後ろでさらに区切る
+/// (`Splitter::split_fragments`)。R03 が、括弧ごと 1 文にした文 ([`Piece::embedded_enders`]) を
+/// 断片に分けて長さを測るのに使う。
+///
+/// - どの文末記号が文末として働くかは文分割と同じ。URL の `?id=1`、例外表の語 (`Yahoo!`)、
+///   小数点 (`１．５`) では区切らない
+/// - 文末記号に隙間なく続く文末記号と閉じ括弧は前の断片に含める (`明日は行く。」`、`「はい。」。`)
+/// - 前後の空白は範囲から除く。文末記号と閉じ括弧だけの区間は断片にせず、同じ文の前の断片に含める
+/// - 断片は文の境界をまたがない。括弧の内側に文末記号のない文は、文全体が 1 つの断片になる
+pub fn fragments(text: &str) -> Vec<Range<usize>> {
+    SPLITTER
+        .split_fragments(text)
+        .into_iter()
+        .map(|s| s.range)
+        .collect()
 }
 
 #[cfg(test)]
@@ -314,6 +327,81 @@ mod tests {
             texts("Ｙａｈｏｏ！ニュースを見た。次の文。"),
             vec!["Ｙａｈｏｏ！ニュースを見た。", "次の文。"]
         );
+    }
+
+    fn fragment_texts(text: &str) -> Vec<&str> {
+        fragments(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn fragments_split_at_enders_inside_brackets() {
+        // 閉じ括弧は前の断片に入る。括弧の外側の文末では文と同じく区切る
+        assert_eq!(
+            fragment_texts("「今日は雨だ。傘を持った。駅まで歩く。」と彼は言った。次の文。"),
+            vec![
+                "「今日は雨だ。",
+                "傘を持った。",
+                "駅まで歩く。」",
+                "と彼は言った。",
+                "次の文。"
+            ]
+        );
+        assert_eq!(
+            fragment_texts("彼は『本当？「嘘だ！」』と言った。"),
+            vec!["彼は『本当？", "「嘘だ！」』", "と言った。"]
+        );
+        // 括弧の中に文末記号のない文は、文全体が 1 つの断片
+        assert_eq!(
+            fragment_texts("「こんにちは」と言った。"),
+            vec!["「こんにちは」と言った。"]
+        );
+    }
+
+    #[test]
+    fn marks_after_a_closing_bracket_stay_in_the_fragment() {
+        // 文末記号と閉じ括弧だけの区間は、新しい断片にせず前の断片に含める
+        assert_eq!(fragment_texts("「はい。」。"), vec!["「はい。」。"]);
+        assert_eq!(fragment_texts("「はい。」 。"), vec!["「はい。」 。"]);
+        assert_eq!(
+            fragment_texts("（「はい。」。）後。"),
+            vec!["（「はい。」。）", "後。"]
+        );
+        // 空白をはさんだ閉じ括弧は、次の断片に入る
+        assert_eq!(
+            fragment_texts("「今日は休む。 」と言った。"),
+            vec!["「今日は休む。", "」と言った。"]
+        );
+    }
+
+    #[test]
+    fn the_rest_without_an_ender_is_the_last_fragment() {
+        assert_eq!(
+            fragment_texts("彼は「分かった。」とだけ答えて"),
+            vec!["彼は「分かった。」", "とだけ答えて"]
+        );
+    }
+
+    #[test]
+    fn fragments_do_not_split_where_sentences_do_not() {
+        // URL の ?、例外表の語、全角の小数点では、括弧の中でも区切らない
+        let text = "「詳しくは https://example.com/page?id=1 を見て。Yahoo!ニュースも見た。売上は１．５倍だ。」";
+        assert_eq!(
+            fragment_texts(text),
+            vec![
+                "「詳しくは https://example.com/page?id=1 を見て。",
+                "Yahoo!ニュースも見た。",
+                "売上は１．５倍だ。」"
+            ]
+        );
+    }
+
+    #[test]
+    fn fragment_ranges_exclude_surrounding_whitespace() {
+        let text = "  「一。 \u{3000}二。」\t と言った。  ";
+        assert_eq!(fragment_texts(text), vec!["「一。", "二。」", "と言った。"]);
+        assert_eq!(fragments(text)[0], 2..2 + "「一。".len());
+        assert!(fragments("").is_empty());
+        assert!(fragments(" \u{3000} ").is_empty());
     }
 
     /// 組み込みの例外表が変わると文の数が変わり、文長などの統計 (校正の前提) が変わる。

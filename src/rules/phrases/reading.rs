@@ -1,7 +1,7 @@
 //! 読みやすさの指摘 (P15 連続漢字、P16 「の」の連鎖、P17 二重否定)。
 //!
-//! このレーンは AI 臭さを測らない。読み手が一文の中で計算を強いられる箇所を指すだけで、
-//! 自然度スコアには入らない。採否の基準は「指摘に従って直した文が読みやすくなるか」。
+//! このレーンは AI 臭さを測らない。読み手が一文の中で計算を強いられる箇所を指すだけ。
+//! 採否の基準は「指摘に従って直した文が読みやすくなるか」。
 
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -48,7 +48,7 @@ static P15_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-AI らしさの判定ではなく、読みやすさの指摘です。自然度スコアには入りません。実文書での校正で目安を 7 字以上とし、固有名詞を含む連なりは、分解しようのない名前なので除外していました。
+AI らしさの判定ではなく、読みやすさの指摘です。実文書での校正で目安を 7 字以上とし、固有名詞を含む連なりは、分解しようのない名前なので除外していました。
 
 形態素解析の辞書 (hasami) があれば、校正と同じく品詞で固有名詞を見分けて除きます。辞書がなければ固有名詞は見分けられないため、裁判所・研究所・委員会・株式会社などの定番の接尾辞で終わる (または始まる) 連なりだけを除きます。この接尾辞による除外は、辞書があっても行います。改行と装飾の境目で連なりを切るのは、元の検出器も行ごとに、装飾の記号をはさんだまま数えていたためです。元の検出器と同じ文書 373 本で比べると、指した箇所の一致率は辞書なしで 0.76、辞書ありで 0.90 でした (辞書なしは年号や人名を含む連なりを多く指す)。食い違った箇所を 1 件ずつ確かめると、辞書ありの指摘の精度は 0.88 (元の検出器は 0.86) でした。辞書 (IPAdic) が普通の語を固有名詞と解析して取りこぼすことがあり (「所謂」の「所」を姓とするなど)、長い固有名詞が指された場合は、残してかまいません。
 
@@ -249,7 +249,7 @@ static P16_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-AI らしさの判定ではなく、読みやすさの指摘です。自然度スコアには入りません。元の検出器は形態素解析で格助詞の「の」だけを数え、実文書での校正で指した箇所はすべて本当の連鎖でした (再現率は低く、精度は高い)。
+AI らしさの判定ではなく、読みやすさの指摘です。元の検出器は形態素解析で格助詞の「の」だけを数え、実文書での校正で指した箇所はすべて本当の連鎖でした (再現率は低く、精度は高い)。
 
 形態素解析の辞書 (hasami) があれば、元の検出器と同じ定義で数えます。元の検出器は複合語を 1 語にまとめる分割で数えていたので、IPAdic が細かく分ける語はまとめてから数えます。辞書がなければ、漢字・カタカナ・英数字の語に挟まれた「の」だけを数えます。そのため「この」「その」「もの」の「の」を誤って数えることはありませんが、ひらがなを含む語をはさむ連鎖 (「の家の大きな犬の」) や、端の語がひらがなの連鎖 (「魂の安静のため」) は拾えません。元の検出器と同じ文書 373 本で比べると、元が指した箇所のうち拾えたのは、辞書なしで 38%、辞書ありで 93% でした。食い違った箇所を 1 件ずつ確かめると、辞書ありの指摘の精度は 0.99 でした (元の検出器は 0.95。分数の「の」や「目の前」を数えていた)。
 
@@ -424,7 +424,8 @@ fn is_nominal(pos: CoarsePos) -> bool {
 
 /// 形態素の並びを、「の」の連鎖を数える単位に分ける。
 ///
-/// - 空白は数えない (hasami は空白を記号のトークンとして出す。owayo/hasami#5)
+/// - 空白は数えない。半角の空白・タブは hasami がトークンにしないが、全角の空白は IPAdic の語
+///   (記号,空白) なのでトークンになる
 /// - 格助詞の「の」と、用言のあとで名詞の前に来る準体助詞の「の」(「聴くと伝えるの両立」) を
 ///   連体の「の」とする
 /// - 「分の」(IPAdic の助数詞) は、後ろが数詞なら分数 (「3分の1」) として前後の数と 1 語にし、
@@ -432,6 +433,7 @@ fn is_nominal(pos: CoarsePos) -> bool {
 /// - IPAdic が細かく分ける形を 1 語にまとめる ([`joins`])
 /// - 句読点・括弧・そのほかの記号 (中黒など) は連鎖を切る。コードなどの置き換え文字は名詞とみなす
 fn chain_units(text: &str, tokens: &[MorphToken]) -> Vec<Unit> {
+    // 表層が空白だけのトークン (全角の空白) は、記号として連鎖を切らないよう数える前に除く
     let tokens: Vec<&MorphToken> = tokens
         .iter()
         .filter(|t| !text[t.range.clone()].trim().is_empty())
@@ -495,10 +497,7 @@ fn chain_units(text: &str, tokens: &[MorphToken]) -> Vec<Unit> {
             });
         let kind = if surface(t) == "の" && (t.pos == CoarsePos::CaseParticle || nominalizer) {
             UnitKind::No
-        } else if is_nominal(t.pos)
-            || surface(t).chars().all(|c| c == PLACEHOLDER)
-            || is_unit_symbol(surface(t))
-        {
+        } else if is_nominal(t.pos) || surface(t).chars().all(|c| c == PLACEHOLDER) {
             UnitKind::Nominal
         } else if matches!(
             t.pos,
@@ -536,17 +535,6 @@ fn chain_units(text: &str, tokens: &[MorphToken]) -> Vec<Unit> {
 /// 「目の当たり」「身の回り」「世の中」「手の内」は辞書に 1 語で入っている。
 const FIXED_NO_WORDS: [(&str, &str); 1] = [("目", "前")];
 
-/// 数に付く単位の記号か (「%」「℃」「㎏」「㌔」)。
-fn is_unit_symbol(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars().all(|c| {
-            matches!(
-                c,
-                '%' | '％' | '‰' | '°' | '℃' | '℉' | '\u{3300}'..='\u{33FF}'
-            )
-        })
-}
-
 /// `t` が直前の形態素 `prev` と 1 語にまとまるか。
 ///
 /// 元の検出器 (Sudachi のモード C) が 1 語にする形のうち、IPAdic が分けるものに絞る。
@@ -554,7 +542,8 @@ fn is_unit_symbol(s: &str) -> bool {
 fn joins(text: &str, prev: &MorphToken, t: &MorphToken) -> bool {
     let katakana = |m: &MorphToken| text[m.range.clone()].chars().all(text::is_katakana);
     match (prev.pos, t.pos) {
-        // 「必要性」「転職者」「物理的」「向き合い方」「難しさ」
+        // 「必要性」「転職者」「物理的」「向き合い方」「難しさ」と、数と単位の記号 (「4㎏」「50%」)。
+        // hasami は単位の記号 (% ℃ ㎏ など) を、辞書の語でも未知語でも名詞の接尾辞にする
         (
             CoarsePos::Noun
             | CoarsePos::ProperNoun
@@ -569,11 +558,10 @@ fn joins(text: &str, prev: &MorphToken, t: &MorphToken) -> bool {
         (CoarsePos::Prefix, pos) => is_nominal(pos) || pos == CoarsePos::Verb,
         // 「三万七千」
         (CoarsePos::Numeral, CoarsePos::Numeral) => true,
-        // 「4㎏」「50%」(hasami は単位の記号を 記号,一般 にする。owayo/hasami#7)
-        (CoarsePos::Numeral, CoarsePos::Symbol) => is_unit_symbol(&text[t.range.clone()]),
         // 分数「3分の1」の後ろの数
         (CoarsePos::NounSuffix, CoarsePos::Numeral) => &text[prev.range.clone()] == "分の",
-        // カタカナ語の並び (辞書にない語が 2 字ずつに割れた場合を含む。owayo/hasami#4)
+        // カタカナ語の並び (「オススメアプリ」)。hasami は IPAdic でカタカナの複合語を辞書の語に
+        // 分ける (オススメ / アプリ) が、元の検出器 (Sudachi のモード C) は 1 語にする
         _ => katakana(prev) && katakana(t),
     }
 }
@@ -672,7 +660,7 @@ static P17_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-AI らしさの判定ではなく、読みやすさの指摘です。自然度スコアには入りません。元の検出器は、否定の形態素 (「ない」「無い」「ぬ」「ず」) が近くに 2 つ並ぶ箇所を拾っていました。辞書がないため、否定の形態素を数える代わりに定型の表層パターンで拾います。「〜ないわけではない」の類の 4 つの定型から始め、元の定義の範囲に合わせて、上に挙げた定型と否定の入れ子、「無い」「ワケ」の表記まで広げました。
+AI らしさの判定ではなく、読みやすさの指摘です。元の検出器は、否定の形態素 (「ない」「無い」「ぬ」「ず」) が近くに 2 つ並ぶ箇所を拾っていました。辞書がないため、否定の形態素を数える代わりに定型の表層パターンで拾います。「〜ないわけではない」の類の 4 つの定型から始め、元の定義の範囲に合わせて、上に挙げた定型と否定の入れ子、「無い」「ワケ」の表記まで広げました。
 
 形の上では否定が 2 つあっても、読み手が符号を計算しない次の形は拾いません。義務・許可の定型 (「〜ないといけない」「〜なければならない」「〜ざるを得ない」「〜なくても構わない」)、必要条件を述べる条件形 (「〜ないと動かない」「〜なければ意味がない」)、推量 (「〜ないかもしれない」)、否定の連体修飾に否定の述語が続くだけの形 (「〜ない人間ではない」)、読点で区切った別々の否定 (「〜ず、〜ない」) です。「〜ないのではないか」「〜ないではないか」「〜ない人はいないか」のように文末が問いや念押しになる形も、否定を 2 回計算させないので除きます。「危なくはない」「少ない人はいない」のように「ない」が否定でない形容詞も除きます。元の検出器と同じ文書 373 本で指摘を 1 件ずつ確かめると、元の検出器の指摘 469 件のうち二重否定か否定の入れ子だったのは 57 件 (精度 0.12) で、noslop の指摘 58 件はすべてそのどちらかでした。",
 };
@@ -1064,6 +1052,152 @@ mod tests {
         );
     }
 
+    /// 表層と粗い品詞の並びから形態素を作る (範囲は `text` の前から順に探す)。
+    fn tokens_of(text: &str, words: &[(&str, CoarsePos)]) -> Vec<MorphToken> {
+        let mut at = 0;
+        words
+            .iter()
+            .map(|&(surface, pos)| {
+                let start = at + text[at..].find(surface).expect("文にない表層");
+                at = start + surface.len();
+                MorphToken {
+                    range: start..at,
+                    pos,
+                    detail: "*".into(),
+                }
+            })
+            .collect()
+    }
+
+    /// 最初の文の形態素を、「の」の連鎖を数える単位に分けた表層と種類。
+    fn units_of(md: &str, dict: &crate::morph::Morphology) -> Vec<(String, UnitKind)> {
+        let doc = crate::document::Document::markdown(md);
+        let morph = dict.for_document(&doc);
+        let text = doc.sentence_text(&doc.sentences[0]);
+        chain_units(text, morph.sentence(0).expect("文を解析できない"))
+            .into_iter()
+            .map(|u| (text[u.range].to_string(), u.kind))
+            .collect()
+    }
+
+    #[test]
+    fn p16_with_a_dictionary_does_not_count_full_width_spaces() {
+        // 全角の空白は IPAdic の語 (記号,空白) なのでトークンになる (半角の空白・タブは hasami が
+        // トークンにしない)。記号として連鎖を切らず、「の」の間の語にも数えない
+        use CoarsePos::{Adnominal, AuxVerb, CaseParticle, Noun, Period, Symbol};
+        let rule = NoChain::default();
+        let text = "猫の大きな\u{3000}家の\u{3000}庭の木だ。";
+        let tokens = tokens_of(
+            text,
+            &[
+                ("猫", Noun),
+                ("の", CaseParticle),
+                ("大きな", Adnominal),
+                ("\u{3000}", Symbol),
+                ("家", Noun),
+                ("の", CaseParticle),
+                ("\u{3000}", Symbol),
+                ("庭", Noun),
+                ("の", CaseParticle),
+                ("木", Noun),
+                ("だ", AuxVerb),
+                ("。", Period),
+            ],
+        );
+        let found: Vec<(&str, usize)> = rule
+            .find_with_tokens(text, &tokens)
+            .into_iter()
+            .map(|(range, count)| (&text[range], count))
+            .collect();
+        assert_eq!(found, vec![("猫の大きな\u{3000}家の\u{3000}庭の木", 3)]);
+        // 空白でない記号 (中黒) は連鎖を切る
+        let text = "猫の大きな・家の庭の木だ。";
+        let tokens = tokens_of(
+            text,
+            &[
+                ("猫", Noun),
+                ("の", CaseParticle),
+                ("大きな", Adnominal),
+                ("・", Symbol),
+                ("家", Noun),
+                ("の", CaseParticle),
+                ("庭", Noun),
+                ("の", CaseParticle),
+                ("木", Noun),
+                ("だ", AuxVerb),
+                ("。", Period),
+            ],
+        );
+        assert!(rule.find_with_tokens(text, &tokens).is_empty());
+    }
+
+    #[test]
+    fn p16_with_a_dictionary_counts_a_number_and_its_unit_as_one_word() {
+        // hasami は単位の記号を、辞書の品詞が 記号,一般 (配布辞書にない字や古い辞書) でも
+        // 名詞,接尾,助数詞 (配布辞書) でも名詞の接尾辞にするので、前の数と 1 語にまとまる
+        let dict = morphology(&[
+            ("前月", "名詞,一般,*,*"),
+            ("前年", "名詞,副詞可能,*,*"),
+            NO,
+            ("体重", "名詞,一般,*,*"),
+            ("売上", "名詞,一般,*,*"),
+            ("4", "名詞,数,*,*"),
+            ("50", "名詞,数,*,*"),
+            ("㎏", "名詞,接尾,助数詞,*"),
+            ("%", "記号,一般,*,*"),
+            ("差", "名詞,一般,*,*"),
+            ("伸び", "名詞,一般,*,*"),
+            ("原因", "名詞,一般,*,*"),
+            ("理由", "名詞,一般,*,*"),
+            ("を", "助詞,格助詞,一般,*"),
+            ("探る", "動詞,自立,*,*"),
+            PERIOD,
+        ]);
+        let nominal = |s: &str| (s.to_string(), UnitKind::Nominal);
+        assert!(units_of("前月の4㎏の差の原因を探る。\n", &dict).contains(&nominal("4㎏")));
+        assert!(units_of("前年の50%の伸びの理由を探る。\n", &dict).contains(&nominal("50%")));
+        // 数と単位が 1 語なので、前に語があっても「の」の間は 2 語に収まる
+        for (md, want) in [
+            (
+                "前月の体重4㎏の差の原因を探る。\n",
+                "前月の体重4㎏の差の原因",
+            ),
+            (
+                "前年の売上50%の伸びの理由を探る。\n",
+                "前年の売上50%の伸びの理由",
+            ),
+        ] {
+            assert_eq!(
+                matched(md, &run_with_morphology(&NoChain::default(), md, &dict)),
+                vec![want],
+                "{md}"
+            );
+        }
+    }
+
+    #[test]
+    fn p16_with_a_dictionary_counts_katakana_compounds_as_one_word() {
+        // 辞書がカタカナの複合語を分けても (オススメ / アプリ)、元の検出器と同じく 1 語に数える
+        let dict = morphology(&[
+            ("人気", "名詞,一般,*,*"),
+            NO,
+            ("最新", "名詞,一般,*,*"),
+            ("オススメ", "名詞,サ変接続,*,*"),
+            ("アプリ", "名詞,一般,*,*"),
+            ("機能", "名詞,サ変接続,*,*"),
+            ("説明", "名詞,サ変接続,*,*"),
+            ("を", "助詞,格助詞,一般,*"),
+            ("読む", "動詞,自立,*,*"),
+            PERIOD,
+        ]);
+        let md = "人気の最新オススメアプリの機能の説明を読む。\n";
+        assert!(units_of(md, &dict).contains(&("オススメアプリ".to_string(), UnitKind::Nominal)));
+        assert_eq!(
+            matched(md, &run_with_morphology(&NoChain::default(), md, &dict)),
+            vec!["人気の最新オススメアプリの機能の説明"]
+        );
+    }
+
     /// 同梱の辞書 (IPAdic) で、辞書なしの近似との違いを確かめる。
     #[cfg(feature = "bundled-dict")]
     #[test]
@@ -1119,6 +1253,14 @@ mod tests {
                 "開発の ツールの 設定の変更",
             ),
             (
+                "開発の\u{3000}ツールの\u{3000}設定の変更を行う。\n",
+                "開発の\u{3000}ツールの\u{3000}設定の変更",
+            ),
+            (
+                "人気の最新オススメアプリの機能の説明を読む。\n",
+                "人気の最新オススメアプリの機能の説明",
+            ),
+            (
                 "話すと聞くの両立のための工夫がいる。\n",
                 "の両立のための工夫",
             ),
@@ -1127,6 +1269,10 @@ mod tests {
                 "`config` の `path` の値の型",
             ),
             ("前月の4㎏の差の原因を探る。\n", "前月の4㎏の差の原因"),
+            (
+                "前年の売上50%の伸びの理由を聞く。\n",
+                "前年の売上50%の伸びの理由",
+            ),
         ] {
             assert_eq!(chains(md), vec![want], "{md}");
         }

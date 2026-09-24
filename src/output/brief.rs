@@ -6,9 +6,9 @@
 //! 必ず冒頭に置き、「残す判断」と「再実行は 1 回だけ」を明記する。
 //!
 //! 改稿指示はいったんデータ ([`Brief`]) に組み立て、Markdown (人と AI が読む)・JSON (機械が
-//! 読む)・TOON (同じデータを少ないトークンで AI に渡す) に描き分ける。データには自然度スコア・
-//! metrics・fingerprint・抑制した指摘を入れない。指摘の追跡や照合には完全なレポート
-//! (`--format json`) を使う。
+//! 読む)・TOON (同じデータを少ないトークンで AI に渡す) に描き分ける。データには metrics・
+//! fingerprint・抑制した指摘を入れない。指摘の追跡や照合には完全なレポート (`--format json`)
+//! を使う。
 
 use std::io::{self, Write};
 
@@ -22,7 +22,6 @@ use crate::output::json::{COLUMN_UNIT, ErrorEntry, Tool};
 use crate::output::text::excerpt;
 use crate::output::{RenderOptions, toon};
 use crate::rules::RuleMeta;
-use crate::score::Score;
 
 /// 改稿指示のデータ (JSON / TOON) のスキーマの版。互換性のない変更をしたら上げる。
 pub const BRIEF_SCHEMA_VERSION: u32 = 1;
@@ -42,7 +41,7 @@ const REVISION_RULES: [&str; 6] = [
     "原文にない事実・数字・体験を足さないでください。材料が足りないときは、推測で埋めずに書き手に確認してください。",
     "同じ種類の直しを全箇所に一律に当てないでください。効果の大きい箇所を選んで直し、ほかはそのままにします。",
     "指摘は疑いです。文脈上必要なら直さずに残してかまいません。残した指摘と理由は、書き手への報告に添えてください。抑制コメント `<!-- noslop-disable-next-line <ID> -- 理由 -->` は、書き手が今後も残すと決めた箇所にだけ書きます。指摘を消すために足さないでください。",
-    "指摘の件数を減らすことや、自然度スコアを上げることを目的にしないでください。",
+    "指摘の件数を減らすことを目的にしないでください。",
     "直したら noslop を 1 回だけ再実行し、新しく出た指摘だけを確かめてください。直す前の文書と比べる `noslop diff <直す前> <直した後>` (MCP では `diff`) を使うと、新しく出た指摘と、改稿で消えた数字・固有名詞をまとめて確かめられます。再実行はそこで打ち切ります。",
 ];
 
@@ -105,10 +104,6 @@ struct BriefFile<'a> {
     rules: Vec<RuleSummary<'a>>,
     /// 該当箇所。`rules` の順に、ルールの中では文書の順に並ぶ。
     occurrences: Vec<Occurrence<'a>>,
-    /// 自然度スコア。Markdown の参考値にだけ使い、データには出さない (数値を目的に
-    /// 書き直させないため)。
-    #[serde(skip)]
-    score: Option<&'a Score>,
 }
 
 /// 指摘のあったルール 1 つ。
@@ -227,7 +222,6 @@ impl<'a> BriefFile<'a> {
             counts: Counts::of(file),
             rules,
             occurrences,
-            score: file.score.as_ref(),
         }
     }
 
@@ -385,16 +379,6 @@ pub fn render(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> 
 fn render_file(brief: &Brief, file: &BriefFile, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "## {}", file.path)?;
     writeln!(out)?;
-    // スコアは参考値。上げること自体を目的にしないよう、改稿のルールで断っている
-    match file.score {
-        Some(score) => writeln!(
-            out,
-            "- 自然度 (参考): {}/100 ({})",
-            score.value,
-            score.band.label_ja()
-        )?,
-        None => writeln!(out, "- 自然度 (参考): 本文が短いため算出していません")?,
-    }
     let c = &file.counts;
     writeln!(
         out,
@@ -510,8 +494,6 @@ fn message<'a>(message: &'a str, previous: &mut Option<&'a str>) -> &'a str {
 }
 
 /// フックから AI に返す短い改稿指示。
-///
-/// 自然度スコアは載せない (編集のたびに数字を見せると、数字を上げること自体が目的になりやすい)。
 fn render_compact(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> io::Result<()> {
     let brief = Brief::build(report, opts, opts.brief_limit.unwrap_or(COMPACT_LIMIT));
     for file in &brief.files {
@@ -809,9 +791,15 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("再実行はそこで打ち切ります"), "{s}");
-        assert!(s.contains("## <input>.md"), "{s}");
         assert!(
-            s.contains("AI 臭さ (校正済み) 2 件 / AI 臭さ (実験的) 1 件 / 独自ルール 0 件 / 読みやすさ 1 件"),
+            s.contains("指摘の件数を減らすことを目的にしないでください。"),
+            "{s}"
+        );
+        // ファイルの節は、見出しのすぐ後にレーンごとの件数を置く
+        assert!(
+            s.contains(
+                "## <input>.md\n\n- 指摘: AI 臭さ (校正済み) 2 件 / AI 臭さ (実験的) 1 件 / 独自ルール 0 件 / 読みやすさ 1 件\n"
+            ),
             "{s}"
         );
         // 校正済みのルールが先、実験的なルールが後
@@ -1063,7 +1051,6 @@ mod tests {
 
         let file = &v["files"][0];
         assert_eq!(file["path"], "draft.md");
-        assert!(file.get("score").is_none(), "スコアはデータに出さない");
         assert_eq!(file["counts"]["stableSlop"], 3);
         let rule = &file["rules"][0];
         assert_eq!(rule["ruleId"], "T01");

@@ -165,7 +165,6 @@ fn claude_code_hook_passes_findings_as_additional_context() {
     assert!(ctx.contains("  - ほか 2 件"), "{ctx}");
     assert!(ctx.contains("直さない判断もできます"), "{ctx}");
     assert!(ctx.contains("再実行は 1 回だけ"), "{ctx}");
-    assert!(!ctx.contains("自然度"), "フックにはスコアを載せない: {ctx}");
 }
 
 #[test]
@@ -314,7 +313,15 @@ fn mcp_server_speaks_the_stateless_protocol_too() {
     );
     let report: Value =
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(report["files"][0]["path"], "<text>");
+    assert_eq!(report["schemaVersion"], 2);
+    let file = &report["files"][0];
+    assert_eq!(file["path"], "<text>");
+    // 文書全体の点数は出さず、未抑制の指摘をレーンごと・重大度ごとに数える
+    assert!(file.get("score").is_none(), "{file}");
+    assert_eq!(
+        file["counts"]["custom"],
+        json!({ "error": 0, "warning": 0, "info": 0 })
+    );
 }
 
 #[test]

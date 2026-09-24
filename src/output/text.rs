@@ -13,7 +13,7 @@
 //!     │                                                   ^^^^^^^^^^^^^^
 //!     💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
 //!
-//!   読みやすさの指摘 1 件 (自然度には入りません)
+//!   読みやすさの指摘 1 件
 //!   3:4  情報  [読みやすさ]  P15 KANJI_RUN
 //!     漢字が 8 字続いています (「全社業務改善計画」)
 //!     │ 来期は全社業務改善計画に沿って、会議の数を半分にします。
@@ -28,6 +28,7 @@
 use std::io::{self, Write};
 
 use anstyle::{AnsiColor, Style};
+use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
@@ -39,8 +40,9 @@ const MAX_CONTEXT_WIDTH: usize = 100;
 /// 切り出すとき、指摘箇所の前に残す表示幅。
 const LEAD_WIDTH: usize = 24;
 
-/// 節と要約に並べるレーンの順。主目的の AI 臭さを先に、優先度の低い読みやすさを最後に置く。
-const LANES: [Lane; 3] = [Lane::Slop, Lane::Custom, Lane::Readability];
+/// 節と要約に並べるレーンの順。主目的の AI 臭さを先に、優先度の低い読みやすさを最後に置く
+/// (`noslop diff` の件数の行も同じ順)。
+pub(crate) const LANES: [Lane; 3] = [Lane::Slop, Lane::Custom, Lane::Readability];
 
 fn severity_style(s: Severity) -> Style {
     match s {
@@ -80,14 +82,6 @@ fn render_file(file: &FileReport, opts: &RenderOptions, out: &mut dyn Write) -> 
     }
     let b = bold();
     write!(out, "📄 {b}{}{b:#}", file.path())?;
-    if let Some(score) = file.score {
-        write!(
-            out,
-            "  自然度 {}/100 ({})",
-            score.value,
-            score.band.label_ja()
-        )?;
-    }
     if shown.is_empty() {
         let d = dim();
         write!(out, "  {d}指摘なし{d:#}")?;
@@ -124,7 +118,7 @@ fn render_section_heading(
     out: &mut dyn Write,
 ) -> io::Result<()> {
     let suppressed = section.iter().filter(|d| d.is_suppressed()).count();
-    let (b, dm) = (bold(), dim());
+    let b = bold();
     write!(
         out,
         "  {b}{}の指摘 {} 件{b:#}",
@@ -133,9 +127,6 @@ fn render_section_heading(
     )?;
     if suppressed > 0 {
         write!(out, "、抑制 {suppressed} 件")?;
-    }
-    if lane != Lane::Slop {
-        write!(out, " {dm}(自然度には入りません){dm:#}")?;
     }
     writeln!(out)
 }
@@ -267,7 +258,9 @@ fn truncate(text: &str, max: usize) -> String {
 }
 
 /// 1 つのレーンの、抑制していない指摘の重大度ごとの件数。
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+///
+/// JSON の `files[].counts` の各レーンにもこの形 (`error`・`warning`・`info`) で出す。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct SeverityCounts {
     pub error: usize,
     pub warning: usize,
@@ -312,9 +305,19 @@ pub(crate) struct Counts {
 }
 
 impl Counts {
+    /// 実行全体 (すべてのファイル) の件数。
     pub(crate) fn of(report: &RunReport) -> Self {
+        Self::tally(report.files.iter().flat_map(|f| f.diagnostics.iter()))
+    }
+
+    /// 1 ファイルの件数。
+    pub(crate) fn of_file(file: &FileReport) -> Self {
+        Self::tally(&file.diagnostics)
+    }
+
+    fn tally<'a>(diagnostics: impl IntoIterator<Item = &'a Diagnostic>) -> Self {
         let mut c = Counts::default();
-        for d in report.files.iter().flat_map(|f| f.diagnostics.iter()) {
+        for d in diagnostics {
             if d.is_suppressed() {
                 c.suppressed += 1;
                 continue;
@@ -437,7 +440,6 @@ mod tests {
             doc,
             diagnostics: vec![d],
             warnings: Vec::new(),
-            score: None,
         }
     }
 
@@ -488,15 +490,15 @@ mod tests {
             e.lint(Document::markdown("問題のない文。\n")),
         ]);
         let s = render_str(&report, &RenderOptions::default());
-        assert!(s.contains("📄 <input>.md"), "{s}");
-        assert!(s.contains("  AI 臭さの指摘 1 件\n"), "{s}");
-        assert!(s.contains("1:4  警告  [AI 臭さ]  T01 STABLE_SLOP\n"), "{s}");
+        // ファイルの見出しはパスだけ。指摘のないファイルには「指摘なし」を添える
         assert!(
-            s.contains("  読みやすさの指摘 1 件 (自然度には入りません)\n"),
+            s.starts_with("📄 <input>.md\n  AI 臭さの指摘 1 件\n"),
             "{s}"
         );
+        assert!(s.contains("1:4  警告  [AI 臭さ]  T01 STABLE_SLOP\n"), "{s}");
+        assert!(s.contains("\n  読みやすさの指摘 1 件\n"), "{s}");
         assert!(s.contains("  情報  [読みやすさ]  T03 READABILITY\n"), "{s}");
-        assert!(s.contains("指摘なし"), "{s}");
+        assert!(s.contains("📄 <input>.md  指摘なし\n"), "{s}");
         assert!(
             s.contains(
                 "✖ AI 臭さの指摘 1 件 (警告 1)、読みやすさの指摘 1 件 (情報 1) — 2 ファイルを検査"
@@ -522,9 +524,7 @@ mod tests {
         ))]);
         let s = render_str(&report, &RenderOptions::default());
         let slop = s.find("  AI 臭さの指摘 2 件\n").expect("AI 臭さの節");
-        let readability = s
-            .find("  読みやすさの指摘 2 件 (自然度には入りません)\n")
-            .expect("読みやすさの節");
+        let readability = s.find("  読みやすさの指摘 2 件\n").expect("読みやすさの節");
         assert!(slop < readability, "{s}");
         // 節の中は文書の順
         let first = s.find("1:16  警告  [AI 臭さ]  T01").expect("1 つ目の T01");
@@ -565,10 +565,7 @@ mod tests {
             custom_file("ユーザー様に連絡する。\n", "ユーザー様"),
         ]);
         let s = render_str(&report, &RenderOptions::default());
-        assert!(
-            s.contains("  独自ルールの指摘 1 件 (自然度には入りません)\n"),
-            "{s}"
-        );
+        assert!(s.contains("  独自ルールの指摘 1 件\n"), "{s}");
         assert!(
             s.contains("1:1  警告  [独自ルール]  X01 TEAM_TERM\n"),
             "{s}"

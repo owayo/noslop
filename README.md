@@ -635,7 +635,7 @@ Judging each disagreement against the rule's definition, the precision (share of
 
 Other rules do not change with a dictionary, and sentence splitting never uses one. Noun endings (R06) keep the dictionary-free estimate because the per-document verdicts were identical with and without a dictionary.
 
-The bundled dictionary adds about 18 MB to the binary (about 23 MB in total, about 9 MB as a release tar.gz). It is loaded once per process and adds about 3 ms to checking a document. When no rule that uses it runs (for example with `--no-readability`, or when `--only-rules` leaves out P15 and P16), it is not loaded.
+The bundled dictionary adds about 18 MB to the binary (about 23 MB in total). It is read in place from the binary without being copied, so loading it takes almost no time and only the parts the analysis touches are brought into memory. Measured locally on Apple Silicon macOS against `--no-dict`, it adds less than 1 ms and less than 1 MB of maximum RSS when checking a short document, and about 4 ms and about 11 MB for a document of about 50 KB. When no rule that uses it runs (for example with `--no-readability`, or when `--only-rules` leaves out P15 and P16), it is not loaded.
 
 ### Choosing how the dictionary is used
 
@@ -659,7 +659,7 @@ The method used appears on the text summary line (for example 「辞書あり (�
 
 ### Using another dictionary
 
-The hasami repository ships other prebuilt dictionaries through Git LFS. `ipadic-neologd.hsd` and `ipadic-neologd-sudachi.hsd` include NEologd and know more words, but they sometimes analyze common phrases such as 「どうでしょう」 and 「作りました」 as a single proper noun, so they are not bundled (hasami [#1](https://github.com/owayo/hasami/issues/1)–[#3](https://github.com/owayo/hasami/issues/3)).
+The hasami repository ships other prebuilt dictionaries through Git LFS. `ipadic-neologd.hsd` and `ipadic-neologd-sudachi.hsd` include NEologd and know more words, but that makes them large (over 220 MB each), so they are not bundled.
 
 ```bash
 git lfs install

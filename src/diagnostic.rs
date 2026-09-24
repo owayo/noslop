@@ -54,8 +54,10 @@ impl fmt::Display for Severity {
 
 /// 指摘の目的の区別。
 ///
-/// `Slop` は AI 臭さの検出で、自然度スコアに入る。`Readability` は読みやすさの
-/// 指摘で、AI らしさとは無関係なのでスコアに入れない (混ぜると両方の判断が濁る)。
+/// `Slop` は AI 臭さの検出、`Readability` は読みやすさの指摘、`Custom` は設定ファイルの
+/// 独自ルールの指摘。AI 臭さは AI が書いたような癖を疑う箇所を、読みやすさは AI らしさとは
+/// 無関係に読み手の負担になる箇所を指すので、目的が違う。混ぜると両方の判断が濁るため、
+/// 出力では節も件数もレーンごとに分ける。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lane {
@@ -88,7 +90,7 @@ impl Lane {
 ///
 /// `Stable` はコーパス校正で誤検知率を確かめた検出器・語句で、既定で有効。
 /// `Experimental` は未校正か、辞書なしの近似で校正条件から外れるもので、
-/// `--experimental` か設定で明示したときだけ動く。スコアには入れない。
+/// `--experimental` か設定で明示したときだけ動く。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleStatus {

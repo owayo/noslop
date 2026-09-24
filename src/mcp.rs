@@ -1094,12 +1094,19 @@ mod tests {
         ))
         .unwrap();
         assert!(!v["files"][0]["diagnostics"].as_array().unwrap().is_empty());
+        assert!(v["files"][0]["counts"]["slop"].is_object(), "{v}");
         let toon = text(
             &mut s,
             4,
             json!({ "text": SMELLY, "report": "full", "format": "toon" }),
         );
-        assert!(toon.starts_with("schemaVersion: 1\n"), "{toon}");
+        assert!(
+            toon.starts_with(&format!(
+                "schemaVersion: {}\n",
+                crate::output::json::SCHEMA_VERSION
+            )),
+            "{toon}"
+        );
         assert!(toon.contains("diagnostics["), "{toon}");
 
         // 組み合わせられないものと未知の値はツールの実行エラー

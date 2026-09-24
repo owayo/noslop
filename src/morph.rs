@@ -23,6 +23,7 @@ use std::sync::OnceLock;
 use hasami::{Analyzer, CoarsePos, DictError, Dictionary};
 use serde::{Deserialize, Serialize};
 
+use crate::dictionaries;
 use crate::document::Document;
 
 /// 辞書の使い方 (`[morphology] mode`)。
@@ -52,8 +53,9 @@ impl MorphologyMode {
 #[derive(Debug, Clone, Default)]
 pub struct MorphologyOptions {
     pub mode: MorphologyMode,
-    /// 辞書のパス。なければ `HASAMI_DICT`、次に同梱の辞書を使う (同梱しないビルドでは
-    /// hasami の既定の場所 `~/.local/share/hasami` を探す)。
+    /// 辞書のパスか、`share:<名前>` (hasami の share ディレクトリの `<名前>.hsd`)。なければ
+    /// `HASAMI_DICT`、次に同梱の辞書を使う (同梱しないビルドでは hasami の既定の場所
+    /// `~/.local/share/hasami` を探す)。
     pub dictionary: Option<PathBuf>,
 }
 
@@ -233,6 +235,10 @@ static BUNDLED_HSD: &[u8] = hasami::include_hsd!("../dict/ipadic.hsd");
 /// `~/.local/share/hasami` は探さない (同じ版の noslop なら、手元に入れた辞書によらず同じ結果に
 /// するため)。同梱しないビルドでは、同梱の辞書の代わりに hasami の既定の場所を探す。
 ///
+/// 明示の指定が `share:<名前>` なら、hasami の share ディレクトリの `<名前>.hsd` を使う
+/// (`noslop dict download` で取得した辞書。[`dictionaries::resolve_share`])。`HASAMI_DICT` には
+/// 当てない (hasami と同じく、ファイルのパスとして読む)。
+///
 /// 指定した辞書が読めないときは `Err` にし、同梱の辞書や近似に黙って切り替えない。
 /// 同梱しないビルドで、`auto` なのに辞書が見つからないときだけ、辞書なしの近似に戻る
 /// (`required` なら `Err`)。
@@ -253,11 +259,12 @@ pub fn resolve(
             MorphologyStatus::surface(requested, FallbackReason::NotNeeded),
         ));
     }
-    let explicit = options.dictionary.clone().or_else(|| {
-        std::env::var_os(hasami::analyzer::DICT_ENV)
+    let explicit = match &options.dictionary {
+        Some(spec) => Some(explicit_dictionary(spec)?),
+        None => std::env::var_os(hasami::analyzer::DICT_ENV)
             .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    });
+            .map(PathBuf::from),
+    };
     let morphology = match explicit {
         Some(path) => load_file(&path)?,
         None => match fallback(requested)? {
@@ -277,6 +284,15 @@ pub fn resolve(
         reason: None,
     };
     Ok((Some(morphology), status))
+}
+
+/// 明示の指定 (`--dict`・設定の `dictionary`) を辞書のファイルに直す。`share:<名前>` なら share
+/// ディレクトリの辞書 (なければエラー)、それ以外はファイルのパスとしてそのまま使う。
+fn explicit_dictionary(spec: &Path) -> Result<PathBuf, String> {
+    match dictionaries::share_name(spec) {
+        Some(name) => dictionaries::resolve_share(name).map_err(|e| e.to_string()),
+        None => Ok(spec.to_path_buf()),
+    }
 }
 
 fn load_file(path: &Path) -> Result<Morphology, String> {
@@ -453,6 +469,24 @@ mod tests {
             let err = resolve(&options, true).unwrap_err();
             assert!(err.contains("missing.hsd"), "{err}");
         }
+    }
+
+    /// `share:<名前>` は share ディレクトリの中だけを指す (名前は環境変数を見る前に確かめる)。
+    #[test]
+    fn share_specs_must_name_a_file_in_the_share_directory() {
+        for spec in ["share:../ipadic", "share:a/b", "share:"] {
+            let options = MorphologyOptions {
+                mode: MorphologyMode::Required,
+                dictionary: Some(PathBuf::from(spec)),
+            };
+            let err = resolve(&options, true).unwrap_err();
+            assert!(err.starts_with("share:"), "{spec}: {err}");
+        }
+        // share: で始まらなければファイルのパス
+        assert_eq!(
+            explicit_dictionary(Path::new("dict/share:x.hsd")).unwrap(),
+            PathBuf::from("dict/share:x.hsd")
+        );
     }
 
     /// 同梱の辞書は hasami の IPAdic (出所と更新の手順は dict/README.md)。辞書を差し替えたら、
