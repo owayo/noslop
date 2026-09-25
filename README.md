@@ -691,7 +691,6 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 - 取得元は、noslop が依存する hasami の版（`noslop dict list` の 1 行目に出ます）の GitHub のリリースに添付された辞書です。取得した中身は、noslop に記録した大きさと SHA-256（そのリリースに添付された `dictionaries.json` と同じ値）で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
 - 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
 - ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
-- noslop v26.9.100 は、hasami が辞書を置かなくなった Git LFS から取得しようとして `HTTP 404` で失敗します。v26.9.100 では `noslop dict download --source https://github.com/owayo/hasami/releases/download/v26.9.103` で取得できます
 - 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります
 
 share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
@@ -729,24 +728,24 @@ make ci      # CI と同じ検査
 
 | コマンド | 説明 |
 |---|---|
-| `make setup` | Install the toolchain (mise.toml) and fetch dependencies |
-| `make build` | Build debug version |
-| `make release` | Build release version |
-| `make run` | Run the debug build (pass arguments with ARGS="...") |
-| `make install` | Build release, install the binary and the skills (claude + codex) |
-| `make uninstall` | Remove the installed binary (the skills are kept) |
-| `make test` | Run tests |
-| `make test-no-default-features` | Run tests without the bundled dictionary (--no-default-features) |
-| `make lint` | Run clippy (warnings are errors) |
-| `make clippy` | Alias of lint |
-| `make fmt` | Format code |
-| `make fmt-check` | Check formatting |
-| `make check` | Run format check and clippy (no rewrite) |
-| `make docs` | Regenerate docs/rules.md from the built-in rule catalog |
-| `make docs-check` | Check that docs/rules.md is up to date (no rewrite) |
-| `make ci` | Run the same checks as CI (fmt, clippy, tests, docs) |
-| `make clean` | Clean build artifacts |
-| `make help` | Show this help message |
+| `make setup` | ツールチェーン (mise.toml) を入れ、依存を取得する |
+| `make build` | デバッグ版をビルドする |
+| `make release` | リリース版をビルドする |
+| `make run` | デバッグ版を実行する (引数は ARGS="...") |
+| `make install` | リリース版をビルドし、バイナリとスキル (claude・codex) を入れる |
+| `make uninstall` | 入れたバイナリを取り除く (スキルは残す) |
+| `make test` | テストを実行する |
+| `make test-no-default-features` | 辞書を同梱しないビルドでテストする (--no-default-features) |
+| `make lint` | clippy を実行する (警告はエラー) |
+| `make clippy` | lint の別名 |
+| `make fmt` | コードを整形する (書き換える) |
+| `make fmt-check` | 整形済みかを確かめる (書き換えない) |
+| `make check` | 整形の確認と clippy (書き換えない) |
+| `make docs` | 組み込みのルールから docs/rules.md を作り直す |
+| `make docs-check` | docs/rules.md が最新かを確かめる (書き換えない) |
+| `make ci` | CI と同じ検査 (整形・clippy・テスト・docs/rules.md) |
+| `make clean` | ビルドの成果物を消す |
+| `make help` | このヘルプを表示する |
 
 `make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
 
