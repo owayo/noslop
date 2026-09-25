@@ -1,6 +1,8 @@
 //! 抑制コメント (`<!-- noslop-disable-next-line P01 -- 理由 -->`) の読み取り。
 //!
-//! 読み取るだけで、診断への適用はエンジン側で行う。
+//! 読み取るだけで、診断への適用はエンジン側で行う。コードのファイルでは、その言語のコメント
+//! (`// noslop-disable-next-line P01 -- 理由`) の中身全体が同じ書式のものも抑制として読む
+//! ([`parse_code_comment`])。
 
 use std::sync::LazyLock;
 
@@ -9,10 +11,10 @@ use regex::Regex;
 use crate::diagnostic::Span;
 use crate::document::{Directive, DirectiveKind};
 
-/// コメント 1 つ全体が抑制コメントの書式か (先頭から末尾まで)。
-static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
+/// コメントの中身 (コメントの記号を外したもの) 全体が抑制の書式か (先頭から末尾まで)。
+static BODY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?s)\A<!--\s*noslop-(disable-next-line|disable-line|disable-file|disable|enable)(?:\s+(.*?))?\s*-->\z",
+        r"(?s)\A\s*noslop-(disable-next-line|disable-line|disable-file|disable|enable)(?:\s+(.*?))?\s*\z",
     )
     .expect("directive regex")
 });
@@ -29,25 +31,50 @@ static COMMENT_RE: LazyLock<Regex> =
 pub fn scan(source: &str, region: Span, out: &mut Vec<Directive>) {
     let text = &source[region.range()];
     for comment in COMMENT_RE.find_iter(text) {
-        let Some(caps) = DIRECTIVE_RE.captures(comment.as_str()) else {
-            continue;
-        };
-        let whole = comment;
-        let kind = match &caps[1] {
-            "disable-next-line" => DirectiveKind::DisableNextLine,
-            "disable-line" => DirectiveKind::DisableLine,
-            "disable-file" => DirectiveKind::DisableFile,
-            "disable" => DirectiveKind::Disable,
-            _ => DirectiveKind::Enable,
-        };
-        let (rules, reason) = parse_args(caps.get(2).map_or("", |m| m.as_str()));
-        out.push(Directive {
-            kind,
-            rules,
-            reason,
-            span: Span::new(region.start + whole.start(), region.start + whole.end()),
-        });
+        let span = Span::new(region.start + comment.start(), region.start + comment.end());
+        if let Some(directive) = parse_body(html_inner(comment.as_str()), span) {
+            out.push(directive);
+        }
     }
+}
+
+/// コードのコメントの中身 (その言語のコメントの記号を外したもの) 全体が抑制の書式なら、抑制を返す。
+///
+/// 書式は HTML コメントの中身と同じ (`noslop-disable-next-line P01, R03 -- 理由`) で、中身全体が
+/// HTML コメントの形 (`<!-- noslop-... -->`) でもよい。文の途中に書いた `noslop-disable` は
+/// 抑制にならない (記法の説明を書いたコメントを抑制として読まないため)。`span` はコメント全体の
+/// 原文上の範囲。`noslop-disable-next-line` は、コメントが終わる行の次の行に当たる。
+pub fn parse_code_comment(body: &str, span: Span) -> Option<Directive> {
+    let body = body.trim();
+    let inner = match body.strip_prefix("<!--") {
+        Some(rest) if rest.len() >= "-->".len() && rest.ends_with("-->") => html_inner(body),
+        _ => body,
+    };
+    parse_body(inner, span)
+}
+
+/// `<!-- ... -->` の中身 (`COMMENT_RE` に一致した文字列か、同じ形の文字列を渡す)。
+fn html_inner(comment: &str) -> &str {
+    &comment["<!--".len()..comment.len() - "-->".len()]
+}
+
+/// コメントの中身全体が抑制の書式なら、抑制を返す。
+fn parse_body(body: &str, span: Span) -> Option<Directive> {
+    let caps = BODY_RE.captures(body)?;
+    let kind = match &caps[1] {
+        "disable-next-line" => DirectiveKind::DisableNextLine,
+        "disable-line" => DirectiveKind::DisableLine,
+        "disable-file" => DirectiveKind::DisableFile,
+        "disable" => DirectiveKind::Disable,
+        _ => DirectiveKind::Enable,
+    };
+    let (rules, reason) = parse_args(caps.get(2).map_or("", |m| m.as_str()));
+    Some(Directive {
+        kind,
+        rules,
+        reason,
+        span,
+    })
 }
 
 /// HTML コメント (`<!-- ... -->`) の範囲をすべて返す (テキスト入力でコメントを本文から除くため)。
@@ -116,6 +143,47 @@ mod tests {
     fn ignores_ordinary_comments() {
         assert!(scan_all("<!-- メモ -->").is_empty());
         assert_eq!(comment_spans("a<!-- x -->b").len(), 1);
+    }
+
+    #[test]
+    fn reads_code_comment_bodies_in_both_forms() {
+        let span = Span::new(3, 40);
+        let d = parse_code_comment(
+            " noslop-disable-next-line P01, R03 -- 引用なので残す ",
+            span,
+        )
+        .unwrap();
+        assert_eq!(d.kind, DirectiveKind::DisableNextLine);
+        assert_eq!(d.rules, vec!["P01", "R03"]);
+        assert_eq!(d.reason.as_deref(), Some("引用なので残す"));
+        assert_eq!(d.span, span);
+        // 中身全体が HTML コメントの形でもよい。複数行にまたがる理由も読む
+        let d = parse_code_comment("<!-- noslop-disable-file -->", span).unwrap();
+        assert_eq!(d.kind, DirectiveKind::DisableFile);
+        let d = parse_code_comment("\nnoslop-disable P05 --\n複数行の理由\n", span).unwrap();
+        assert_eq!(d.kind, DirectiveKind::Disable);
+        assert_eq!(d.rules, vec!["P05"]);
+        assert_eq!(d.reason.as_deref(), Some("複数行の理由"));
+        assert_eq!(
+            parse_code_comment("noslop-enable", span).map(|d| d.kind),
+            Some(DirectiveKind::Enable)
+        );
+    }
+
+    #[test]
+    fn code_comments_that_only_mention_directives_are_not_directives() {
+        let span = Span::new(0, 1);
+        for body in [
+            "ここで noslop-disable-next-line を書くと次の行を抑制できる。",
+            "`noslop-disable-next-line` を使う",
+            "noslop-disable-foo",
+            "例: <!-- noslop-disable-file -->",
+            "<!-->",
+            "<!--->",
+            "",
+        ] {
+            assert!(parse_code_comment(body, span).is_none(), "{body:?}");
+        }
     }
 
     #[test]

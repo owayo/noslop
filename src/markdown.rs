@@ -73,6 +73,20 @@ static POLITE_END: LazyLock<Regex> = LazyLock::new(|| {
 /// - 直前の行が丁寧体の文末 (「です」「ます」「ください」など) で終わり、次の行が括弧で始まらない
 ///   (句点を打たずに 1 行 1 文で書いた文)
 fn breaks_sentence(source: &str, range: &Range<usize>, hard: bool) -> bool {
+    let before = &source[..range.start];
+    let after = &source[range.end..];
+    lines_break_sentence(
+        &before[before.rfind('\n').map_or(0, |i| i + 1)..],
+        &after[..after.find('\n').unwrap_or(after.len())],
+        hard,
+    )
+}
+
+/// 前の行 `prev_line` から次の行 `next_line` へ移る改行が、書式から文の区切りと分かるか
+/// (判定は [`breaks_sentence`] と同じ)。行は引用の記号・字下げを含んだままでよい。
+///
+/// コードのコメント ([`crate::code`]) でも、コメントの記号を外した行どうしで同じ判定を使う。
+pub(crate) fn lines_break_sentence(prev_line: &str, next_line: &str, hard: bool) -> bool {
     /// 引用の記号・字下げを外した行。
     fn unquoted(line: &str) -> &str {
         line.trim_start_matches(|c: char| c == '>' || c.is_whitespace())
@@ -82,11 +96,9 @@ fn breaks_sentence(source: &str, range: &Range<usize>, hard: bool) -> bool {
     fn bare(line: &str) -> &str {
         unquoted(line).trim_matches(|c: char| c == '*' || c == '_' || c.is_whitespace())
     }
-    let before = &source[..range.start];
-    let prev_line = unquoted(&before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+    let prev_line = unquoted(prev_line);
     let prev = bare(prev_line);
-    let after = &source[range.end..];
-    let next = bare(&after[..after.find('\n').unwrap_or(after.len())]);
+    let next = bare(next_line);
     let bold_line = ["**", "__"].iter().any(|m| {
         prev_line.len() > 2 * m.len() && prev_line.starts_with(m) && prev_line.ends_with(m)
     });

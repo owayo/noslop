@@ -15,7 +15,7 @@
 # macOS 標準の GNU Make 3.81 で動く書き方に限っている
 # (.ONESHELL / .SHELLFLAGS / $(file ...) / != は使わない)。
 
-.PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean dict-catalog dict-check
+.PHONY: help setup build release run install uninstall test test-no-default-features test-code-all lint lint-code-all clippy fmt fmt-check check docs docs-check ci clean dict-catalog dict-check
 
 # 引数なしの make はヘルプを表示する
 .DEFAULT_GOAL := help
@@ -103,8 +103,17 @@ test: ## テストを実行する
 test-no-default-features: ## 辞書を同梱しないビルドでテストする (--no-default-features)
 	$(RUN) cargo test $(CARGO_FLAGS) --no-default-features
 
+# コードのコメントを読む文法は言語ごとの feature で入れ、重い文法 (C++・C#・Ruby・PHP・Swift・
+# Kotlin) は既定のビルドに入らない。既定のビルドの検査では、それらの言語の側のコードとテストが
+# コンパイルされないので、すべての文法を入れたビルド (code-all) でも clippy とテストを回す
+test-code-all: ## すべての文法を入れたビルドでテストする (--features code-all)
+	$(RUN) cargo test $(CARGO_FLAGS) --features code-all
+
 lint: ## clippy を実行する (警告はエラー)
 	$(RUN) cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
+
+lint-code-all: ## すべての文法を入れたビルドで clippy を実行する (--features code-all、警告はエラー)
+	$(RUN) cargo clippy $(CARGO_FLAGS) --features code-all --all-targets -- -D warnings
 
 clippy: lint ## lint の別名
 
@@ -129,9 +138,9 @@ docs-check: ## docs/rules.md が最新かを確かめる (書き換えない)
 	@diff -u docs/rules.md $(RULES_MD_TMP) || { echo "docs/rules.md が古くなっています。make docs で作り直してください" >&2; exit 1; }
 
 # CI の Linux と macOS のジョブはこれを呼ぶ。書き換えを含めない。
-# 同梱しないビルドのテストを先に回し、既定の feature の test と docs-check を後に置く。
-# こうすると make ci の後の target/debug/noslop が既定の版 (辞書を同梱) になる
-ci: check test-no-default-features test docs-check ## CI と同じ検査 (整形・clippy・テスト・docs/rules.md)
+# 同梱しないビルドと、すべての文法を入れたビルドのテストを先に回し、既定の feature の test と
+# docs-check を後に置く。こうすると make ci の後の target/debug/noslop が既定の版 (辞書を同梱) になる
+ci: check lint-code-all test-no-default-features test-code-all test docs-check ## CI と同じ検査 (整形・clippy・テスト・docs/rules.md)
 
 clean: ## ビルドの成果物を消す
 	$(RUN) cargo clean

@@ -161,6 +161,49 @@ impl TextMap {
         Span::new(start, end)
     }
 
+    /// この対応表 (解析用テキスト → 中間のテキスト) の先に、中間のテキストから原文への対応表
+    /// `outer` をつないだ対応表 (解析用テキスト → 原文) を返す。
+    ///
+    /// コードのコメントのように、原文から記号を外して並べた中間のテキストを読み直すときに使う
+    /// ([`crate::code`])。1:1 に写した区間は、`outer` の区間が切り替わる位置 (中間のテキストで行が
+    /// 変わる位置など) で分け、`outer` でも 1:1 なら 1:1 のまま写す。ほかの区間は、中間のテキスト上の
+    /// 範囲を `outer` で原文に戻した範囲全体に対応させる。
+    pub fn compose(&self, outer: &TextMap) -> TextMap {
+        let mut out = TextMap::default();
+        for seg in &self.segments {
+            if !seg.exact {
+                let src = outer.to_source(seg.src_start..seg.src_end);
+                out.push_opaque(seg.text_start, seg.text_end - seg.text_start, src);
+                continue;
+            }
+            // 中間のテキスト上の位置 (1:1 なので解析用テキストとの差は一定)
+            let mut pos = seg.src_start;
+            while pos < seg.src_end {
+                let text_at = seg.text_start + (pos - seg.src_start);
+                let idx = outer.segments.partition_point(|o| o.text_end <= pos);
+                let next = outer.segments.get(idx);
+                match next {
+                    Some(o) if o.text_start <= pos => {
+                        let end = o.text_end.min(seg.src_end);
+                        if o.exact {
+                            out.push_exact(text_at, o.src_start + (pos - o.text_start), end - pos);
+                        } else {
+                            out.push_opaque(text_at, end - pos, Span::new(o.src_start, o.src_end));
+                        }
+                        pos = end;
+                    }
+                    // `outer` の区間の隙間 (どの区間にも入らない位置) は、次の区間の頭までをまとめて戻す
+                    _ => {
+                        let end = next.map_or(seg.src_end, |o| o.text_start.min(seg.src_end));
+                        out.push_opaque(text_at, end - pos, outer.to_source(pos..end));
+                        pos = end;
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn map_start(&self, pos: usize) -> usize {
         // pos を含む区間 (text_start <= pos < text_end) を探す
         let idx = self.segments.partition_point(|s| s.text_end <= pos);
@@ -497,6 +540,31 @@ mod tests {
         assert_eq!(map.to_source(2..5), Span::new(2, 5));
         assert_eq!(map.to_source(1..6), Span::new(1, 6));
         assert_eq!(map.to_source(5..7), Span::new(5, 7));
+    }
+
+    #[test]
+    fn composed_maps_split_exact_segments_at_the_outer_boundaries() {
+        // 原文 "// 一行目\n// 二行目" → 中間 "一行目\n二行目" (改行は原文の "\n// " に対応)
+        let src = "// 一行目\n// 二行目";
+        let second = src.rfind("二行目").unwrap();
+        let mut outer = TextMap::default();
+        outer.push_exact(0, 3, "一行目".len());
+        let nl = "一行目".len();
+        outer.push_opaque(nl, 1, Span::new(3 + nl, second));
+        outer.push_exact(nl + 1, second, "二行目".len());
+        // 中間のテキストを 1:1 に写した区間 (行をまたぐ) と、置き換えた 1 字
+        let mut inner = TextMap::default();
+        inner.push_exact(0, 0, nl + 1 + "二行".len());
+        let at = nl + 1 + "二行".len();
+        inner.push_opaque(at, 1, Span::new(at, at + "目".len()));
+        let map = inner.compose(&outer);
+        let slice = |r: Range<usize>| &src[map.to_source(r).range()];
+        assert_eq!(slice(0..nl), "一行目");
+        assert_eq!(slice(3..nl + 1 + 3), "行目\n// 二");
+        assert_eq!(slice(nl + 1..nl + 1 + "二行".len()), "二行");
+        assert_eq!(slice(at..at + 1), "目");
+        // 中間のテキストの改行 ("\n") は、原文で行が切り替わる部分全体に戻る
+        assert_eq!(slice(nl..nl + 1), "\n// ");
     }
 
     #[test]

@@ -47,10 +47,11 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 - **校正済みの閾値**: 人間とモデル 7 種の文書で誤検知率を確かめた語句と閾値だけを既定で有効にする。未校正のものは実験的ルールとして明示的に有効にしたときだけ動く
 - **2 つのレーン**: AI 臭さ（`slop`）と読みやすさ（`readability`）の指摘を分けて出す。文書全体の点数は出さず、指摘とその件数だけを並べる
 - **Markdown を理解する**: コードブロック・インラインコード・URL・文書の先頭の front matter（YAML の `---`・TOML の `+++`）を除き、見出し・リスト・表・引用を区別して解析する。文書の途中の `---` は区切り線か見出しの下線として読み、本文を捨てない
+- **コードのコメントも読む**: コードのファイルは、tree-sitter で取り出したコメントだけを検査する。文字列の中の `//` やヒアドキュメントをコメントと取り違えず、指摘は元のファイルの行・列で示す（[コードのコメント](#コードのコメント)）
 - **括弧を考慮した文分割**: 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割を使う。「」や（）の内側の句点では文を切らず、閉じ忘れた括弧があっても後続の文を巻き込まない。`Yahoo!ニュース` のように文末記号を含む語の途中でも切らない
 - **判断を記録できる**: `<!-- noslop-disable-next-line P01 -- 引用のため -->` のように、残す理由を文書に書ける
 - **CI 向けの出力**: text（色付き）・JSON（安定したスキーマ）・GitHub Actions の注釈に対応する。既定ではジョブを落とさない
-- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる
+- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`。書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたとき）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる
 - **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
 - **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ
 
@@ -100,6 +101,8 @@ make install   # /usr/local/bin にインストール（INSTALL_PATH で変更�
 ```
 
 Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使います。mise を使わない場合は `make install SYSTEM_TOOLS=1` で、`PATH` 上の cargo でビルドします。
+
+コードのコメントを読む文法は、既定では軽い言語（Rust・JavaScript・TypeScript・TSX・Python・Go・Java・C・Bash・YAML・TOML・HTML・CSS・Lua）の分だけ入ります。C++・C#・Ruby・PHP・Swift・Kotlin も読むなら、feature の `code-all` を付けてビルドします（`cargo install --git https://github.com/owayo/noslop --locked --features code-all`、`make install CARGO_FLAGS="--locked --features code-all"`）。バイナリは 20MB ほど大きくなります。
 
 `make install` は、バイナリを入れたあと、そのバイナリで Claude Code と Codex CLI のスキル（`~/.claude/skills/noslop/SKILL.md`・`~/.codex/skills/noslop/SKILL.md`）も入れます（[AI エージェントと使う](#ai-エージェントと使う)）。入れる先は `SKILL_TARGETS` で選べます（`make install SKILL_TARGETS=claude`、入れないなら `make install SKILL_TARGETS=`）。`make uninstall` はバイナリだけを取り除き、スキルは残します。
 
@@ -306,7 +309,7 @@ noslop explain R01
 
 重ね方は次のとおりです。
 
-- 上書きするのは、書いた項目だけです。プロジェクトの設定に書いていない項目は、ユーザーの設定の値が残ります。配列（`[files] extensions`・`exclude`）は丸ごと置き換えます
+- 上書きするのは、書いた項目だけです。プロジェクトの設定に書いていない項目は、ユーザーの設定の値が残ります。配列（`[files] extensions`・`exclude`、`[code] extensions`）は丸ごと置き換えます
 - ルールの有効・無効（`[rules]` の `enable`・`disable` と `[rules.<ID>] enabled`）は、ルールごとに決めます。ID と名前のどちらで書いても同じルールとして扱います。プロジェクトの設定で触れたルールはそちらに従い、触れていないルールはユーザーの設定に従います。同じファイルの中では無効が優先です。ユーザーの設定で止めたルールをプロジェクトで動かすには、`enable` か `enabled = true` を書きます
 - `[rules.<ID>]` の `severity` と閾値は、項目ごとにプロジェクトの設定が上書きします
 - 独自ルール（`[[custom]]`）は両方を使います。同じ ID（大文字小文字は区別しない）があれば、プロジェクトの定義で丸ごと置き換えます
@@ -357,6 +360,37 @@ severity = "warning"
 ```
 
 すべての項目とその説明は [examples/noslop.toml](examples/noslop.toml) にあります。閾値は校正の前提を崩すので、変えるときは理由を残してください。
+
+## コードのコメント
+
+コードのファイルでは、コメントだけを文章として検査します（文字列リテラルは読みません）。
+
+```bash
+# 直接渡したコードのファイルは、拡張子から言語を決めてコメントを検査する
+noslop check src/lib.rs
+
+# ディレクトリをたどるときは、設定の [code] extensions に書いた拡張子のファイルも集める
+noslop check src/
+```
+
+```toml
+# noslop.toml か ~/.config/noslop/config.toml
+[code]
+extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
+```
+
+- **読める言語**: 既定のビルドは Rust・JavaScript・TypeScript・TSX・Python・Go・Java・C・Bash・YAML・TOML・HTML・CSS・Lua です。C++・C#・Ruby・PHP・Swift・Kotlin は、`code-all` を付けたビルドで読めます（[ソースから](#ソースから)）。読めない言語のファイルを直接渡すと、言語ごとに 1 行の警告を出し、指摘なしで終わります。`[code] extensions` に読めない言語の拡張子を書くと、設定の誤りになります
+- **取り出し方**: tree-sitter でコメントを読むので、文字列の中の `//`、正規表現、ヒアドキュメントをコメントと取り違えません。隣り合う行の同じ種類のコメント（同じ記号・同じ列）は 1 つにまとめ、コードの後ろのコメントは単独で読みます。記号（`//`・`#`・`/*`・行頭の `*` など）を外した本文を段落にし、指摘の位置は元のファイルの行・列で示します
+- **ドキュメントのコメント**: `///`・`/** */`・Python の docstring は Markdown として読み、インラインコードやコードブロックは検査しません。Javadoc と C# の XML ドキュメントは、タグを外して読みます
+- **検査しないコメント**: 日本語を含まないもの、shebang、ツールへの指示（`eslint-disable`・`noqa` など）、著作権・ライセンスの表記
+- **当てるルール**: コメントは互いに独立した短い断片なので、1 文ずつ判定するルール（語句ルール・独自ルール・R03・R04）だけを当てます。文書・段落をまたいで数えるルール（R01 など）と構造のルール（S）は当てません。ルールはひと続きの文章で校正したもので、コメントでの誤検知率は確かめていません
+- **抑制**: コメントの中身全体を `noslop-disable-next-line P01 -- 理由` の形（`<!-- -->` で囲んでもかまいません）にすると、抑制コメントとして読みます。文の途中に書いた記法は抑制になりません
+- **出力**: JSON の `format` は `"code"` になります。`--stdin-filename` と MCP の `check` の `filename` でも、拡張子から言語を決めます
+
+```rust
+// noslop-disable-next-line P01 -- 利用者に見せる案内の定型文のため
+/// まとめると、ユーザーの設定にプロジェクトの設定を重ねたものを返します。
+```
 
 ## 抑制コメント
 
@@ -814,7 +848,9 @@ make ci      # CI と同じ検査
 | `make uninstall` | 入れたバイナリを取り除く (スキルは残す) |
 | `make test` | テストを実行する |
 | `make test-no-default-features` | 辞書を同梱しないビルドでテストする (--no-default-features) |
+| `make test-code-all` | すべての文法を入れたビルドでテストする (--features code-all) |
 | `make lint` | clippy を実行する (警告はエラー) |
+| `make lint-code-all` | すべての文法を入れたビルドで clippy を実行する (--features code-all、警告はエラー) |
 | `make clippy` | lint の別名 |
 | `make fmt` | コードを整形する (書き換える) |
 | `make fmt-check` | 整形済みかを確かめる (書き換えない) |
@@ -827,7 +863,7 @@ make ci      # CI と同じ検査
 | `make dict-check` | 目録の辞書を実際に取得し、大きさ・SHA-256・読めることを確かめる (通信が要る) |
 | `make help` | このヘルプを表示する |
 
-`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
+`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテスト、すべての文法を入れたビルド（`--features code-all`）の clippy とテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
 
 cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに依存を解決します。依存を足した直後など、`Cargo.lock` を更新したいときは `CARGO_FLAGS=` を付けます。mise を使わない場合は `SYSTEM_TOOLS=1` を付けると、`PATH` 上のツールで動きます（ツールの版はそろいません）。
 
