@@ -370,10 +370,13 @@ pub struct DictDownloadArgs {
     /// 保存先 (既定は hasami の share ディレクトリ)
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
-    /// 取得元の URL の接頭辞 (ミラーを使うとき。この後に /<名前>.hsd を付けて取得する。
+    /// 取得元の URL の接頭辞 (ミラーを使うとき。この後に /<名前>.hsd.zst (--uncompressed なら /<名前>.hsd) を付けて取得する。
     /// どの取得元でも大きさと SHA-256 を確かめる)
     #[arg(long, value_name = "URL", default_value = dictionaries::DEFAULT_SOURCE)]
     pub source: String,
+    /// 圧縮版 (.hsd.zst) を使わず、展開前の辞書 (.hsd) を取得する (圧縮版を置いていない取得元向け)
+    #[arg(long)]
+    pub uncompressed: bool,
     /// 正しいファイルがあっても取り直す。中身の違うファイルも置き換える
     #[arg(long)]
     pub force: bool,
@@ -1386,10 +1389,16 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
             "share ディレクトリが分かりません (HASAMI_DATA_DIR・XDG_DATA_HOME・HOME のどれも設定されていません。Windows では LOCALAPPDATA も見ます)。--dir で保存先を指定してください",
         );
     };
-    let mut progress = DownloadProgress::new(dict, &dir, io::stderr().is_terminal());
-    let result = dictionaries::download(dict, &dir, &args.source, args.force, &mut |r, t| {
-        progress.update(r, t)
-    });
+    let compressed = !args.uncompressed;
+    let mut progress = DownloadProgress::new(dict, &dir, compressed, io::stderr().is_terminal());
+    let result = dictionaries::download(
+        dict,
+        &dir,
+        &args.source,
+        args.force,
+        compressed,
+        &mut |r, t| progress.update(r, t),
+    );
     progress.finish();
     match result {
         Ok(outcome) => {
@@ -1489,16 +1498,19 @@ fn is_share_dir(dir: &Path, share: Option<&Path>) -> bool {
 struct DownloadProgress<'a> {
     dict: &'a Distributed,
     dir: &'a Path,
+    /// 圧縮版を取るか (受け取る量と、展開後の大きさを分けて示す)。
+    compressed: bool,
     terminal: bool,
     started: bool,
     shown: Option<Instant>,
 }
 
 impl<'a> DownloadProgress<'a> {
-    fn new(dict: &'a Distributed, dir: &'a Path, terminal: bool) -> Self {
+    fn new(dict: &'a Distributed, dir: &'a Path, compressed: bool, terminal: bool) -> Self {
         Self {
             dict,
             dir,
+            compressed,
             terminal,
             started: false,
             shown: None,
@@ -1511,10 +1523,8 @@ impl<'a> DownloadProgress<'a> {
             let mut out = io::stdout();
             let _ = writeln!(
                 out,
-                "{} ({} MB) を取得しています: {}",
-                self.dict.name,
-                megabytes(self.dict.size),
-                display_path(self.dir)
+                "{}",
+                download_heading(self.dict, self.dir, self.compressed)
             );
             let _ = out.flush();
         }
@@ -1546,6 +1556,26 @@ impl<'a> DownloadProgress<'a> {
             let _ = writeln!(io::stderr());
         }
     }
+}
+
+/// `dict download` が取得を始めるときの 1 行。圧縮版を取るなら、受け取る大きさと展開後の大きさを分けて示す
+/// (受信の進み具合は、受け取る大きさに対して数える)。
+fn download_heading(dict: &Distributed, dir: &Path, compressed: bool) -> String {
+    let transfer = dict.transfer_size(compressed);
+    let size = if transfer == dict.size {
+        format!("{} MB", megabytes(dict.size))
+    } else {
+        format!(
+            "圧縮版 {} MB、展開後 {} MB",
+            megabytes(transfer),
+            megabytes(dict.size)
+        )
+    };
+    format!(
+        "{} ({size}) を取得しています: {}",
+        dict.name,
+        display_path(dir)
+    )
 }
 
 /// 大きさを 10 進の MB (1,000,000 バイト) で、小数 1 桁で表す。

@@ -32,34 +32,31 @@ anstyle = "1.0.14"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
 globset = "0.4.20"
-# 文分割 (辞書を使わない hasami::sentence) と、辞書があるときの形態素解析 (analyzer)。
-# crates.io の同名クレートは別物なので、git のタグで入れる。既定の feature (cli) は辞書の構築と
-# CLI の依存を引くので切る
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer"] }
+# 文分割 (辞書を使わない hasami::sentence) と、辞書があるときの形態素解析 (analyzer)、配布辞書の取得
+# (download。noslop dict download が使う。HTTP は ureq の rustls で、社内の CA を入れた環境でも通るよう
+# OS の証明書ストアで検証する。圧縮版の展開は ruzstd)。crates.io の同名クレートは別物なので、git の
+# タグで入れる。既定の feature (cli) は辞書の構築と CLI の依存を引くので切る
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "download"] }
 ignore = "0.4.33"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rayon = "1.12.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-# 取得した辞書の SHA-256 を確かめる (noslop dict download)
-sha2 = "0.11.0"
-# 取得した辞書を同じディレクトリの一時ファイルに書き、確かめてから置き換える
-tempfile = "3.27.0"
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
 toon-format = { version = "0.5.0", default-features = false }
 toml = "1.1.6"
 unicode-width = "0.2.2"
-# 辞書の取得 (noslop dict download)。TLS は rustls で、社内の CA を入れた環境でも通るよう
-# OS の証明書ストアで検証する (platform-verifier)。辞書は圧縮されないので gzip は切る
-ureq = { version = "3.4.2", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
 # テストで小さな辞書を組み立てる (build)。CI に辞書を置かずに、辞書ありの判定を確かめるため
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "build"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "build", "download"] }
 predicates = "3.1.4"
+# テスト用の配布辞書の SHA-256 を計算する (hasami の download と同じ版。依存の木に新しく加わらない)
+sha2 = "0.11.0"
+tempfile = "3.27.0"
 
 # build.rs で配布辞書の目録 (dict/catalog.json) を読み、検証して定数を作る
 [build-dependencies]

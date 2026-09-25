@@ -1472,12 +1472,12 @@ fn noslop_offline() -> Command {
 
 /// `/<name>.hsd` への GET に `body` を返す (ほかは 404) テスト用の HTTP サーバー。URL と、受けた
 /// 要求の数を返す。
-fn serve_dictionary(name: &str, body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+fn serve_file(file: &str, body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&requests);
-    let served = format!("GET /{name}.hsd ");
+    let served = format!("GET /{file} ");
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -1577,12 +1577,14 @@ fn dict_list_shows_whether_each_dictionary_is_downloaded() {
 
 /// 保存先は --dir、省くと share ディレクトリ (HASAMI_DATA_DIR、なければ $XDG_DATA_HOME/hasami)。
 /// 取得の前に保存先を作るので、目録と合わない中身を返すサーバーでも、どこに置こうとしたかが分かる。
-/// 取得できる場合は目録の実物が要るので、単体テスト (dictionaries・cli) と make dict-check で確かめる
+/// 既定では圧縮版 (<名前>.hsd.zst) を取る。取得できる場合は目録の実物が要るので、単体テスト
+/// (dictionaries・cli) と make dict-check で確かめる
 #[test]
 fn dict_download_puts_the_dictionary_in_the_chosen_directory() {
     let dict = &DICTIONARIES[0];
+    let compressed = dict.compressed.expect("目録の辞書には圧縮版がある");
     // 目録と大きさの違う中身を返す (受信の前に Content-Length で断る)
-    let (url, requests) = serve_dictionary(dict.name, Vec::new());
+    let (url, requests) = serve_file(compressed.file, Vec::new());
     let root = tempfile::tempdir().unwrap();
 
     let explicit = root.path().join("explicit");
@@ -1591,9 +1593,13 @@ fn dict_download_puts_the_dictionary_in_the_chosen_directory() {
         .arg(&explicit)
         .assert()
         .code(2)
-        .stdout(predicate::str::contains(format!("{} (", dict.name)))
+        .stdout(predicate::str::contains(format!("{} (圧縮版 ", dict.name)))
         .stdout(predicate::str::contains("を取得しています: "))
-        .stderr(predicate::str::contains("大きさが違います"));
+        .stderr(predicate::str::contains(format!(
+            "{} の大きさが違います",
+            compressed.file
+        )))
+        .stderr(predicate::str::contains("の圧縮版は"));
     assert!(explicit.is_dir());
     assert!(!explicit.join(dict.file_name()).exists());
     assert!(partial_files(&explicit).is_empty());
@@ -1628,9 +1634,10 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
         .code(2)
         .stderr(predicate::str::contains(RECOMMENDED));
 
-    // 取得元にない辞書 (サーバーは目録の先頭の辞書だけを配る)
+    // 取得元にない辞書 (サーバーは目録の先頭の辞書の、展開前のファイルだけを配る)。圧縮版がなければ、
+    // 展開前の辞書を取る指定 (--uncompressed) を案内する
     let [first, second] = [&DICTIONARIES[0], &DICTIONARIES[1]];
-    let (url, requests) = serve_dictionary(first.name, Vec::new());
+    let (url, requests) = serve_file(&first.file_name(), Vec::new());
     let dir = tempfile::tempdir().unwrap();
     noslop_offline()
         .args(["dict", "download", second.name, "--dir"])
@@ -1638,19 +1645,34 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
         .args(["--source", &url])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("HTTP 404"));
-    // 中身の違うものは置かない (大きさが合わない)
+        .stderr(predicate::str::contains("HTTP 404"))
+        .stderr(predicate::str::contains("--uncompressed"));
+    // --uncompressed なら展開前の辞書を取る。中身の違うものは置かない (大きさが合わない)
     noslop_offline()
-        .args(["dict", "download", first.name, "--dir"])
+        .args(["dict", "download", first.name, "--uncompressed", "--dir"])
         .arg(dir.path())
         .args(["--source", &url])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("大きさが違います"));
+        .stdout(predicate::str::contains(format!(
+            "{} ({} MB)",
+            first.name,
+            megabytes(first.size)
+        )))
+        .stderr(predicate::str::contains(format!(
+            "{} の大きさが違います",
+            first.file_name()
+        )))
+        .stderr(predicate::str::contains("--uncompressed").not());
     assert_eq!(requests.load(Ordering::SeqCst), 2);
     assert!(!dir.path().join(second.file_name()).exists());
     assert!(!dir.path().join(first.file_name()).exists());
     assert!(partial_files(dir.path()).is_empty());
+}
+
+/// `dict download` の表示と同じ、10 進の MB で小数 1 桁。
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1_000_000.0)
 }
 
 #[test]

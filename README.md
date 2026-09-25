@@ -109,7 +109,7 @@ Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使いま
 | `noslop hook claude-code` | Claude Code の PostToolUse フックとして、書き換えたファイルの指摘を返す |
 | `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み（claw-hooks など）から呼び、コミットしていない変更に重なる指摘をテキストで返す |
 | `noslop skill-install <claude\|codex>` | Claude Code・Codex CLI に noslop のスキルを入れる |
-| `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。大きさと SHA-256 を確かめてから置く。取得した辞書は、辞書を指定しないとき（`auto`）に使われる |
+| `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。既定では圧縮版を取って展開し、大きさと SHA-256 を確かめてから置く。取得した辞書は、辞書を指定しないとき（`auto`）に使われる |
 | `noslop dict list` | 配布辞書と取得済みかを表示し、辞書を指定しないときに使う辞書を示す（通信しない） |
 | `noslop calibrate --human <PATH> --ai <PATH>` | 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率と閾値を測る |
 
@@ -196,7 +196,7 @@ noslop explain R01
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
-| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](#別の辞書を使う) |
+| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--uncompressed` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、圧縮版を使わずに展開前の辞書を取るか（圧縮版を置いていないミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](#別の辞書を使う) |
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
 | `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`--min-detection`、`--no-experimental`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](docs/calibration.md) |
 
@@ -720,11 +720,11 @@ dictionary = "auto"
 
 hasami は、ほかにもビルド済みの辞書を配布しています。NEologd の語彙を含む `ipadic-neologd` と `ipadic-neologd-sudachi` は、収録語が多い分だけ大きく、どちらも 220MB を超えるため同梱していません。`noslop dict download` で hasami の share ディレクトリに取得できます。share ディレクトリは hasami と同じ規則で決まり、`HASAMI_DATA_DIR` が設定されていればそこ、次に `$XDG_DATA_HOME/hasami`、Windows では `%LOCALAPPDATA%\hasami`、どれもなければ `~/.local/share/hasami` です。
 
-| 名前 | 大きさ | 中身 |
-|---|---:|---|
-| `ipadic` | 約 18MB | IPAdic（同梱の辞書と同じ mecab-ipadic から作ったもの） |
-| `ipadic-neologd` | 約 222MB | IPAdic + NEologd |
-| `ipadic-neologd-sudachi` | 約 238MB | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
+| 名前 | 大きさ | 取得の量（圧縮版） | 中身 |
+|---|---:|---:|---|
+| `ipadic` | 約 18MB | 約 5.9MB | IPAdic（同梱の辞書と同じ mecab-ipadic から作ったもの） |
+| `ipadic-neologd` | 約 222MB | 約 68MB | IPAdic + NEologd |
+| `ipadic-neologd-sudachi` | 約 238MB | 約 73MB | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
 
 ```bash
 # share ディレクトリ（既定は ~/.local/share/hasami）に取得する（名前を省くと ipadic-neologd-sudachi）
@@ -742,9 +742,10 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 
 取得した辞書は、辞書を指定しないとき（`auto`）に次の実行から使われます。いくつか取得してあれば、hasami の推奨順で選びます。どのマシンでも同じ辞書で判定したいときは、プロジェクトの設定の `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます（取得していないマシンでは、取得のコマンドを案内して設定の誤りになります）。手元のマシンでだけ使うなら、ユーザーの設定（`~/.config/noslop/config.toml`）に書きます。
 
-- 取得元は、noslop に組み込んだ hasami のリリースの目録（`noslop dict list` の 1 行目に出る版）にある、そのリリースの添付ファイルです。目録は noslop をリリースするたびに hasami の最新のリリースに合わせます。取得した中身は目録の大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
+- 取得元は、noslop に組み込んだ hasami のリリースの目録（`noslop dict list` の 1 行目に出る版）にある、そのリリースの添付ファイルです。目録は noslop をリリースするたびに hasami の最新のリリースに合わせます
+- 既定では、zstd で圧縮した版（`<名前>.hsd.zst`。3 分の 1 ほどの大きさ）を取り、受け取りながら展開します。受け取った圧縮版と展開した辞書の両方を目録の大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません。取得の処理は hasami のライブラリ（`hasami::download`）を使っています
 - 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
-- ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
+- ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd.zst` を取得します。どの取得元でも大きさと SHA-256 を確かめます）。圧縮版を置いていないミラーでは `--uncompressed` を付けると、展開前の `<URL>/<名前>.hsd` を取得します
 - 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります。校正した条件で判定するなら `dictionary = "bundled"` を指定します
 
 share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
