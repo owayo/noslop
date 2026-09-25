@@ -23,12 +23,24 @@ severity = "warning"
 const DOC_WITH_TERM: &str = "# 利用案内\n\n新しい機能はユーザー様の声から生まれました。\n\nユーザー様に感謝します。ユーザー様の意見を待っています。\n";
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
+/// 手元の設定と辞書から切り離した noslop (tests/cli.rs の同名の関数と同じ)。
 fn noslop() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_noslop"));
+    let empty = empty_dir();
     cmd.env_remove("NO_COLOR")
         .env_remove("CLICOLOR_FORCE")
-        .env_remove("CLAUDE_PROJECT_DIR");
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env("HOME", empty)
+        .env("USERPROFILE", empty)
+        .env("HASAMI_DATA_DIR", empty)
+        .env_remove("HASAMI_DICT");
     cmd
+}
+
+/// 中に何も置かないディレクトリ (テストの実行ごとに 1 つ)。
+fn empty_dir() -> &'static std::path::Path {
+    static EMPTY: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| tempfile::tempdir().unwrap()).path()
 }
 
 fn workspace() -> TempDir {
@@ -165,6 +177,93 @@ fn claude_code_hook_passes_findings_as_additional_context() {
     assert!(ctx.contains("  - ほか 2 件"), "{ctx}");
     assert!(ctx.contains("直さない判断もできます"), "{ctx}");
     assert!(ctx.contains("再実行は 1 回だけ"), "{ctx}");
+}
+
+/// テスト用の git を動かす (手元の git の設定の署名やフックに左右されないよう切る)。
+fn git(dir: &std::path::Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .current_dir(dir)
+        .args([
+            "-c",
+            "user.name=noslop",
+            "-c",
+            "user.email=you@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// パスだけを渡すフック (`hook file`) は、git の HEAD との差分で変わった行に重なる指摘だけを
+/// テキストで返す。追跡していないファイルや git の外ではファイル全体を見る。
+#[test]
+fn file_hook_limits_findings_to_uncommitted_lines() {
+    let dir = workspace();
+    let run = |extra: &[&str]| {
+        let out = noslop()
+            .current_dir(dir.path())
+            .args(["hook", "file"])
+            .args(extra)
+            .arg("docs/guide.md")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    // git の外ではファイル全体 (3 件)
+    let text = run(&[]);
+    assert!(
+        text.contains("独自ルールの指摘を 3 件見つけました"),
+        "{text}"
+    );
+    assert!(!text.contains("コミットしていない変更"), "{text}");
+
+    if !git(dir.path(), &["init", "-q"]) {
+        eprintln!("git を実行できないので、差分の確かめを飛ばします");
+        return;
+    }
+    // 追跡していないファイルもファイル全体
+    assert!(run(&[]).contains("3 件見つけました"));
+
+    assert!(git(dir.path(), &["add", "-A"]));
+    assert!(git(
+        dir.path(),
+        &["commit", "-q", "--no-verify", "-m", "init"]
+    ));
+    // コミットした直後は変わった行がないので、何も返さない
+    assert_eq!(run(&[]), "");
+    // --whole-file はファイル全体
+    assert!(run(&["--whole-file"]).contains("3 件見つけました"));
+
+    // 段落を 1 つ足すと、その行の指摘だけを返す
+    let guide = dir.path().join("docs/guide.md");
+    let mut doc = fs::read_to_string(&guide).unwrap();
+    doc.push_str("\n足した段落でもユーザー様と書きました。\n");
+    fs::write(&guide, doc).unwrap();
+    let text = run(&[]);
+    assert!(
+        text.contains("独自ルールの指摘を 1 件見つけました"),
+        "{text}"
+    );
+    assert!(text.contains("  - L7: "), "{text}");
+    assert!(
+        text.contains("コミットしていない変更 (git の HEAD との差分) の行に重なる指摘だけ"),
+        "{text}"
+    );
+    assert!(
+        serde_json::from_str::<Value>(&text).is_err(),
+        "JSON ではなくテキスト"
+    );
 }
 
 #[test]

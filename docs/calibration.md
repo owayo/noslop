@@ -92,7 +92,7 @@ noslop calibrate --human <DIR> --ai <DIR> [--genre <GENRE>] [--target-fp 0.05] [
 | `--min-detection` | `0.2` | 校正済みに上げる候補とする検出率の下限 |
 | `--no-experimental` | — | 実験的なルールと語句を測らない (既定の動作だけを測るので速い) |
 | `--format` | `text` | 出力形式。記録を残すなら `markdown`、ほかの道具で読むなら `json` |
-| `--config` / `--no-config` | — | 設定ファイルの指定・読まない (`noslop check` と同じ) |
+| `--config` / `--no-config` | — | プロジェクトの設定ファイルの指定・設定ファイルを読まない (`noslop check` と同じ。ユーザーの設定も重ねる) |
 
 読めなかった入力があると、結果を出したうえで終了コード 2 で終わります (読めなかった入力は標準エラーにも出します)。
 
@@ -103,7 +103,9 @@ noslop calibrate --human corpus/tech/human --ai corpus/tech/ai-claude --ai corpu
   --genre tech --format markdown > calibration-tech.md
 ```
 
-設定ファイルは `noslop check` と同じように読みます。`[rules.<ID>]` で閾値を変えていれば、その値が「現在の閾値」になります。`[rules.<ID>] severity` で重大度を上書きしていれば、指摘はその重大度で数えます (校正の基準は変わりません)。実験的なルールと語句も既定で測ります。
+設定ファイルは `noslop check` と同じように読みます (ユーザーの設定 `~/.config/noslop/config.toml` にプロジェクトの設定を重ねます)。`[rules.<ID>]` で閾値を変えていれば、その値が「現在の閾値」になります。`[rules.<ID>] severity` で重大度を上書きしていれば、指摘はその重大度で数えます (校正の基準は変わりません)。実験的なルールと語句も既定で測ります。
+
+品詞で数えるルール (P15・P16) の辞書も設定の `[morphology]` に従います。既定の `auto` は、share ディレクトリに取得した配布辞書があればそれを使うので、測る人の手元によって結果が変わります。元の校正と同じ条件 (同梱の IPAdic) で測るなら、`[morphology]` に `dictionary = "bundled"` と書いた設定ファイルを `--config` で渡してください。
 
 ### 測り方
 

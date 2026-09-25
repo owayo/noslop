@@ -17,17 +17,19 @@ use clap::builder::{PossibleValue, PossibleValuesParser};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{self, ConfigError, FailOn, LoadedConfig};
+use crate::config::{self, ConfigError, ConfigLayers, CustomRuleConfig, FailOn, LoadedConfig};
 use crate::diagnostic::{RuleStatus, Severity};
 use crate::dictionaries::{self, Check, Distributed, Outcome};
 use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
 use crate::genre::Genre;
-use crate::morph::{MorphologyMode, MorphologyOptions};
+use crate::morph::{
+    self, AutoPick, DictionaryChoice, DictionarySearch, MorphologyMode, MorphologyOptions,
+};
 use crate::output::{CheckOutput, RenderOptions, RuleCatalog};
 use crate::rules::Scope;
 use crate::segment::LineBreakMode;
-use crate::walk::{self, Exclude, WalkOptions};
+use crate::walk::{self, Exclude, ExcludeRule, WalkOptions};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -60,12 +62,12 @@ pub enum Command {
     Rules(RulesArgs),
     /// ルールの詳細 (何を見るか・直し方・根拠) を表示する
     Explain(ExplainArgs),
-    /// 設定ファイル noslop.toml のひな形を作る
+    /// プロジェクトの設定ファイル noslop.toml のひな形を作る
     Init(InitArgs),
     /// MCP サーバーとして標準入出力で待ち受ける (AI エージェントから検査を呼ぶ)
     ///
     /// ツールは check (本文の検査)・diff (改稿の前後の比較)・explain (ルールの説明)・rules (ルールの一覧)。
-    /// 設定ファイルは、環境変数 CLAUDE_PROJECT_DIR があればそこから、なければカレントから親へ探す。
+    /// プロジェクトの設定ファイルは、環境変数 CLAUDE_PROJECT_DIR があればそこから、なければカレントから親へ探し、ユーザーの設定 (~/.config/noslop/config.toml) に重ねる。
     Mcp(McpArgs),
     /// エージェントのフックから呼ぶ (編集したファイルを検査して指摘を返す)
     #[command(subcommand)]
@@ -79,8 +81,8 @@ pub enum Command {
     /// hasami の配布辞書 (形態素解析の辞書) を取得する・一覧する
     ///
     /// 置き場は hasami の share ディレクトリ (既定は ~/.local/share/hasami。HASAMI_DATA_DIR・XDG_DATA_HOME で変わる)。
-    /// 取得しただけでは使わない。
-    /// 使うときは --dict share:<名前> か、noslop.toml の [morphology] に dictionary = "share:<名前>" を書く。
+    /// 辞書を指定しないとき (dictionary = "auto") は、ここにある辞書を hasami の推奨順で選び、同梱の辞書より先に使う。
+    /// 決まった辞書を使うときは --dict share:<名前> か、[morphology] に dictionary = "share:<名前>" を書く。
     #[command(subcommand)]
     Dict(DictCommand),
 }
@@ -88,10 +90,11 @@ pub enum Command {
 /// 設定ファイルの指定。
 #[derive(Debug, Clone, Args)]
 pub struct ConfigArgs {
-    /// 設定ファイルを指定する (省略時はカレントから親へ noslop.toml / .noslop.toml を探す)
+    /// プロジェクトの設定ファイルを指定する (省略時はカレントから親へ noslop.toml / .noslop.toml を探す)。
+    /// ユーザーの設定 (~/.config/noslop/config.toml) はこれに重ねる
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
-    /// 設定ファイルを読まない
+    /// 設定ファイルを読まない (ユーザーの設定も読まない)
     #[arg(long, conflicts_with = "config")]
     pub no_config: bool,
 }
@@ -123,9 +126,9 @@ pub struct EngineArgs {
     /// 段落内の改行の扱い
     #[arg(long, value_enum, value_name = "MODE")]
     pub line_breaks: Option<LineBreaksArg>,
-    /// 形態素解析の辞書 (hasami の .hsd)。指定するとこの辞書を必ず使い、品詞で判定する。
-    /// share:<名前> で、noslop dict download で取得した辞書を指す
-    #[arg(long, value_name = "PATH", conflicts_with = "no_dict")]
+    /// 形態素解析の辞書: auto (share ディレクトリの辞書を推奨順に、なければ同梱の辞書)・bundled (同梱の辞書)・share:<名前> (noslop dict download で取得した辞書)・ファイルのパス (hasami の .hsd)。
+    /// 指定すると辞書を必ず使い、品詞で判定する
+    #[arg(long, value_name = "DICT", conflicts_with = "no_dict")]
     pub dict: Option<PathBuf>,
     /// 形態素解析の辞書を使わず、辞書なしの近似で判定する
     #[arg(long)]
@@ -266,11 +269,32 @@ pub enum HookCommand {
     ///
     /// 標準入力でフックの入力 (JSON) を受け取り、指摘があれば additionalContext を標準出力に書く。
     /// 対象外のツール・ファイルや指摘がないときは何も書かない。設定ファイルは入力の cwd から親へ探す。
-    ClaudeCode(ClaudeCodeArgs),
+    ClaudeCode(HookArgs),
+    /// 編集したファイルのパスだけを渡すフックから呼ぶ (claw-hooks の extension_hooks のように、フックの入力を渡せない仕組み向け)
+    ///
+    /// 指摘があれば、claude-code と同じ短い改稿指示をテキストで標準出力に書く。
+    /// 対象外のファイルや指摘がないときは何も書かない。
+    /// 変わった行は git の差分 (HEAD との比較) から求め、git で追跡していないファイルや git の外ではファイル全体を見る。
+    /// 設定ファイルはカレントディレクトリから親へ探す。
+    File(FileHookArgs),
 }
 
+/// `hook file` の引数。
 #[derive(Debug, Clone, Args)]
-pub struct ClaudeCodeArgs {
+pub struct FileHookArgs {
+    /// 編集したファイル
+    #[arg(value_name = "PATH")]
+    pub path: PathBuf,
+    /// 出力の文字数の上限。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
+    #[arg(long, default_value_t = 9_000, value_parser = parse_limit, value_name = "N")]
+    pub max_chars: usize,
+    #[command(flatten)]
+    pub hook: HookArgs,
+}
+
+/// フックに共通の引数。
+#[derive(Debug, Clone, Args)]
+pub struct HookArgs {
     /// 1 ルールあたりに返す箇所の上限
     #[arg(long, default_value_t = 3, value_parser = parse_limit, value_name = "N")]
     pub brief_limit: usize,
@@ -539,6 +563,7 @@ pub fn run() -> ExitCode {
         Command::Init(args) => init(args),
         Command::Mcp(args) => mcp(args),
         Command::Hook(HookCommand::ClaudeCode(args)) => crate::hook::claude_code(&args),
+        Command::Hook(HookCommand::File(args)) => crate::hook::file(&args),
         Command::SkillInstall(args) => skill_install(args),
         Command::Dict(DictCommand::Download(args)) => dict_download(args),
         Command::Dict(DictCommand::List(args)) => dict_list(args),
@@ -551,19 +576,53 @@ fn error(message: impl std::fmt::Display) -> u8 {
     EXIT_ERROR
 }
 
-/// 設定ファイルを探して読み込む (`--config` がなければカレントから親へ探す)。
-pub(crate) fn load_config(args: &ConfigArgs) -> Result<Option<LoadedConfig>, ConfigError> {
-    load_config_from(args, None)
+/// 手元の環境: ユーザーの設定の置き場所 (ホームディレクトリ) と、辞書を探す場所。実行時は
+/// [`Environment::from_process`] で作り、入口から渡す。テストでは空 (`Default`) にして、手元の設定と
+/// 辞書に左右されないようにする (環境変数を書き換えずに済むように、引数で渡す)。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Environment {
+    /// ホームディレクトリ (ユーザーの設定 `~/.config/noslop/config.toml` と、設定に書いたパスの `~/`)。
+    pub home: Option<PathBuf>,
+    /// 辞書を探す場所 (`HASAMI_DICT` と share ディレクトリ)。
+    pub dictionaries: DictionarySearch,
 }
 
-/// 設定ファイルを探して読み込む。`--config` がなければ `start` (省略時はカレント) から親へ探す。
+impl Environment {
+    /// 実行中のプロセスの環境から作る。
+    pub(crate) fn from_process() -> Self {
+        Self {
+            home: std::env::home_dir().filter(|h| h.is_absolute()),
+            dictionaries: DictionarySearch::from_env(),
+        }
+    }
+}
+
+/// 設定ファイルを読み込む (`--config` がなければカレントから親へ探す)。
+pub(crate) fn load_config(
+    args: &ConfigArgs,
+    env: &Environment,
+) -> Result<ConfigLayers, ConfigError> {
+    load_config_from(args, None, env)
+}
+
+/// 設定ファイルを読み込む。プロジェクトの設定は、`--config` がなければ `start` (省略時はカレント)
+/// から親へ探す。ユーザーの設定はホームディレクトリの `.config/noslop/config.toml`。
 pub(crate) fn load_config_from(
     args: &ConfigArgs,
     start: Option<&Path>,
-) -> Result<Option<LoadedConfig>, ConfigError> {
+    env: &Environment,
+) -> Result<ConfigLayers, ConfigError> {
     if args.no_config {
-        return Ok(None);
+        return Ok(ConfigLayers::default());
     }
+    // ユーザーの設定は、置いてあれば読む (読めなければ設定の誤り)
+    let user = env
+        .home
+        .as_deref()
+        .map(config::user_config_path)
+        .filter(|path| path.exists())
+        .map(|path| config::load(&path))
+        .transpose()?;
     let path = match &args.config {
         Some(p) => Some(p.clone()),
         None => {
@@ -577,58 +636,90 @@ pub(crate) fn load_config_from(
             config::discover(&dir)
         }
     };
-    path.map(|p| config::load(&p)).transpose()
+    let project = path.map(|p| config::load(&p)).transpose()?;
+    Ok(ConfigLayers { user, project })
 }
 
-/// 設定ファイルだけからエンジンの設定を組み立てる (CLI の指定は反映しない)。
-pub(crate) fn config_engine_options(cfg: Option<&LoadedConfig>) -> EngineOptions {
-    let file = cfg.map(|c| c.file.clone()).unwrap_or_default();
+/// 設定ファイルだけからエンジンの設定を組み立てる (CLI の指定は反映しない)。ユーザーの設定の上に、
+/// プロジェクトの設定を項目ごとに重ねる。辞書を探す場所は `env` から埋める。
+pub(crate) fn config_engine_options(cfg: &ConfigLayers, env: &Environment) -> EngineOptions {
+    let user = cfg.user.as_ref().map(|c| &c.file);
+    let project = cfg.project.as_ref().map(|c| &c.file);
+    let rules =
+        |file: Option<&config::ConfigFile>| file.map(|f| f.rules.clone()).unwrap_or_default();
+    let (user_rules, project_rules) = (rules(user), rules(project));
     EngineOptions {
-        genre: file.genre.unwrap_or_default(),
-        experimental: file.experimental.unwrap_or(false),
+        genre: cfg.pick(|f| f.genre).unwrap_or_default(),
+        experimental: cfg.pick(|f| f.experimental).unwrap_or(false),
         scope: Scope {
-            lists: file.scope.lists.unwrap_or(false),
-            tables: file.scope.tables.unwrap_or(false),
-            blockquotes: file.scope.blockquotes.unwrap_or(false),
+            lists: cfg.pick(|f| f.scope.lists).unwrap_or(false),
+            tables: cfg.pick(|f| f.scope.tables).unwrap_or(false),
+            blockquotes: cfg.pick(|f| f.scope.blockquotes).unwrap_or(false),
         },
         parse: ParseOptions {
-            line_breaks: file.line_breaks.unwrap_or_default(),
+            line_breaks: cfg.pick(|f| f.line_breaks).unwrap_or_default(),
         },
         selection: Selection {
-            config_enable: file.rules.enable,
-            config_disable: file.rules.disable,
+            user_enable: user_rules.enable,
+            user_disable: user_rules.disable,
+            config_enable: project_rules.enable,
+            config_disable: project_rules.disable,
             ..Default::default()
         },
-        rule_tables: file.rules.tables,
-        custom: file.custom,
+        user_rule_tables: user_rules.tables,
+        rule_tables: project_rules.tables,
+        custom: merge_custom(
+            user.map(|f| f.custom.as_slice()).unwrap_or_default(),
+            project.map(|f| f.custom.as_slice()).unwrap_or_default(),
+        ),
         morphology: MorphologyOptions {
-            mode: file.morphology.mode.unwrap_or_default(),
-            dictionary: file
-                .morphology
-                .dictionary
-                .map(|path| config_relative_path(cfg, path)),
+            mode: cfg.pick(|f| f.morphology.mode).unwrap_or_default(),
+            dictionary: cfg
+                .pick_with_source(|f| f.morphology.dictionary.clone())
+                .map(|(spec, loaded)| config_dictionary(loaded, &spec, env.home.as_deref()))
+                .unwrap_or_default(),
+            search: env.dictionaries.clone(),
         },
+    }
+}
+
+/// 独自ルールを重ねる。両方の設定のものを使い、同じ ID (大文字小文字は区別しない) はプロジェクトの
+/// 定義で丸ごと置き換える。
+fn merge_custom(user: &[CustomRuleConfig], project: &[CustomRuleConfig]) -> Vec<CustomRuleConfig> {
+    let replaced = |c: &CustomRuleConfig| project.iter().any(|p| p.id.eq_ignore_ascii_case(&c.id));
+    user.iter()
+        .filter(|c| !replaced(c))
+        .chain(project)
+        .cloned()
+        .collect()
+}
+
+/// 設定ファイルに書いた辞書の指定を読む。ファイルのパスは、`~/` をホームディレクトリに、相対パスを
+/// その設定ファイルのディレクトリ基準に直す (層を重ねた後では、どのファイルに書いたか分からないため)。
+fn config_dictionary(cfg: &LoadedConfig, spec: &Path, home: Option<&Path>) -> DictionaryChoice {
+    match DictionaryChoice::parse(spec) {
+        DictionaryChoice::File(path) => {
+            DictionaryChoice::File(config_relative_path(cfg, path, home))
+        }
+        choice => choice,
     }
 }
 
 /// 設定ファイルに書いたパスを解決する (`~/` はホームディレクトリ、相対パスは設定ファイルの
-/// ディレクトリが基準)。`share:<名前>` は share ディレクトリの辞書の指定なので、そのまま残す。
-fn config_relative_path(cfg: Option<&LoadedConfig>, path: PathBuf) -> PathBuf {
-    if dictionaries::share_name(&path).is_some() {
-        return path;
-    }
-    if let (Ok(rest), Some(home)) = (path.strip_prefix("~"), std::env::home_dir()) {
+/// ディレクトリが基準)。
+fn config_relative_path(cfg: &LoadedConfig, path: PathBuf, home: Option<&Path>) -> PathBuf {
+    if let (Ok(rest), Some(home)) = (path.strip_prefix("~"), home) {
         return home.join(rest);
     }
-    match cfg.and_then(|c| c.path.parent()) {
+    match cfg.path.parent() {
         Some(dir) if path.is_relative() => dir.join(path),
         _ => path,
     }
 }
 
 /// 設定ファイルと CLI からエンジンの設定を組み立てる (CLI の指定が優先)。
-fn engine_options(args: &EngineArgs, cfg: Option<&LoadedConfig>) -> EngineOptions {
-    let mut options = config_engine_options(cfg);
+fn engine_options(args: &EngineArgs, cfg: &ConfigLayers, env: &Environment) -> EngineOptions {
+    let mut options = config_engine_options(cfg, env);
     if let Some(genre) = args.genre {
         options.genre = genre;
     }
@@ -646,11 +737,9 @@ fn engine_options(args: &EngineArgs, cfg: Option<&LoadedConfig>) -> EngineOption
     }
     if args.no_dict {
         options.morphology.mode = MorphologyMode::Off;
-    } else if let Some(path) = &args.dict {
-        options.morphology = MorphologyOptions {
-            mode: MorphologyMode::Required,
-            dictionary: Some(path.clone()),
-        };
+    } else if let Some(spec) = &args.dict {
+        options.morphology.mode = MorphologyMode::Required;
+        options.morphology.dictionary = DictionaryChoice::parse(spec);
     }
     let selection = &mut options.selection;
     selection.cli_enable = args.enable_rules.clone();
@@ -660,23 +749,39 @@ fn engine_options(args: &EngineArgs, cfg: Option<&LoadedConfig>) -> EngineOption
     options
 }
 
-pub(crate) fn walk_options(cfg: Option<&LoadedConfig>) -> Result<WalkOptions, ConfigError> {
+/// 設定ファイルから、検査するファイルの集め方を組み立てる。
+///
+/// `[files] exclude` は丸ごと置き換える: プロジェクトの設定に書いてあれば (空の配列でも) それだけを、
+/// 設定ファイルのディレクトリ基準で使う。なければユーザーの設定の `exclude` を、検査の起点 (渡した
+/// ディレクトリ) 基準で使う。
+pub(crate) fn walk_options(cfg: &ConfigLayers) -> Result<WalkOptions, ConfigError> {
     let mut options = WalkOptions::default();
-    let Some(cfg) = cfg else {
-        return Ok(options);
-    };
-    if let Some(ext) = &cfg.file.files.extensions {
+    if let Some(ext) = cfg.pick(|f| f.files.extensions.clone()) {
         options.extensions = ext
             .iter()
             .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
             .filter(|e| !e.is_empty())
             .collect();
     }
-    if let Some(patterns) = &cfg.file.files.exclude
-        && !patterns.is_empty()
-    {
-        options.exclude = Some(Arc::new(Exclude::new(&cfg.base_dir, patterns)?));
+    fn exclude_of(c: Option<&LoadedConfig>) -> Option<(&[String], &LoadedConfig)> {
+        c.and_then(|c| c.file.files.exclude.as_deref().map(|p| (p, c)))
     }
+    options.exclude = match (
+        exclude_of(cfg.project.as_ref()),
+        exclude_of(cfg.user.as_ref()),
+    ) {
+        (Some((patterns, _)), _) | (None, Some((patterns, _))) if patterns.is_empty() => None,
+        (Some((patterns, project)), _) => Some(ExcludeRule::Fixed(Arc::new(Exclude::new(
+            &project.base_dir,
+            patterns,
+        )?))),
+        (None, Some((patterns, user))) => {
+            // 書式の誤りは、検査を始める前に知らせる
+            Exclude::new(&user.base_dir, patterns)?;
+            Some(ExcludeRule::PerRoot(patterns.into()))
+        }
+        (None, None) => None,
+    };
     Ok(options)
 }
 
@@ -685,17 +790,18 @@ fn check(args: CheckArgs) -> u8 {
         Ok(output) => output,
         Err(e) => return error(e),
     };
-    let cfg = match load_config(&args.config) {
+    let env = Environment::from_process();
+    let cfg = match load_config(&args.config, &env) {
         Ok(cfg) => cfg,
         Err(e) => return error(e),
     };
-    let options = engine_options(&args.engine, cfg.as_ref());
+    let options = engine_options(&args.engine, &cfg, &env);
     let fail_on = args
         .fail_on
         .map(FailOn::from)
-        .or(cfg.as_ref().and_then(|c| c.file.fail_on))
+        .or(cfg.pick(|f| f.fail_on))
         .unwrap_or_default();
-    let walk_opts = match walk_options(cfg.as_ref()) {
+    let walk_opts = match walk_options(&cfg) {
         Ok(w) => w,
         Err(e) => return error(e),
     };
@@ -836,11 +942,12 @@ fn diff(args: DiffArgs) -> u8 {
     if is_stdin(&args.before) && is_stdin(&args.after) {
         return error("標準入力 (\"-\") は改稿前と改稿後のどちらか一方にしか使えません");
     }
-    let cfg = match load_config(&args.config) {
+    let env = Environment::from_process();
+    let cfg = match load_config(&args.config, &env) {
         Ok(cfg) => cfg,
         Err(e) => return error(e),
     };
-    let engine = match Engine::new(engine_options(&args.engine, cfg.as_ref())) {
+    let engine = match Engine::new(engine_options(&args.engine, &cfg, &env)) {
         Ok(e) => e,
         Err(e) => return error(e),
     };
@@ -882,15 +989,16 @@ fn diff(args: DiffArgs) -> u8 {
 }
 
 fn calibrate(args: CalibrateArgs) -> u8 {
-    let cfg = match load_config(&args.config) {
+    let env = Environment::from_process();
+    let cfg = match load_config(&args.config, &env) {
         Ok(cfg) => cfg,
         Err(e) => return error(e),
     };
-    let walk = match walk_options(cfg.as_ref()) {
+    let walk = match walk_options(&cfg) {
         Ok(w) => w,
         Err(e) => return error(e),
     };
-    let mut engine = config_engine_options(cfg.as_ref());
+    let mut engine = config_engine_options(&cfg, &env);
     if let Some(genre) = args.genre {
         engine.genre = genre;
     }
@@ -930,8 +1038,9 @@ fn listing_engine(
     genre: Option<Genre>,
     experimental: bool,
 ) -> Result<Engine, ConfigError> {
-    let cfg = load_config(config_args)?;
-    let mut options = config_engine_options(cfg.as_ref());
+    let env = Environment::from_process();
+    let cfg = load_config(config_args, &env)?;
+    let mut options = config_engine_options(&cfg, &env);
     if let Some(genre) = genre {
         options.genre = genre;
     }
@@ -1246,9 +1355,6 @@ fn skill_install(args: SkillInstallArgs) -> u8 {
 /// 進み具合の行を書き換える間隔。
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 
-/// hasami の推奨順 (同梱しないビルドが share ディレクトリの辞書を選ぶ順)。
-const HASAMI_PREFERENCE: &str = "ipadic-neologd-sudachi → ipadic-neologd → ipadic";
-
 fn dict_download(args: DictDownloadArgs) -> u8 {
     let Some(dict) = dictionaries::find(&args.name) else {
         return error(format!("配布辞書ではありません: {}", args.name));
@@ -1266,10 +1372,11 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
     progress.finish();
     match result {
         Ok(outcome) => {
+            let pick = morph::auto_pick(&DictionarySearch::from_env());
             let _ = writeln!(
                 io::stdout(),
                 "{}",
-                download_report(dict, &outcome, &dir, share.as_deref())
+                download_report(dict, &outcome, &dir, share.as_deref(), &pick)
             );
             EXIT_OK
         }
@@ -1277,12 +1384,14 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
     }
 }
 
-/// `dict download` がうまくいったときに標準出力へ出す、結果と使い方の 2 行。
+/// `dict download` がうまくいったときに標準出力へ出す、結果と使い方の行。`pick` は辞書を指定しない
+/// とき (`auto`) に使う辞書。
 fn download_report(
     dict: &Distributed,
     outcome: &Outcome,
     dir: &Path,
     share: Option<&Path>,
+    pick: &AutoPick,
 ) -> String {
     let message = match outcome {
         Outcome::Present(path) => format!(
@@ -1296,19 +1405,54 @@ fn download_report(
             display_path(path)
         ),
     };
-    let usage = if is_share_dir(dir, share) {
-        share_usage(&format!("{}{}", dictionaries::SHARE_PREFIX, dict.name))
-    } else {
-        "使うときは --dict にこのファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)".to_string()
+    if !is_share_dir(dir, share) {
+        return format!(
+            "{message}\n使うときは --dict にこのファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)"
+        );
+    }
+    let auto = match pick {
+        AutoPick::Share(path) if path.file_stem().and_then(|s| s.to_str()) == Some(dict.name) => {
+            "辞書を指定しないとき (dictionary = \"auto\") は、この辞書を使います".to_string()
+        }
+        other => format!(
+            "辞書を指定しないとき (dictionary = \"auto\") は、{}を使います",
+            auto_pick_label(other)
+        ),
     };
-    format!("{message}\n{usage}")
+    let usage = share_usage(&format!("{}{}", dictionaries::SHARE_PREFIX, dict.name));
+    format!("{message}\n{auto}\n{usage}")
 }
 
-/// `share:<名前>` の辞書の使い方の行。
+/// `share:<名前>` の辞書に決めて使うときの案内の行。
 fn share_usage(spec: &str) -> String {
     format!(
-        "使うときは --dict {spec} か、noslop.toml の [morphology] に dictionary = \"{spec}\" を書いてください"
+        "決まった辞書を使うときは --dict {spec} か、設定ファイルの [morphology] に dictionary = \"{spec}\" を書いてください"
     )
+}
+
+/// `auto` が選ぶ辞書の呼び名 (「〜を使います」の前に置く)。
+fn auto_pick_label(pick: &AutoPick) -> String {
+    match pick {
+        AutoPick::HasamiDict(path) => format!("HASAMI_DICT の辞書 ({}) ", display_path(path)),
+        AutoPick::Share(path) => format!(
+            "{} ({}) ",
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or(""),
+            display_path(path)
+        ),
+        AutoPick::Bundled => "同梱の ipadic ".to_string(),
+        AutoPick::Nothing => "辞書なしの近似".to_string(),
+    }
+}
+
+/// 「今は〜を使います」の行 (呼び名が英数字で始まるときは、「今は」との間に空白を入れる)。
+fn auto_pick_now(pick: &AutoPick) -> String {
+    let label = auto_pick_label(pick);
+    let space = if label.starts_with(|c: char| c.is_ascii()) {
+        " "
+    } else {
+        ""
+    };
+    format!("今は{space}{label}を使います")
 }
 
 /// `dir` が share ディレクトリか (相対パスや末尾の区切りの違いは問わない)。
@@ -1411,11 +1555,15 @@ fn dict_list(args: DictListArgs) -> u8 {
         );
     };
     let listed = dictionaries::list(&dir);
+    let in_share = is_share_dir(&dir, share.as_deref());
+    // 辞書を指定しないときに今使う辞書 (share ディレクトリを見たときだけ示す)
+    let pick = in_share.then(|| morph::auto_pick(&DictionarySearch::from_env()));
     let text = dict_list_text(
         &dir,
-        is_share_dir(&dir, share.as_deref()),
+        in_share,
         &listed,
         cfg!(feature = "bundled-dict"),
+        pick.as_ref(),
     );
     let mut out = io::stdout().lock();
     let written = out.write_all(text.as_bytes()).and_then(|()| out.flush());
@@ -1431,12 +1579,14 @@ fn dict_list(args: DictListArgs) -> u8 {
     }
 }
 
-/// `dict list` の表。`in_share` は `dir` が share ディレクトリか、`bundled` は辞書を同梱したビルドか。
+/// `dict list` の表。`in_share` は `dir` が share ディレクトリか、`bundled` は辞書を同梱したビルドか、
+/// `pick` は辞書を指定しないとき (`auto`) に今使う辞書。
 fn dict_list_text(
     dir: &Path,
     in_share: bool,
     listed: &[dictionaries::Listed],
     bundled: bool,
+    pick: Option<&AutoPick>,
 ) -> String {
     let mut rows = vec![[
         "名前".to_string(),
@@ -1499,19 +1649,33 @@ fn dict_list_text(
             "使うときは --dict にファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)\n",
         );
     }
-    let fallback = match (bundled, in_share) {
-        (true, _) => {
-            "指定しないときは同梱の ipadic を使います (ここにある辞書は使いません)".to_string()
-        }
-        (false, true) => format!(
-            "このビルドは辞書を同梱していないので、指定しないときはここにある辞書を hasami の推奨順 ({HASAMI_PREFERENCE}) で使います"
-        ),
-        (false, false) => format!(
-            "このビルドは辞書を同梱していないので、指定しないときは share ディレクトリの辞書を hasami の推奨順 ({HASAMI_PREFERENCE}) で使います (ここにある辞書は使いません)"
-        ),
+    let order = dictionaries::preference_order();
+    let place = if in_share {
+        "ここにある辞書"
+    } else {
+        "share ディレクトリの辞書"
     };
-    s.push_str(&fallback);
-    s.push('\n');
+    let otherwise = if bundled {
+        "、なければ同梱の ipadic を使います"
+    } else {
+        "ます (このビルドは辞書を同梱していません)"
+    };
+    let elsewhere = if in_share {
+        ""
+    } else {
+        " (ここにある辞書は使いません)"
+    };
+    s.push_str(&format!(
+        "辞書を指定しないとき (dictionary = \"auto\") は、{place}を hasami の推奨順 ({order}) で使い{otherwise}{elsewhere}\n"
+    ));
+    if let Some(pick) = pick {
+        s.push_str(&match pick {
+            AutoPick::Nothing => {
+                "今は辞書が見つからないので、辞書なしの近似で判定します\n".to_string()
+            }
+            other => format!("{}\n", auto_pick_now(other)),
+        });
+    }
     s
 }
 
@@ -1533,8 +1697,9 @@ fn mcp(args: McpArgs) -> u8 {
         .filter(|p| p.is_dir());
     // 設定の誤りでサーバーを落とすと、クライアント側では理由が見えにくい。起動は続け、
     // ツールを呼ばれたときに誤りを返す (標準エラーにも出しておく)。
-    let base = load_config_from(&args.config, start.as_deref())
-        .map(|cfg| config_engine_options(cfg.as_ref()))
+    let env = Environment::from_process();
+    let base = load_config_from(&args.config, start.as_deref(), &env)
+        .map(|cfg| config_engine_options(&cfg, &env))
         .map_err(|e| e.to_string());
     if let Err(e) = &base {
         eprintln!("エラー: {e}");
@@ -1588,7 +1753,11 @@ mod tests {
             vec![IncludeArg::Lists, IncludeArg::Quotes]
         );
         assert_eq!(args.fail_on, Some(FailOnArg::Warning));
-        let options = engine_options(&args.engine, None);
+        let options = engine_options(
+            &args.engine,
+            &ConfigLayers::default(),
+            &Environment::default(),
+        );
         assert!(options.scope.lists && options.scope.blockquotes && !options.scope.tables);
         assert_eq!(options.selection.cli_disable.len(), 3);
     }
@@ -1625,7 +1794,7 @@ mod tests {
         let Command::Check(args) = cli.command else {
             panic!("check");
         };
-        let o = engine_options(&args.engine, Some(&loaded));
+        let o = engine_options(&args.engine, &project_only(loaded), &Environment::default());
         assert_eq!(o.genre, Genre::Business);
         assert!(
             o.experimental,
@@ -1634,6 +1803,176 @@ mod tests {
         assert_eq!(o.parse.line_breaks, LineBreakMode::Space);
         assert!(o.scope.tables);
         assert_eq!(o.selection.config_disable, vec!["X"]);
+    }
+
+    fn loaded(dir: &Path, name: &str, text: &str) -> LoadedConfig {
+        let path = dir.join(name);
+        LoadedConfig {
+            file: config::ConfigFile::parse(text, &path).unwrap(),
+            base_dir: dir.to_path_buf(),
+            path,
+        }
+    }
+
+    fn project_only(project: LoadedConfig) -> ConfigLayers {
+        ConfigLayers {
+            user: None,
+            project: Some(project),
+        }
+    }
+
+    /// ユーザーの設定の上に、プロジェクトの設定を項目ごとに重ねる。
+    #[test]
+    fn user_and_project_configs_are_layered_per_item() {
+        let user_dir = Path::new("home").join(".config").join("noslop");
+        let user = loaded(
+            &user_dir,
+            "config.toml",
+            r#"
+genre = "tech"
+experimental = true
+fail_on = "error"
+[scope]
+lists = true
+[rules]
+disable = ["R03"]
+[rules.R01]
+threshold = -0.5
+[[custom]]
+id = "X01"
+pattern = "a"
+message = "user"
+[[custom]]
+id = "X02"
+pattern = "b"
+message = "user"
+[morphology]
+dictionary = "dict/mine.hsd"
+[files]
+extensions = ["md"]
+exclude = ["drafts/"]
+"#,
+        );
+        let project = loaded(
+            Path::new("project"),
+            "noslop.toml",
+            r#"
+genre = "essay"
+[rules]
+enable = ["LONG_SENTENCE"]
+[[custom]]
+id = "x01"
+pattern = "c"
+message = "project"
+[morphology]
+mode = "required"
+"#,
+        );
+        let layers = ConfigLayers {
+            user: Some(user.clone()),
+            project: Some(project.clone()),
+        };
+        let o = config_engine_options(&layers, &Environment::default());
+        assert_eq!(
+            o.genre,
+            Genre::Essay,
+            "プロジェクトに書いた項目はプロジェクト"
+        );
+        assert!(o.experimental, "プロジェクトに書いていない項目はユーザー");
+        assert!(o.scope.lists && !o.scope.tables);
+        assert_eq!(
+            layers.pick(|f| f.fail_on),
+            Some(FailOn::At(Severity::Error))
+        );
+        // ルールの選択と設定は層ごとに渡し、別名の解決と優先はエンジンに任せる
+        assert_eq!(o.selection.user_disable, vec!["R03"]);
+        assert_eq!(o.selection.config_enable, vec!["LONG_SENTENCE"]);
+        assert!(o.user_rule_tables.contains_key("R01") && o.rule_tables.is_empty());
+        // 独自ルールは ID (大文字小文字を問わない) でプロジェクトが置き換える
+        let custom: Vec<(&str, &str)> = o
+            .custom
+            .iter()
+            .map(|c| (c.id.as_str(), c.message.as_str()))
+            .collect();
+        assert_eq!(custom, [("X02", "user"), ("x01", "project")]);
+        // 辞書の相対パスは、書いたファイル (ユーザーの設定) のディレクトリが基準
+        assert_eq!(o.morphology.mode, MorphologyMode::Required);
+        assert_eq!(
+            o.morphology.dictionary,
+            DictionaryChoice::File(user_dir.join("dict/mine.hsd"))
+        );
+
+        // ユーザーの exclude は検査の起点が基準。プロジェクトに exclude があれば (空でも) そちらだけ
+        let walk = walk_options(&layers).unwrap();
+        assert_eq!(walk.extensions, vec!["md"]);
+        assert!(matches!(walk.exclude, Some(ExcludeRule::PerRoot(_))));
+        let mut replaced = project.clone();
+        replaced.file.files.exclude = Some(Vec::new());
+        let walk = walk_options(&ConfigLayers {
+            user: Some(user.clone()),
+            project: Some(replaced.clone()),
+        })
+        .unwrap();
+        assert!(walk.exclude.is_none());
+        replaced.file.files.exclude = Some(vec!["vendor/".into()]);
+        let walk = walk_options(&ConfigLayers {
+            user: Some(user),
+            project: Some(replaced),
+        })
+        .unwrap();
+        assert!(matches!(walk.exclude, Some(ExcludeRule::Fixed(_))));
+
+        // 設定がなければ既定値
+        let o = config_engine_options(&ConfigLayers::default(), &Environment::default());
+        assert_eq!(o.genre, Genre::General);
+        assert_eq!(o.morphology.dictionary, DictionaryChoice::Auto);
+        assert!(o.custom.is_empty());
+    }
+
+    /// ユーザーの設定は `<home>/.config/noslop/config.toml`。`--config` はプロジェクトの設定だけを
+    /// 差し替え、`--no-config` はどちらも読まない。
+    #[test]
+    fn the_user_config_is_read_from_the_home_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let args = |config: Option<PathBuf>, no_config: bool| ConfigArgs { config, no_config };
+        let env = Environment {
+            home: Some(home.path().to_path_buf()),
+            ..Default::default()
+        };
+        let load = |a: &ConfigArgs| load_config_from(a, Some(project.path()), &env);
+
+        // どちらもなければ空
+        let layers = load(&args(None, false)).unwrap();
+        assert!(layers.user.is_none() && layers.project.is_none());
+
+        let user_path = config::user_config_path(home.path());
+        assert_eq!(user_path, home.path().join(".config/noslop/config.toml"));
+        std::fs::create_dir_all(user_path.parent().unwrap()).unwrap();
+        std::fs::write(&user_path, "genre = \"tech\"\n").unwrap();
+        std::fs::write(project.path().join("noslop.toml"), "genre = \"essay\"\n").unwrap();
+        std::fs::write(other.path().join("other.toml"), "experimental = true\n").unwrap();
+
+        let layers = load(&args(None, false)).unwrap();
+        assert_eq!(layers.user.as_ref().unwrap().path, user_path);
+        assert_eq!(layers.pick(|f| f.genre), Some(Genre::Essay));
+
+        let layers = load(&args(Some(other.path().join("other.toml")), false)).unwrap();
+        assert_eq!(
+            layers.pick(|f| f.genre),
+            Some(Genre::Tech),
+            "--config でもユーザーの設定は重ねる"
+        );
+        assert_eq!(layers.pick(|f| f.experimental), Some(true));
+
+        let layers = load(&args(None, true)).unwrap();
+        assert!(layers.user.is_none() && layers.project.is_none());
+
+        // ユーザーの設定の書式の誤りは、プロジェクトの設定と同じく設定の誤り
+        std::fs::write(&user_path, "genre = 1\n").unwrap();
+        let err = load(&args(None, false)).unwrap_err();
+        assert!(err.to_string().contains("config.toml"), "{err}");
     }
 
     #[test]
@@ -1799,18 +2138,28 @@ mod tests {
     }
 
     #[test]
-    fn share_specs_in_the_config_are_not_relative_paths() {
+    fn keywords_and_share_specs_in_the_config_are_not_relative_paths() {
         let loaded = LoadedConfig {
             path: Path::new("conf").join("noslop.toml"),
             base_dir: PathBuf::from("conf"),
             file: config::ConfigFile::default(),
         };
-        let resolve = |path: &str| config_relative_path(Some(&loaded), PathBuf::from(path));
+        let resolve = |spec: &str| config_dictionary(&loaded, Path::new(spec), None);
         assert_eq!(
             resolve("share:ipadic-neologd"),
-            PathBuf::from("share:ipadic-neologd")
+            DictionaryChoice::Share("ipadic-neologd".into())
         );
-        assert_eq!(resolve("test.hsd"), Path::new("conf").join("test.hsd"));
+        assert_eq!(resolve("auto"), DictionaryChoice::Auto);
+        assert_eq!(resolve("bundled"), DictionaryChoice::Bundled);
+        assert_eq!(
+            resolve("test.hsd"),
+            DictionaryChoice::File(Path::new("conf").join("test.hsd"))
+        );
+        // auto という名前のファイルは ./auto と書く
+        assert_eq!(
+            resolve("./auto"),
+            DictionaryChoice::File(Path::new("conf").join("./auto"))
+        );
     }
 
     #[test]
@@ -1847,7 +2196,8 @@ mod tests {
             .collect();
         // 目録 (dict/catalog.json) は Release のたびに変わりうるので、名前と大きさは目録から組み立てる
         let [verified, differs, missing] = [0, 1, 2].map(|i| listed[i].dictionary);
-        let text = dict_list_text(Path::new("share"), true, &listed, true);
+        let chosen = AutoPick::Share(Path::new("share").join(verified.file_name()));
+        let text = dict_list_text(Path::new("share"), true, &listed, true, Some(&chosen));
         let line = |name: &str| {
             text.lines()
                 .find(|l| l.split_whitespace().next() == Some(name))
@@ -1870,21 +2220,58 @@ mod tests {
             dictionaries::RECOMMENDED
         )));
         assert!(text.contains("dictionary = \"share:<名前>\""));
+        let order = dictionaries::preference_order();
         assert!(
-            text.ends_with(
-                "指定しないときは同梱の ipadic を使います (ここにある辞書は使いません)\n"
-            )
-        );
-
-        let text = dict_list_text(Path::new("elsewhere"), false, &listed, false);
-        assert!(text.contains("--dir elsewhere"), "{text}");
-        assert!(!text.contains("dictionary = \"share:"), "{text}");
-        assert!(
-            text.contains("share ディレクトリの辞書を hasami の推奨順"),
+            text.contains(&format!(
+                "辞書を指定しないとき (dictionary = \"auto\") は、ここにある辞書を hasami の推奨順 ({order}) で使い、なければ同梱の ipadic を使います\n"
+            )),
             "{text}"
         );
-        let text = dict_list_text(Path::new("share"), true, &listed, false);
-        assert!(text.contains("ここにある辞書を hasami の推奨順 (ipadic-neologd-sudachi → ipadic-neologd → ipadic) で使います"), "{text}");
+        assert!(
+            text.ends_with(&format!(
+                "今は {} ({}) を使います\n",
+                verified.name,
+                display_path(&Path::new("share").join(verified.file_name()))
+            )),
+            "{text}"
+        );
+        let bundled = dict_list_text(
+            Path::new("share"),
+            true,
+            &listed,
+            true,
+            Some(&AutoPick::Bundled),
+        );
+        assert!(
+            bundled.ends_with("今は同梱の ipadic を使います\n"),
+            "{bundled}"
+        );
+
+        // share ディレクトリでない場所には、今使う辞書を出さない
+        let text = dict_list_text(Path::new("elsewhere"), false, &listed, false, None);
+        assert!(text.contains("--dir elsewhere"), "{text}");
+        assert!(!text.contains("dictionary = \"share:"), "{text}");
+        assert!(!text.contains("今は"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "share ディレクトリの辞書を hasami の推奨順 ({order}) で使います (このビルドは辞書を同梱していません) (ここにある辞書は使いません)"
+            )),
+            "{text}"
+        );
+        let text = dict_list_text(
+            Path::new("share"),
+            true,
+            &listed,
+            false,
+            Some(&AutoPick::Nothing),
+        );
+        assert!(
+            text.contains(&format!(
+                "ここにある辞書を hasami の推奨順 ({order}) で使います (このビルドは辞書を同梱していません)\n"
+            )),
+            "{text}"
+        );
+        assert!(text.ends_with("今は辞書が見つからないので、辞書なしの近似で判定します\n"));
     }
 
     /// 取得できたときは結果と使い方を出す。share ディレクトリなら share:<名前>、ほかの場所ならファイルの
@@ -1896,23 +2283,39 @@ mod tests {
         let placed = share.join(dict.file_name());
         let name = dict.name;
 
+        let this = AutoPick::Share(placed.clone());
         let downloaded = download_report(
             dict,
             &Outcome::Downloaded(placed.clone()),
             share,
             Some(share),
+            &this,
         );
-        assert!(downloaded.starts_with(&format!(
+        let lines: Vec<&str> = downloaded.lines().collect();
+        assert!(lines[0].starts_with(&format!(
             "{name} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): "
         )));
-        assert!(downloaded.ends_with(&format!(
-            "使うときは --dict share:{name} か、noslop.toml の [morphology] に dictionary = \"share:{name}\" を書いてください"
-        )));
+        assert_eq!(
+            lines[1],
+            "辞書を指定しないとき (dictionary = \"auto\") は、この辞書を使います"
+        );
+        assert_eq!(
+            lines[2],
+            format!(
+                "決まった辞書を使うときは --dict share:{name} か、設定ファイルの [morphology] に dictionary = \"share:{name}\" を書いてください"
+            )
+        );
 
-        let present = download_report(dict, &Outcome::Present(placed), share, Some(share));
+        // 推奨順で先の辞書があれば、そちらを使うと知らせる
+        let better = AutoPick::Share(share.join("better.hsd"));
+        let present = download_report(dict, &Outcome::Present(placed), share, Some(share), &better);
         assert!(present.starts_with(&format!(
             "{name} は取得済みです (大きさと SHA-256 を確かめました): "
         )));
+        assert!(
+            present.contains("辞書を指定しないとき (dictionary = \"auto\") は、better ("),
+            "{present}"
+        );
 
         let elsewhere = Path::new("elsewhere");
         let report = download_report(
@@ -1920,9 +2323,11 @@ mod tests {
             &Outcome::Downloaded(elsewhere.join(dict.file_name())),
             elsewhere,
             Some(share),
+            &this,
         );
         assert!(report.contains("使うときは --dict にこのファイルのパスを指定してください"));
         assert!(!report.contains(&format!("share:{name}")), "{report}");
+        assert!(!report.contains("auto"), "{report}");
     }
 
     #[test]
