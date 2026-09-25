@@ -7,8 +7,8 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -117,10 +117,25 @@ fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
     assert_eq!(report["summary"]["diagnostics"], 6);
 }
 
+/// 手元の設定と辞書から切り離した noslop。ユーザーの設定 (`~/.config/noslop`) を読まないよう
+/// HOME と USERPROFILE (Windows のホーム) を、auto が手元の辞書を選ばないよう share ディレクトリ
+/// (HASAMI_DATA_DIR) を空のディレクトリにし、HASAMI_DICT を外す。テストはこれらを上書きしてよい。
 fn noslop() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_noslop"));
-    cmd.env_remove("NO_COLOR").env_remove("CLICOLOR_FORCE");
+    let empty = empty_dir();
+    cmd.env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env("HOME", empty)
+        .env("USERPROFILE", empty)
+        .env("HASAMI_DATA_DIR", empty)
+        .env_remove("HASAMI_DICT");
     cmd
+}
+
+/// 中に何も置かないディレクトリ (テストの実行ごとに 1 つ)。
+fn empty_dir() -> &'static Path {
+    static EMPTY: OnceLock<TempDir> = OnceLock::new();
+    EMPTY.get_or_init(|| tempfile::tempdir().unwrap()).path()
 }
 
 /// 設定ファイルと 2 つの文書を置いた作業ディレクトリ。
@@ -1300,8 +1315,8 @@ fn dictionary_settings_are_checked_and_auto_falls_back() {
         .code(2)
         .stderr(predicate::str::contains("missing.hsd"));
 
-    // 指定がなければ、同梱の辞書を使う (同梱しないビルドでは辞書なしの近似に戻る)。
-    // 手元の ~/.local/share/hasami に入れた辞書は探さない
+    // 指定がなく share ディレクトリに辞書もなければ、同梱の辞書を使う (同梱しないビルドでは辞書なしの
+    // 近似に戻る)。share ディレクトリの辞書を選ぶ場合は auto_uses_the_best_dictionary_in_the_share_directory
     let out = noslop_without_installed_dictionary(empty.path())
         .args([
             "check",
@@ -1683,4 +1698,176 @@ fn share_specs_point_to_the_share_directory() {
         v["settings"]["morphology"]["dictionary"]["path"].as_str(),
         placed_in_preferred.to_str()
     );
+}
+
+/// 辞書を指定しないとき (auto) は、share ディレクトリの配布辞書を hasami の推奨順で選ぶ。
+/// bundled なら share ディレクトリに辞書があっても同梱の辞書。選んだ辞書が読めなければ設定の誤り。
+#[test]
+fn auto_uses_the_best_dictionary_in_the_share_directory() {
+    let share = tempfile::tempdir().unwrap();
+    let doc = share.path().join("doc.md");
+    fs::write(&doc, DOC_NO_CHAIN).unwrap();
+    for name in ["ipadic", "ipadic-neologd-sudachi"] {
+        write_dictionary(&share.path().join(format!("{name}.hsd")));
+    }
+    let best = share.path().join("ipadic-neologd-sudachi.hsd");
+    let check = |extra: &[&str]| {
+        let mut cmd = noslop();
+        cmd.env("HASAMI_DATA_DIR", share.path())
+            .args([
+                "check",
+                "--no-config",
+                "--only-rules",
+                "P16",
+                "--format",
+                "json",
+            ])
+            .args(extra)
+            .arg(&doc);
+        cmd.output().unwrap()
+    };
+
+    let out = check(&[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = json(&out.stdout);
+    let morphology = &v["settings"]["morphology"];
+    assert_eq!(morphology["requested"], "auto");
+    assert_eq!(morphology["dictionary"]["source"], "file");
+    assert_eq!(morphology["dictionary"]["path"].as_str(), best.to_str());
+    assert_eq!(rule_count(&v, "P16"), 1);
+
+    // dictionary = "auto" と --dict auto も同じ辞書を選ぶ (--dict は辞書を必須にする)
+    let out = check(&["--dict", "auto"]);
+    let v = json(&out.stdout);
+    assert_eq!(v["settings"]["morphology"]["requested"], "required");
+    assert_eq!(
+        v["settings"]["morphology"]["dictionary"]["path"].as_str(),
+        best.to_str()
+    );
+
+    // bundled は share ディレクトリの辞書を見ない
+    let out = check(&["--dict", "bundled"]);
+    if cfg!(feature = "bundled-dict") {
+        let v = json(&out.stdout);
+        assert_eq!(
+            v["settings"]["morphology"]["dictionary"]["source"],
+            "bundled"
+        );
+    } else {
+        assert_eq!(out.status.code(), Some(2));
+    }
+
+    // dict list は、辞書を指定しないときに今使う辞書を示す
+    noslop()
+        .env("HASAMI_DATA_DIR", share.path())
+        .args(["dict", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("今は ipadic-neologd-sudachi ("));
+
+    // 選んだ辞書が読めなければ、下の候補 (ipadic) に切り替えずに設定の誤り
+    fs::write(&best, b"not a dictionary").unwrap();
+    let out = check(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("自動で選んだ辞書"), "{stderr}");
+    assert!(
+        stderr.contains("noslop dict download ipadic-neologd-sudachi --force"),
+        "{stderr}"
+    );
+}
+
+/// ユーザーの設定 (~/.config/noslop/config.toml) の上に、プロジェクトの設定を項目ごとに重ねる。
+#[test]
+fn the_user_config_is_layered_under_the_project_config() {
+    let home = tempfile::tempdir().unwrap();
+    let user_config = home
+        .path()
+        .join(".config")
+        .join("noslop")
+        .join("config.toml");
+    fs::create_dir_all(user_config.parent().unwrap()).unwrap();
+    // 独自ルール X01 と、share ディレクトリの辞書の指定 (相対パスでない share: はそのまま)
+    fs::write(
+        &user_config,
+        format!("{CONFIG}\n[morphology]\ndictionary = \"share:ipadic\"\n[files]\nexclude = [\"/drafts/\"]\n"),
+    )
+    .unwrap();
+    // auto なら推奨順の先頭 (ipadic-neologd-sudachi) を選ぶので、ユーザーの設定 (share:ipadic) が
+    // 効いているかを見分けられる
+    let share = tempfile::tempdir().unwrap();
+    let [ipadic, best] =
+        ["ipadic", "ipadic-neologd-sudachi"].map(|name| share.path().join(format!("{name}.hsd")));
+    write_dictionary(&ipadic);
+    write_dictionary(&best);
+    let dictionary_path = |v: &serde_json::Value| {
+        PathBuf::from(
+            v["settings"]["morphology"]["dictionary"]["path"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+
+    let dir = workspace();
+    fs::remove_file(dir.path().join("noslop.toml")).unwrap();
+    fs::create_dir_all(dir.path().join("drafts")).unwrap();
+    fs::write(dir.path().join("drafts/wip.md"), DOC_WITH_TERM).unwrap();
+    let check = |extra: &[&str]| {
+        let mut cmd = noslop();
+        cmd.env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("HASAMI_DATA_DIR", share.path())
+            .current_dir(dir.path())
+            .args(["check", "--format", "json"])
+            .args(extra);
+        let out = cmd.output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        json(&out.stdout)
+    };
+
+    // プロジェクトの設定がなくても、ユーザーの設定が効く。除外は検査の起点 (.) が基準
+    let v = check(&[]);
+    assert_eq!(x01_count(&v), 1, "docs/guide.md だけ (drafts/ は除外)");
+    assert_eq!(dictionary_path(&v), ipadic);
+
+    // プロジェクトの設定の同じ ID の独自ルールは、ユーザーの定義を置き換える
+    fs::write(
+        dir.path().join("noslop.toml"),
+        "[[custom]]\nid = \"x01\"\npattern = \"問題のない\"\nmessage = \"プロジェクトの定義\"\n[files]\nexclude = []\n",
+    )
+    .unwrap();
+    let v = check(&[]);
+    let messages: Vec<&str> = v["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|f| f["diagnostics"].as_array().unwrap())
+        .filter(|d| d["ruleId"] == "x01")
+        .map(|d| d["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        messages, ["プロジェクトの定義"; 2],
+        "exclude = [] でユーザーの除外も外れる"
+    );
+    assert_eq!(x01_count(&v), 0);
+    assert_eq!(
+        dictionary_path(&v),
+        ipadic,
+        "プロジェクトに書いていない項目はユーザーの設定"
+    );
+
+    // --no-config はユーザーの設定も読まない (辞書は auto で選ぶ)
+    let v = check(&["--no-config"]);
+    assert_eq!(x01_count(&v), 0);
+    assert_eq!(dictionary_path(&v), best);
 }

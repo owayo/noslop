@@ -8,11 +8,12 @@
 //!   SHA-256 で確かめる。目録は Release のワークフロー (`make dict-catalog`) が hasami の新しいリリースに
 //!   合わせて更新する。依存の hasami (`Cargo.toml` のタグ) と同梱の辞書 (`dict/ipadic.hsd`) は目録とは
 //!   別で、判定の結果を左右するので人が上げる。目録の辞書の形式が依存の hasami で読めることはテストで確かめる
-//! - 取得しただけでは使わない。辞書を指定しないときは、同じ版の noslop なら手元に入れた辞書によらず
-//!   同じ結果になるよう、同梱の辞書を使う ([`crate::morph::resolve`]。同梱しないビルドだけは、hasami と
-//!   同じく share ディレクトリの辞書を推奨順に探す)
-//! - 使うときは `--dict share:<名前>` か、設定の `[morphology] dictionary = "share:<名前>"` で指定する
-//!   ([`resolve_share`])
+//! - 取得した辞書は、辞書を指定しないとき (`auto`) に使う。share ディレクトリの配布辞書のうち、依存の
+//!   hasami の推奨順 ([`preferred_in`]) で最初に見つかったものを、同梱の辞書より先に選ぶ
+//!   ([`crate::morph::resolve`])。選ぶ順は目録ではなく依存の hasami で決まるので、目録の自動更新では
+//!   変わらない
+//! - 決まった辞書を使うときは `--dict share:<名前>` か、設定の `[morphology] dictionary = "share:<名前>"`
+//!   で指定する ([`resolve_share`])
 //! - 取得は保存先と同じディレクトリの一時ファイルに書き、大きさ・SHA-256・辞書として読めることを
 //!   確かめてから rename で置く。途中で失敗しても、置き場所にある既存のファイルは消さず、壊さない
 
@@ -154,11 +155,27 @@ pub fn share_path_in(dir: &Path, name: &str) -> Result<PathBuf, ShareError> {
     Ok(dir.join(share_file_name(name)?))
 }
 
-/// `share:<名前>` の名前を、share ディレクトリにある辞書のファイルに直す。ファイルがなければエラー。
-pub fn resolve_share(name: &str) -> Result<PathBuf, ShareError> {
+/// `share:<名前>` の名前を、share ディレクトリ `dir` ([`share_dir`]) にある辞書のファイルに直す。
+/// 名前を先に確かめ、share ディレクトリが分からないときとファイルがないときはエラー。
+pub fn resolve_share(dir: Option<&Path>, name: &str) -> Result<PathBuf, ShareError> {
     let file_name = share_file_name(name)?;
-    let dir = share_dir().ok_or(ShareError::NoShareDir)?;
+    let dir = dir.ok_or(ShareError::NoShareDir)?;
     existing(dir.join(file_name), name)
+}
+
+/// ディレクトリ `dir` の配布辞書のうち、辞書を指定しないとき (`auto`) に使うもの。依存の hasami の
+/// 推奨順 (`hasami::analyzer::DISTRIBUTED_DICTS`) で最初に見つかったファイル。配布辞書でない `*.hsd` は
+/// 選ばない (同梱の辞書より良いとは言えないため)。
+pub fn preferred_in(dir: &Path) -> Option<PathBuf> {
+    hasami::analyzer::DISTRIBUTED_DICTS
+        .iter()
+        .map(|name| dir.join(format!("{name}.hsd")))
+        .find(|path| path.is_file())
+}
+
+/// hasami の推奨順を、人に見せる形で (`ipadic-neologd-sudachi → ipadic-neologd → ipadic`)。
+pub fn preference_order() -> String {
+    hasami::analyzer::DISTRIBUTED_DICTS.join(" → ")
 }
 
 fn existing(path: PathBuf, name: &str) -> Result<PathBuf, ShareError> {
@@ -644,6 +661,46 @@ mod tests {
             let err = share_path_in(dir, name).unwrap_err();
             assert!(matches!(err, ShareError::InvalidName(_)), "{name}: {err}");
             assert!(err.to_string().contains(name), "{err}");
+        }
+    }
+
+    /// 名前は share ディレクトリより先に確かめる (share ディレクトリが分からなくても、名前の誤りを示す)。
+    #[test]
+    fn share_names_are_checked_before_the_share_directory() {
+        assert!(matches!(
+            resolve_share(None, "../x"),
+            Err(ShareError::InvalidName(_))
+        ));
+        assert!(matches!(
+            resolve_share(None, "ipadic"),
+            Err(ShareError::NoShareDir)
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            resolve_share(Some(dir.path()), "ipadic"),
+            Err(ShareError::Missing { .. })
+        ));
+        let path = dir.path().join("ipadic.hsd");
+        fs::write(&path, b"x").unwrap();
+        assert_eq!(resolve_share(Some(dir.path()), "ipadic").unwrap(), path);
+    }
+
+    /// auto が選ぶのは、配布辞書のうち hasami の推奨順で最初に見つかったもの。
+    #[test]
+    fn the_preferred_dictionary_follows_the_hasami_order() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(preferred_in(dir.path()), None);
+        fs::write(dir.path().join("custom.hsd"), b"x").unwrap();
+        assert_eq!(
+            preferred_in(dir.path()),
+            None,
+            "配布辞書でないものは選ばない"
+        );
+        // 推奨順の低いものから置いていくと、置くたびに今置いたものが選ばれる
+        for name in hasami::analyzer::DISTRIBUTED_DICTS.iter().rev() {
+            let path = dir.path().join(format!("{name}.hsd"));
+            fs::write(&path, b"x").unwrap();
+            assert_eq!(preferred_in(dir.path()), Some(path));
         }
     }
 

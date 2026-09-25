@@ -11,7 +11,7 @@
 | SHA-256 | `1ca13555b1fc6ec12dd4b830aec97262b4481b70b7cfec6d2a9bea912e1d6277` |
 | ライセンス | NAIST-2003 (条文は [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)) |
 
-NEologd の語彙を含む辞書 (ipadic-neologd など) は 220MB を超えるので同梱しません。使いたい場合は `noslop dict download <名前>` で hasami の share ディレクトリに取得し、`--dict share:<名前>` か設定の `dictionary` で指定します。`noslop dict download ipadic` で取れる `ipadic.hsd` は、取得に使う目録の版のもので、この同梱の辞書とは版が違うことがあります。
+NEologd の語彙を含む辞書 (ipadic-neologd など) は 220MB を超えるので同梱しません。`noslop dict download <名前>` で hasami の share ディレクトリに取得すると、辞書を指定しないとき (`dictionary = "auto"`) に、この同梱の辞書より先に使われます (いくつかあれば hasami の推奨順)。名前で固定するなら `--dict share:<名前>` か設定の `dictionary` で指定し、同梱の辞書に固定するなら `bundled` を指定します。`noslop dict download ipadic` で取れる `ipadic.hsd` は、取得に使う目録の版のもので、この同梱の辞書とは版が違うことがあります。
 
 取得に使う目録 (`dict/catalog.json`) は、Release のジョブが hasami の最新のリリースに合わせて自動で更新します (手で更新するなら `make dict-catalog`)。同梱の辞書は判定の校正の前提なので、目録とは別に、次の手順で上げます。
 
