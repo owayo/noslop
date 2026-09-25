@@ -176,7 +176,9 @@ make docs                          # docs/rules.md を作り直す
 
 ## リリース
 
-GitHub Actions の Release ワークフロー (workflow_dispatch) で行う。版は `YY.M.COUNTER` (例: `26.9.100`) で、同じ月の 2 回目以降は COUNTER を 1 ずつ上げる。`dry_run` で版の計算だけを確かめられる。成果物は Linux x86_64、macOS x86_64 / arm64、Windows x86_64 のバイナリと `SHA256SUMS`。
+GitHub Actions の Release ワークフロー (workflow_dispatch) で行う。版は `YY.M.COUNTER` (例: `26.9.100`) で、同じ月の 2 回目以降は COUNTER を 1 ずつ上げる。`dry_run` で版の計算だけを確かめられる。成果物は Linux x86_64 / arm64 (arm64 は `ubuntu-24.04-arm` のランナーでそのままビルドする)、macOS x86_64 / arm64、Windows x86_64 のバイナリと `SHA256SUMS`。
+
+公開の後、`update-homebrew` のジョブが Homebrew の tap (`owayo/homebrew-noslop`) の `Formula/noslop.rb` を、公開したリリースの `SHA256SUMS` の値で書き直して push する (formula は depup の tap と同じく、OS と CPU ごとにリリースの添付のバイナリを直接指す。bottle は作らない)。tap への push は GitHub App のトークンで行い、Variables の `APP_CLIENT_ID` と Secrets の `PRIVATE_KEY` が要る。どちらかがなければ警告を出してこのジョブだけを飛ばす (リリースは落とさない)。添付の名前 (`noslop-<OS>-<CPU>`) を変えるときは、このジョブの formula のテンプレートと README のインストールの表もそろえる。
 
 Release のワークフローは、先に `dictionary-catalog` のジョブ (読み取りの権限だけ) で `make dict-catalog` を回し、配布辞書の目録を hasami の最新のリリースに合わせる。目録が変わったときだけ、このジョブで `make ci` と `make dict-check` を通し、`prepare-release` が版の更新と同じコミットに `dict/catalog.json` を入れる。`GITHUB_TOKEN` で push したコミットでは ci.yml が走らないので、目録の検査はこのジョブで完結させている。dry_run でも目録のジョブは回り、差分の表示に `dict/catalog.json` が入る。
 

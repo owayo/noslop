@@ -61,6 +61,14 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 
 ## インストール
 
+### Homebrew (macOS・Linux)
+
+```bash
+brew install owayo/noslop/noslop
+```
+
+tap ([owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)) を足して、Releases のビルド済みのバイナリを入れます。更新は `brew upgrade noslop` です。Claude Code・Codex CLI のスキルは入らないので、使うなら `noslop skill-install claude` (Codex CLI なら `codex`) を実行します ([AI エージェントと使う](#ai-エージェントと使う))。
+
 ### バイナリ
 
 [Releases](https://github.com/owayo/noslop/releases) から OS に合うファイルを取得します。
@@ -68,6 +76,7 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 | OS | ファイル名 |
 |----|-----------|
 | Linux (x86_64) | `noslop-linux-amd64` |
+| Linux (arm64) | `noslop-linux-arm64` |
 | macOS (Apple Silicon) | `noslop-darwin-arm64` |
 | macOS (Intel) | `noslop-darwin-amd64` |
 | Windows (x86_64) | `noslop-windows-amd64.exe` |
@@ -810,7 +819,9 @@ cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに�
 
 ## リリース
 
-GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64、macOS x86_64 / arm64、Windows x86_64 のバイナリと、`SHA256SUMS`・`LICENSE`・`THIRD_PARTY_NOTICES.md` が付きます。
+GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64 / arm64、macOS x86_64 / arm64、Windows x86_64 のバイナリと、`SHA256SUMS`・`LICENSE`・`THIRD_PARTY_NOTICES.md` が付きます。
+
+公開の後、Homebrew の tap（[owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)）の formula を、新しい版の URL と SHA-256 に書き換えて push します。tap への push には GitHub App のトークンを使うので、リポジトリの Variables に `APP_CLIENT_ID`（App の Client ID）、Secrets に `PRIVATE_KEY`（App の秘密鍵）が要ります。どちらかがなければ、警告を出して tap の更新だけを飛ばします。
 
 Release ワークフローは、`noslop dict download` が使う配布辞書の目録（`dict/catalog.json`）も hasami の最新のリリースに合わせます。目録が変わったときは、`make ci` と、3 つの辞書を実際に取得して確かめる `make dict-check` を通してから、版の更新と同じコミットに入れます。
 

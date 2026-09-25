@@ -185,6 +185,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: noslop
             asset_name: noslop-linux-amd64
+          # arm64 の Linux は、arm64 のランナーでそのままビルドする (クロスビルドの道具が要らない)
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: noslop
+            asset_name: noslop-linux-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: noslop
@@ -276,3 +281,133 @@ jobs:
 
       - name: Release summary
         run: echo "🚀 Released ${{ needs.prepare-release.outputs.tag }}"
+
+  # Homebrew の tap (owayo/homebrew-noslop) の formula を、公開したリリースの版に書き換える。
+  # tap は別のリポジトリなので GITHUB_TOKEN では push できず、GitHub App のトークン
+  # (Variables の APP_CLIENT_ID と Secrets の PRIVATE_KEY) を使う。GITHUB_TOKEN で作ったリリースは
+  # ほかのワークフロー (on: release) を起動しないので、同じワークフローの後続のジョブにしている
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: [prepare-release, publish-release]
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare-release.outputs.tag }}
+    steps:
+      # 設定がなければリリース全体を落とさずに飛ばす (jobs.<id>.if では secrets を参照できない)
+      - name: Check GitHub App settings
+        id: app
+        env:
+          CLIENT_ID: ${{ vars.APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        run: |
+          if [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::APP_CLIENT_ID (Variables) か PRIVATE_KEY (Secrets) がないので、Homebrew の tap を更新しません"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 公開したリリースの SHA256SUMS から、formula が指すバイナリの SHA-256 を読む
+      - name: Read checksums
+        id: sums
+        if: steps.app.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern SHA256SUMS
+          for asset in noslop-darwin-arm64 noslop-darwin-amd64 noslop-linux-arm64 noslop-linux-amd64; do
+            sum="$(awk -v f="$asset" '$2 == f { print $1 }' SHA256SUMS)"
+            if [ "${#sum}" -ne 64 ]; then
+              echo "::error::SHA256SUMS に ${asset} がありません"
+              exit 1
+            fi
+            echo "${asset//-/_}=${sum}" >> "$GITHUB_OUTPUT"
+          done
+
+      # App のトークンは tap を触る直前に作る (トークンに手が届く時間を短くする)
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-noslop
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.app.outputs.enabled == 'true'
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-noslop
+          token: ${{ steps.app-token.outputs.token }}
+          path: tap
+
+      - name: Update formula
+        if: steps.app.outputs.enabled == 'true'
+        working-directory: tap
+        env:
+          BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}
+          SHA_DARWIN_ARM64: ${{ steps.sums.outputs.noslop_darwin_arm64 }}
+          SHA_DARWIN_AMD64: ${{ steps.sums.outputs.noslop_darwin_amd64 }}
+          SHA_LINUX_ARM64: ${{ steps.sums.outputs.noslop_linux_arm64 }}
+          SHA_LINUX_AMD64: ${{ steps.sums.outputs.noslop_linux_amd64 }}
+        run: |
+          mkdir -p Formula
+          # 展開するのは ${...} だけ (Ruby の #{...} はシェルでは展開されない)。版は URL
+          # (/download/v<版>/) から Homebrew が読むので、version は書かない (brew audit --strict が冗長と指摘する)
+          cat > Formula/noslop.rb <<FORMULA
+          class Noslop < Formula
+            desc "Linter that flags AI-sounding patterns in Japanese text"
+            homepage "https://github.com/${{ github.repository }}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/noslop-darwin-arm64"
+                sha256 "${SHA_DARWIN_ARM64}"
+              else
+                url "${BASE_URL}/noslop-darwin-amd64"
+                sha256 "${SHA_DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/noslop-linux-arm64"
+                sha256 "${SHA_LINUX_ARM64}"
+              else
+                url "${BASE_URL}/noslop-linux-amd64"
+                sha256 "${SHA_LINUX_AMD64}"
+              end
+            end
+
+            def install
+              # リリースの添付は圧縮していないバイナリ (noslop-<OS>-<CPU>) なので、名前を noslop に直して入れる
+              binary = Dir["noslop-*"].first
+              chmod 0755, binary
+              bin.install binary => "noslop"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/noslop --version")
+              (testpath/"draft.md").write "まとめると、この方針が大切だと言えるでしょう。\n"
+              output = shell_output("#{bin}/noslop check --no-config --format json draft.md")
+              assert_match(/"ruleId":\s*"P01"/, output)
+            end
+          end
+          FORMULA
+          git diff --stat
+          if git diff --quiet; then
+            echo "formula は ${TAG} のまま (変更なし)"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/noslop.rb
+          git commit -m "noslop を ${TAG} に更新"
+          git push
+          echo "🍺 Homebrew の tap を ${TAG} に更新しました: ${{ github.repository_owner }}/homebrew-noslop"
