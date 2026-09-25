@@ -31,6 +31,92 @@ const DOC_WITH_TERM: &str =
     "# 利用案内\n\n新しい機能はユーザー様の声から生まれました。\n\n問題のない段落です。\n";
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
+#[test]
+fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "おっしゃる通りです。必要であれば表も作成できます。\n\n専門家は有効だと指摘しています。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n操作は速く、柔軟で、直感的です。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。\n\n運用には課題が残ります。しかし、今後の普及が期待されます。\n";
+    for enabled in [false, true] {
+        let mut cmd = noslop();
+        cmd.current_dir(dir.path()).args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "draft.md",
+            "--no-config",
+            "--no-dict",
+            "--format",
+            "json",
+        ]);
+        if enabled {
+            cmd.arg("--experimental");
+        }
+        let out = cmd
+            .write_stdin(text)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&out);
+        for (id, count) in [("P18", 2), ("P21", 1), ("R14", 1), ("R15", 1), ("R16", 3)] {
+            assert_eq!(
+                rule_count(&report, id),
+                if enabled { count } else { 0 },
+                "{id}"
+            );
+        }
+        if enabled {
+            let diagnostics = report["files"][0]["diagnostics"].as_array().unwrap();
+            for d in diagnostics.iter().filter(|d| {
+                ["P18", "P21", "R14", "R15", "R16"].contains(&d["ruleId"].as_str().unwrap())
+            }) {
+                assert_eq!(d["status"], "experimental");
+                assert_eq!(d["severity"], "info");
+                assert_eq!(
+                    d["lane"],
+                    if d["ruleId"] == "R14" {
+                        "readability"
+                    } else {
+                        "slop"
+                    }
+                );
+            }
+            let duplicate = diagnostics.iter().find(|d| d["ruleId"] == "R14").unwrap();
+            assert!(
+                duplicate["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("初出は 5 行 1 列")
+            );
+            assert_eq!(duplicate["related"][0]["start"]["line"], 5);
+        }
+    }
+    // experimental 全体を有効にせず、個別指定でも動く。
+    let out = noslop()
+        .current_dir(dir.path())
+        .args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "draft.md",
+            "--no-config",
+            "--no-dict",
+            "--format",
+            "json",
+            "--only-rules",
+            "P21,R14,R15,R16",
+        ])
+        .write_stdin(text)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report = json(&out);
+    assert_eq!(rule_count(&report, "P18"), 0);
+    assert_eq!(report["summary"]["diagnostics"], 6);
+}
+
 fn noslop() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_noslop"));
     cmd.env_remove("NO_COLOR").env_remove("CLICOLOR_FORCE");

@@ -245,6 +245,7 @@ noslop explain R01
 | P18 | `CHAT_RESIDUE` | 「ご質問ありがとうございます」などチャット応答の名残 | slop | experimental |
 | P19 | `HYPE` | 根拠のない誇張表現 | slop | experimental |
 | P20 | `COLON_CONTINUATION` | 「以下の通りです：」のような述語とコロンでの列挙の導入 | slop | experimental |
+| P21 | `VAGUE_ATTRIBUTION` | 「専門家は〜と指摘しています」などの出典をぼかした権威付け | slop | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
 | R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |
@@ -258,6 +259,9 @@ noslop explain R01
 | R11 | `SELF_ANSWER` | 自分で立てた問いに自分で答える | slop | experimental |
 | R12 | `OVERCORRECTION` | 直しすぎの均一さ（長短の機械的な交互・体言止めの過多） | slop | experimental |
 | R13 | `COMMA_PROFILE` | 読点を打つ癖（1 文あたりの読点の多さ） | slop | experimental |
+| R14 | `DUPLICATE_PASSAGE` | 同じ文・段落の再登場（初出の行・列も表示） | readability | experimental |
+| R15 | `FORMULAIC_FUTURE_CLOSER` | 文書末尾の「課題は残る → 今後に期待する」という結び | slop | experimental |
+| R16 | `REPEATED_EVALUATIVE_TRIAD` | 短い評価語・抽象語の三項列挙の反復 | slop | experimental |
 | S01 | `BOLD_DENSITY` | 太字の多用 | slop | experimental |
 | S02 | `BULLET_RATIO` | 箇条書きへの偏り | slop | experimental |
 | S03 | `BOILERPLATE_HEADING` | 「まとめ」「おわりに」などの定型見出し | slop | experimental |
@@ -713,7 +717,7 @@ share ディレクトリの外に置いた辞書は、ファイルのパスで�
 - **対比の反復（R05）** — 回数だけで重大度を決めると、長い文書で薄い頻度でも強く出ます。総文数に対する比率で、2% 未満は情報、2〜3% は警告、3% 以上は重大にしています。
 - **体言止め（R06）** — 「体言止めが多いと AI 臭い」という前提はデータと逆でした（人間のほうが使う）。長い文書に体言止めが 1 つもないことを、情報として指します。
 - **構造の癖（S01〜S10）** — 定量校正が済んでいないため、すべて実験的ルールです。
-- **後から足したルール（P18〜P20・R11〜R13）** — チャット応答の名残・誇張・問いと自答・直しすぎの均一さ・読点の癖は、閾値が暫定のため実験的ルールです。
+- **後から足したルール（P18〜P21・R11〜R16）** — チャット応答の名残・誇張・出典をぼかした権威付け・問いと自答・直しすぎの均一さ・読点の癖・文や段落の重複・定型の結び・三項列挙の反復は、検出条件が未校正のため実験的ルールです。R14 は文字列の重複だけを読みやすさの指摘として扱い、意味の近さは判定しません。P21 は出典の確認を促すもので、根拠の欠如や虚偽を断定しません。
 
 辞書を使わない近似（体言止めの推定、列挙の判定など）は、元の校正条件と同じではありません。近似で判定するルールは、再校正が済むまで実験的か情報の扱いにしています。「の」の連鎖（P16）と連続漢字（P15）は、同梱の形態素解析の辞書で、元の校正と同じ品詞の条件で数えます。
 

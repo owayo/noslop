@@ -726,6 +726,13 @@ const P18_ENTRIES: &[Entry] = &[
         r"(?:他|ほか)に(?:ご質問|知りたいこと|気になること)が(?:あれば|ございましたら)",
         Info,
     ),
+    // 相づちと追加提案。メールや対話では自然なので弱い手掛かりに留める。
+    Entry::exp_re(r"^(?P<m>おっしゃる(?:通り|とおり)です|鋭いご指摘です)(?:[。！!]|$)", Info)
+        .with_note(WEAK_SIGNAL_NOTE),
+    Entry::exp_re(
+        r"^(?P<m>(?:必要であれば|ご希望であれば|ご希望でしたら)[、，\s]*(?:一覧|比較表|表|図|具体例|例文|文案|草案|サンプル|テンプレート|チェックリスト|手順書|資料)(?:を|も|として)?(?:作成|用意|提示|整理)(?:すること[もが]|も)?できます)(?:[。！!]|$)",
+        Info,
+    ).with_note(WEAK_SIGNAL_NOTE),
 ];
 
 pub(super) static P18: PhraseSpec = PhraseSpec {
@@ -740,6 +747,8 @@ pub(super) static P18: PhraseSpec = PhraseSpec {
         explanation: r"### 何を見るか
 
 チャットで AI に答えさせた文をそのまま文書に貼ったときに残る言い回しを探します。書き出しの名残 (「ご質問ありがとうございます」「承知しました」「もちろんです」「以下に〜をまとめました」) は警告、結びの名残 (「お役に立てれば幸いです」「ご不明な点があれば」「他にご質問があれば」) は情報です。
+
+文頭の相づち「おっしゃる通りです」「おっしゃるとおりです」「鋭いご指摘です」と、「必要であれば」「ご希望であれば」「ご希望でしたら」に一覧・比較表・表・図・具体例・例文・文案・草案・サンプル・テンプレート・チェックリスト・手順書・資料の作成・用意・提示・整理の申し出が続く形も情報で拾います。追加提案は同じ文の中で「できます」と申し出て終わるものに限り、担当者の名前や条件を挟む業務上の説明までは拾いません。相づちと追加提案には弱い手掛かりの注記を付けます。
 
 ### なぜ問題か
 
@@ -1345,6 +1354,59 @@ mod tests {
     fn p18_ignores_ordinary_text() {
         let md = "経費精算は、月末の 3 営業日前までに申請する。問い合わせは経理部へ送る。\n";
         assert!(run(&rule(&P18), md).is_empty());
+    }
+
+    #[test]
+    fn p18_offers_and_agreement_are_weak_signals_with_exact_spans() {
+        let md = "おっしゃる通りです。鋭いご指摘です。必要であれば、比較表も作成できます。ご希望でしたら例文を用意することもできます。\n";
+        let d = run(&rule(&P18), md);
+        assert_eq!(
+            matched(md, &d),
+            vec![
+                "おっしゃる通りです",
+                "鋭いご指摘です",
+                "必要であれば、比較表も作成できます",
+                "ご希望でしたら例文を用意することもできます"
+            ]
+        );
+        assert!(d.iter().all(|d| d.severity == Info
+            && d.status == RuleStatus::Experimental
+            && d.message.contains(WEAK_SIGNAL_NOTE)));
+        let md = "**おっしゃる通りです**。\n";
+        assert_eq!(
+            matched(md, &run(&rule(&P18), md)),
+            vec!["おっしゃる通りです"]
+        );
+    }
+
+    #[test]
+    fn p18_does_not_flag_negated_offers_or_operational_explanations() {
+        for md in [
+            "必要であれば管理者が資料を作成できます。",
+            "必要であれば資料を作成できません。",
+            "必要であれば資料を作成できますか？",
+            "おっしゃる通りですか？",
+            "それがおっしゃる通りです。",
+            "「鋭いご指摘です」と返信した。",
+            "必要であれば、申請を取り下げてください。",
+        ] {
+            assert!(run(&rule(&P18), md).is_empty(), "{md}");
+        }
+        let md =
+            "# 鋭いご指摘です。\n\n- 必要であれば表も作成できます。\n\n> おっしゃる通りです。\n";
+        assert!(run(&rule(&P18), md).is_empty());
+        assert_eq!(
+            run_with(
+                &rule(&P18),
+                md,
+                Options {
+                    scope: Scope::ALL,
+                    ..Options::default()
+                }
+            )
+            .len(),
+            2
+        );
     }
 
     #[test]

@@ -9,12 +9,15 @@ mod buried_list;
 mod burstiness;
 mod cleft;
 mod commas;
+mod duplicates;
 mod endings;
+mod future_closer;
 mod leads;
 mod length;
 mod overcorrection;
 mod paragraphs;
 mod self_answer;
+mod triads;
 
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleMeta, option_f64};
@@ -37,6 +40,9 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(self_answer::SelfAnswer::new(genre)),
         Box::new(overcorrection::Overcorrection::new(genre)),
         Box::new(commas::CommaProfile::new(genre)),
+        Box::new(duplicates::DuplicatePassage::default()),
+        Box::new(future_closer::FormulaicFutureCloser),
+        Box::new(triads::RepeatedEvaluativeTriad::default()),
     ]
 }
 
@@ -83,9 +89,9 @@ mod tests {
     use crate::rules::RuleContext;
     use crate::rules::testing::assert_measures_agree;
 
-    /// measure を実装しているルール。R10・R11 は閾値を持たない (該当する組を見つけるたびに指摘する)。
-    const MEASURED: [&str; 11] = [
-        "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13",
+    /// measure を実装しているルール。R10・R11・R15 は閾値を持たない。
+    const MEASURED: [&str; 13] = [
+        "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13", "R14", "R16",
     ];
 
     fn rule_by_id(id: &str) -> Box<dyn Rule> {
@@ -196,6 +202,12 @@ mod tests {
             "今回は、申請の手順を、担当者ごとに、分けて説明します。".repeat(20) + "\n",
             "今回は申請の手順を、担当者ごとに分けて説明します。".repeat(20) + "\n",
             "申請は来週です。".repeat(20) + "\n",
+            // R14 (長い重複と短い重複)
+            "申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n".repeat(2),
+            "受付は九時です。\n\n".repeat(2),
+            // R16 (三項列挙の反復と単発)
+            "操作は速く、柔軟で、直感的です。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。\n".into(),
+            "操作は速く、柔軟で、直感的です。\n".into(),
         ]
     }
 
@@ -235,7 +247,7 @@ mod tests {
     #[test]
     fn rule_ids_are_in_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=13).map(|n| format!("R{n:02}")).collect();
+        let expected: Vec<String> = (1..=16).map(|n| format!("R{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -243,10 +255,15 @@ mod tests {
     fn new_rules_are_experimental_slop_rules_with_the_explanation_template() {
         for rule in rules(Genre::General) {
             let m = rule.meta();
-            if !matches!(m.id, "R11" | "R12" | "R13") {
+            if !matches!(m.id, "R11" | "R12" | "R13" | "R14" | "R15" | "R16") {
                 continue;
             }
-            assert_eq!((m.lane, m.status), (Lane::Slop, RuleStatus::Experimental));
+            let lane = if m.id == "R14" {
+                Lane::Readability
+            } else {
+                Lane::Slop
+            };
+            assert_eq!((m.lane, m.status), (lane, RuleStatus::Experimental));
             for section in [
                 "### 何を見るか",
                 "### なぜ問題か",

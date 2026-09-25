@@ -30,6 +30,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## 追加ルールの着想に用いた公開資料
+
+- [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) — 編集者による観察集の「Vague attributions and overgeneralization of opinions」「Outline-like conclusions about challenges and future prospects」「Rule of three」を、P21・R15・R16 の着想に用いています。日本語の検出条件・説明・例文は独自に作成しました。日本語コーパスでの校正結果としては扱いません。
+- [Huang et al., RAP: A Metric for Balancing Repetition and Performance in Open-Source Large Language Models (NAACL 2025)](https://aclanthology.org/2025.naacl-long.69/) — 生成文の反復を品質上の問題として扱う R14 の参考資料です。論文のコードや評価スコアは利用せず、文・段落の文字列比較を独自に実装しています。字数の閾値は未校正です。
+
 ## hasami（MIT License）
 
 noslop の文分割は、日本語の形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割（`hasami::sentence`）を使っています。配布するバイナリには hasami が静的にリンクされています。hasami は noslop と同じ作者によるもので、著作権表示とライセンス（MIT License、Copyright (c) 2026 Yohei）は noslop の [LICENSE](LICENSE) と同じです。
