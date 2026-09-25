@@ -1,6 +1,6 @@
 [package]
 name = "noslop"
-version = "0.1.0"
+version = "26.9.100"
 edition = "2024"
 rust-version = "1.88"
 description = "A fast linter that flags AI-generated \"slop\" patterns in Japanese prose"
