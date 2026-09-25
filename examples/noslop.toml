@@ -3,6 +3,7 @@
 # 設定ファイルは 2 つあり、どちらもこの書き方で書ける。
 #   ユーザーの設定     ~/.config/noslop/config.toml (Windows は %USERPROFILE%\.config\noslop\config.toml)。
 #                      手元のマシンでだけ使う設定 (辞書の選び方など) を書く。自動では作らない
+#                      (ひな形は `noslop init --user` で作れる)
 #   プロジェクトの設定 noslop.toml (または .noslop.toml)。カレントディレクトリから親へ向かって探し、
 #                      最初に見つかった 1 つを使う。`--config <PATH>` で差し替えられる
 #
