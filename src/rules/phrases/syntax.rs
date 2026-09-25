@@ -11,7 +11,7 @@ use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::document::BlockKind;
-use crate::rules::{Rule, RuleContext, RuleMeta, quote};
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
 
 use super::engine::diagnostic;
@@ -160,6 +160,10 @@ fn opens_bracket(s: &str) -> bool {
 }
 
 impl Rule for InanimateSubject {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &P13_META
     }
@@ -314,6 +318,10 @@ impl EmDash {
 }
 
 impl Rule for EmDash {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &P14_META
     }
@@ -413,6 +421,10 @@ impl ColonContinuation {
 }
 
 impl Rule for ColonContinuation {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &P20_META
     }

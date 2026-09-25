@@ -186,6 +186,8 @@ pub(crate) fn format_name(format: SourceFormat) -> &'static str {
     match format {
         SourceFormat::Markdown => "markdown",
         SourceFormat::PlainText => "text",
+        // コードのファイルのコメント
+        SourceFormat::Code(_) => "code",
     }
 }
 

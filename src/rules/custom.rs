@@ -8,7 +8,7 @@ use regex::{Regex, RegexBuilder};
 
 use crate::config::{ConfigError, CustomRuleConfig};
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
-use crate::rules::{Rule, RuleContext, RuleMeta};
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit};
 
 /// パターン文字列の長さの上限 (文字数)。
 const MAX_PATTERN_CHARS: usize = 1_000;
@@ -126,6 +126,10 @@ fn leak(s: &str) -> &'static str {
 }
 
 impl Rule for CustomRule {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         self.meta
     }

@@ -9,7 +9,7 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, RuleStatus, Severity, Span};
-use crate::rules::{Rule, RuleContext, RuleMeta, quote};
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 
 /// 辞書の項目の照合方法。
 #[derive(Debug, Clone, Copy)]
@@ -292,6 +292,10 @@ impl PhraseRule {
 }
 
 impl Rule for PhraseRule {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &self.spec.meta
     }

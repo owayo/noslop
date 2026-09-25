@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::genre::Genre;
-use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
+use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, RuleUnit};
 use crate::text;
 
 use super::{is_nounish, option_count, option_f64_in, unknown_option};
@@ -245,6 +245,10 @@ fn is_numeric_only(s: &str) -> bool {
 }
 
 impl Rule for BuriedList {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &META
     }

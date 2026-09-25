@@ -89,6 +89,16 @@ impl Scope {
     }
 }
 
+/// ルールが何を単位に判定するか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleUnit {
+    /// 1 文ずつ判定する (語句・文の長さなど)。どの文書にも当てる。
+    Sentence,
+    /// 文書や段落をまたいで数える (統計・構造)。断片の集まり
+    /// ([`DocumentKind::Fragments`](crate::document::DocumentKind)) には当てない。
+    Document,
+}
+
 /// ルールの実行時の文脈。
 pub struct RuleContext<'a> {
     pub doc: &'a Document,
@@ -131,6 +141,15 @@ pub trait Rule: Send + Sync {
     /// 利用者が設定で明示的に有効にした場合はこの判定より優先される。
     fn allowed_in(&self, _genre: Genre) -> bool {
         true
+    }
+
+    /// 何を単位に判定するか。既定は文書 (断片の集まりには当てない)。
+    ///
+    /// 1 文の中だけで判定が決まるルールは [`RuleUnit::Sentence`] を返す。文をまたぐ・数を数える・
+    /// 文書の構造を見るルールは既定のままにする (コードのコメントやセルに当てると、断片をまとめた
+    /// 母数で数えることになるため)。
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Document
     }
 
     /// 設定ファイルの `[rules.<ID>]` のうち、エンジンが扱う `enabled` / `severity` 以外のキーを受け取る。

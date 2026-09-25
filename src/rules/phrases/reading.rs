@@ -12,7 +12,7 @@ use regex::{Regex, RegexSet};
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::document::MarkKind;
 use crate::morph::MorphToken;
-use crate::rules::{Rule, RuleContext, RuleMeta, option_usize, quote};
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, option_usize, quote};
 use crate::text::{self, PLACEHOLDER};
 
 use super::engine::diagnostic;
@@ -127,6 +127,10 @@ impl KanjiRun {
 }
 
 impl Rule for KanjiRun {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &P15_META
     }
@@ -567,6 +571,10 @@ fn joins(text: &str, prev: &MorphToken, t: &MorphToken) -> bool {
 }
 
 impl Rule for NoChain {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &P16_META
     }
@@ -843,6 +851,10 @@ impl DoubleNegative {
 }
 
 impl Rule for DoubleNegative {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &P17_META
     }

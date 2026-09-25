@@ -21,11 +21,11 @@ use rayon::prelude::*;
 
 use crate::config::{ConfigError, CustomRuleConfig, RuleTable};
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
-use crate::document::{Document, ParseOptions, SourceFormat};
+use crate::document::{Document, DocumentKind, ParseOptions, SourceFormat};
 use crate::genre::Genre;
 use crate::morph::{self, DocMorphology, Morphology, MorphologyOptions, MorphologyStatus};
 use crate::rules::custom::CustomRule;
-use crate::rules::{Rule, RuleContext, Scope, builtin_rules};
+use crate::rules::{Rule, RuleContext, RuleUnit, Scope, builtin_rules};
 use crate::suppress::{self, RuleNames};
 
 /// ルールの明示的な有効化・無効化の指定。
@@ -266,7 +266,15 @@ impl Engine {
                 experimental: self.options.experimental,
                 morph: morph.as_ref(),
             };
-            for entry in self.entries.iter().filter(|e| e.enabled) {
+            // 断片の集まり (コードのコメント・セル) には、1 文ずつ判定するルールだけを当てる
+            let applies = |rule: &dyn Rule| {
+                doc.kind == DocumentKind::Prose || rule.unit() == RuleUnit::Sentence
+            };
+            for entry in self
+                .entries
+                .iter()
+                .filter(|e| e.enabled && applies(e.rule.as_ref()))
+            {
                 let start = diagnostics.len();
                 entry.rule.check(&ctx, &mut diagnostics);
                 if let Some(severity) = entry.severity {

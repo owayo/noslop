@@ -6,7 +6,7 @@ use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::document::{Block, Document, MarkKind, Sentence};
-use crate::rules::{Rule, RuleContext, RuleMeta, quote};
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 
 use super::engine::WEAK_SIGNAL_NOTE;
 
@@ -78,6 +78,10 @@ fn reference_note(doc: &Document, block: &Block, sentences: &[Sentence], i: usiz
 pub struct VagueAttribution;
 
 impl Rule for VagueAttribution {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &META
     }
