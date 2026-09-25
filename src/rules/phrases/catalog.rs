@@ -24,7 +24,8 @@ const P01_ENTRIES: &[Entry] = &[
     Entry::lit("のではないでしょうか", Warning),
     Entry::lit("結論から言うと", Warning),
     Entry::lit("結論として", Warning),
-    Entry::lit("まとめると", Warning),
+    // 「まとめるとき」「まとめるところ」「まとめるとともに」「まとめると共に」の中では当てない
+    Entry::re(r"(?P<m>まとめると)(?:[^きこと共]|$)", Warning),
     Entry::lit("総じて", Warning),
     Entry::lit("いかがでしたか", Warning),
     Entry::lit("いかがでしょうか", Warning),
@@ -890,6 +891,26 @@ mod tests {
     fn p01_ignores_natural_text() {
         let md = "週次の手作業は 6 時間から 1 時間に減った。最後に、担当者へ共有した。\n";
         assert!(run(&rule(&P01), md).is_empty());
+    }
+
+    /// 「まとめると」は締めの定型だけを指し、「まとめるとき」のような別の語の中では当てない。
+    #[test]
+    fn p01_summary_phrase_is_not_a_part_of_other_words() {
+        for md in [
+            "資料をまとめるときに、表を先に作った。\n",
+            "要点をまとめるところから始めた。\n",
+            "結果をまとめるとともに、次の手を決めた。\n",
+            "結果をまとめると共に、次の手を決めた。\n",
+        ] {
+            assert!(run(&rule(&P01), md).is_empty(), "{md}");
+        }
+        let md = "まとめると、手作業は減った。\n\n要点をまとめると次のとおりです。\n\n最後にまとめると\n";
+        let d = run(&rule(&P01), md);
+        assert_eq!(
+            matched(md, &d),
+            vec!["まとめると", "まとめると", "まとめると"]
+        );
+        assert!(d.iter().all(|d| d.severity == Severity::Warning));
     }
 
     #[test]
