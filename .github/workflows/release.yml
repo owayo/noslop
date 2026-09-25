@@ -196,7 +196,8 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.prepare-release.outputs.tag }}
-          name: Release ${{ needs.prepare-release.outputs.tag }}
+          # タイトルはタグ名だけにする (「Release v26.9.100」のように Release を付けない)
+          name: ${{ needs.prepare-release.outputs.tag }}
           files: release-assets/*
           generate_release_notes: true
         env:

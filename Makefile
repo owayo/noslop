@@ -9,15 +9,18 @@
 # 呼ぶ。検査を足すときは ci に足し、workflow に検査のコマンドを並べない。Windows のジョブ
 # だけはランナーの make (mingw32-make) を避けて、ci と同じコマンドを直接呼んでいる。
 #
+# ターゲットの説明 (## の後ろ) は make help がそのまま表示し、README の「開発」の表にも同じ文を
+# 載せている。説明を変えたら README の表もそろえる。
+#
 # macOS 標準の GNU Make 3.81 で動く書き方に限っている
 # (.ONESHELL / .SHELLFLAGS / $(file ...) / != は使わない)。
 
 .PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean
 
-# Default target
+# 引数なしの make はヘルプを表示する
 .DEFAULT_GOAL := help
 
-# Variables
+# 変数
 BINARY_NAME := noslop
 INSTALL_PATH ?= /usr/local/bin
 # Cargo.lock をコミットしているので、依存の解決結果を CI・リリースとそろえる。
@@ -29,7 +32,7 @@ SKILL_TARGETS ?= claude codex
 # docs/rules.md を空にしないよう、いったんここに書く
 RULES_MD_TMP := target/rules.md
 
-# ---- Toolchain ----------------------------------------------------------------
+# ---- ツールチェーン -----------------------------------------------------------
 # mise は PATH、よくある導入先の順に探す。GUI から起動した make はシェルの PATH を
 # 引き継がないことがあるため。make MISE=/path/to/mise で明示もできる。
 # mise が無い環境の振る舞いを試すときは MISE_CANDIDATES= で探す先を空にする。
@@ -42,30 +45,30 @@ MISE := $(firstword $(shell command -v mise 2>/dev/null) $(wildcard $(MISE_CANDI
 endif
 ifeq ($(MISE),)
 ifneq ($(filter-out help,$(or $(MAKECMDGOALS),help)),)
-$(error mise not found. Install it from https://mise.jdx.dev, or add SYSTEM_TOOLS=1 to use the tools on PATH)
+$(error mise が見つかりません。https://mise.jdx.dev で入れるか、PATH 上のツールで動かすなら SYSTEM_TOOLS=1 を付けてください)
 endif
 endif
 RUN := $(if $(MISE),$(MISE) exec --,)
 endif
 
-## Setup
+## セットアップ
 
-setup: ## Install the toolchain (mise.toml) and fetch dependencies
+setup: ## ツールチェーン (mise.toml) を入れ、依存を取得する
 	@if [ -n "$(MISE)" ]; then "$(MISE)" install; fi
 	$(RUN) cargo fetch $(CARGO_FLAGS)
 
-## Build Commands
+## ビルド
 
-build: ## Build debug version
+build: ## デバッグ版をビルドする
 	$(RUN) cargo build $(CARGO_FLAGS)
 
-release: ## Build release version
+release: ## リリース版をビルドする
 	$(RUN) cargo build --release $(CARGO_FLAGS)
 
-run: ## Run the debug build (pass arguments with ARGS="...")
+run: ## デバッグ版を実行する (引数は ARGS="...")
 	$(RUN) cargo run $(CARGO_FLAGS) -- $(ARGS)
 
-## Installation
+## インストール
 
 # 上書きコピーではなく一時ファイル + rename で置き換える。
 # macOS はコード署名の検証結果をパス/inode 単位でキャッシュするため、実行中または
@@ -73,7 +76,7 @@ run: ## Run the debug build (pass arguments with ARGS="...")
 # 食い違って新しいバイナリが起動直後に SIGKILL される (exit 137)。
 # 一時ファイルは rename が inode の差し替えになるよう、同じディレクトリに置く。
 # スキル (skills/SKILL.md) は入れたばかりのバイナリで書き出すので、バイナリと版がそろう。
-install: release ## Build release, install the binary and the skills (claude + codex)
+install: release ## リリース版をビルドし、バイナリとスキル (claude・codex) を入れる
 	@mkdir -p "$(INSTALL_PATH)"
 	cp "target/release/$(BINARY_NAME)" "$(INSTALL_PATH)/$(BINARY_NAME).new"
 	mv -f "$(INSTALL_PATH)/$(BINARY_NAME).new" "$(INSTALL_PATH)/$(BINARY_NAME)"
@@ -83,67 +86,67 @@ install: release ## Build release, install the binary and the skills (claude + c
 
 # バイナリだけを消し、スキルは消さない。スキルの置き場所はエージェントごとに違い、
 # 別の版で入れたものまで消してしまうため
-uninstall: ## Remove the installed binary (the skills are kept)
+uninstall: ## 入れたバイナリを取り除く (スキルは残す)
 	rm -f "$(INSTALL_PATH)/$(BINARY_NAME)"
 
-## Development
+## 開発
 
-test: ## Run tests
+test: ## テストを実行する
 	$(RUN) cargo test $(CARGO_FLAGS)
 
 # 辞書を同梱しないビルド (#[cfg(not(feature = "bundled-dict"))] の側) をコンパイルしてテストする。
 # cargo は feature を切り替えるたびに target/debug/noslop を置き直すので、これを単独で
 # 回した後の target/debug/noslop は辞書を同梱しない版になる (次に既定の feature で
 # build・run・test すると、作り直さずに既定の版へ戻る)
-test-no-default-features: ## Run tests without the bundled dictionary (--no-default-features)
+test-no-default-features: ## 辞書を同梱しないビルドでテストする (--no-default-features)
 	$(RUN) cargo test $(CARGO_FLAGS) --no-default-features
 
-lint: ## Run clippy (warnings are errors)
+lint: ## clippy を実行する (警告はエラー)
 	$(RUN) cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
 
-clippy: lint ## Alias of lint
+clippy: lint ## lint の別名
 
-fmt: ## Format code
+fmt: ## コードを整形する (書き換える)
 	$(RUN) cargo fmt --all
 
-fmt-check: ## Check formatting
+fmt-check: ## 整形済みかを確かめる (書き換えない)
 	$(RUN) cargo fmt --all -- --check
 
-check: fmt-check lint ## Run format check and clippy (no rewrite)
+check: fmt-check lint ## 整形の確認と clippy (書き換えない)
 
 # 手元の noslop.toml の有効・無効が一覧に混ざらないよう、設定ファイルは読まない
-docs: ## Regenerate docs/rules.md from the built-in rule catalog
+docs: ## 組み込みのルールから docs/rules.md を作り直す
 	@mkdir -p target docs
 	$(RUN) cargo run --quiet $(CARGO_FLAGS) -- rules --format markdown --no-config > $(RULES_MD_TMP)
 	mv -f $(RULES_MD_TMP) docs/rules.md
 
 # ルールの定義や説明文を変えたのに make docs を忘れた変更を落とす (docs/rules.md は書き換えない)
-docs-check: ## Check that docs/rules.md is up to date (no rewrite)
+docs-check: ## docs/rules.md が最新かを確かめる (書き換えない)
 	@mkdir -p target
 	$(RUN) cargo run --quiet $(CARGO_FLAGS) -- rules --format markdown --no-config > $(RULES_MD_TMP)
-	@diff -u docs/rules.md $(RULES_MD_TMP) || { echo "docs/rules.md is out of date. Run: make docs" >&2; exit 1; }
+	@diff -u docs/rules.md $(RULES_MD_TMP) || { echo "docs/rules.md が古くなっています。make docs で作り直してください" >&2; exit 1; }
 
 # CI の Linux と macOS のジョブはこれを呼ぶ。書き換えを含めない。
 # 同梱しないビルドのテストを先に回し、既定の feature の test と docs-check を後に置く。
 # こうすると make ci の後の target/debug/noslop が既定の版 (辞書を同梱) になる
-ci: check test-no-default-features test docs-check ## Run the same checks as CI (fmt, clippy, tests, docs)
+ci: check test-no-default-features test docs-check ## CI と同じ検査 (整形・clippy・テスト・docs/rules.md)
 
-clean: ## Clean build artifacts
+clean: ## ビルドの成果物を消す
 	$(RUN) cargo clean
 
-## Help
+## ヘルプ
 
-help: ## Show this help message
-	@echo "$(BINARY_NAME) Build Commands"
+help: ## このヘルプを表示する
+	@echo "$(BINARY_NAME) の開発用タスク"
 	@echo ""
-	@echo "Usage: make [target]"
+	@echo "使い方: make <ターゲット>"
 	@echo ""
-	@echo "Targets:"
+	@echo "ターゲット:"
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Toolchain:"
-	@echo "  Versions are pinned in mise.toml. Run make setup first."
-	@echo "  Commands run through mise exec; add SYSTEM_TOOLS=1 to use the tools on PATH."
+	@echo "ツールチェーン:"
+	@echo "  版は mise.toml で固定している。初回は make setup"
+	@echo "  コマンドは mise exec 経由で動く。PATH 上のツールを使うなら SYSTEM_TOOLS=1 を付ける"
 	@echo ""
-	@echo "Release:"
-	@echo "  Use GitHub Actions > Release > Run workflow"
+	@echo "リリース:"
+	@echo "  GitHub Actions > Release > Run workflow"
