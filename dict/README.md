@@ -4,11 +4,11 @@
 
 | 項目 | 値 |
 |---|---|
-| 出所 | hasami v26.9.103 のリリースに添付された `ipadic.hsd` |
+| 出所 | hasami v26.9.105 のリリースに添付された `ipadic.hsd` |
 | 元のデータ | mecab-ipadic 2.7.0-20070801 (辞書のメタデータ `sources=ipadic@61b90ba6e669`) |
 | 語数 | 390,849 |
 | 大きさ | 18,125,804 バイト |
-| SHA-256 | `e917bcdcdb45893fb4dd9b2de88ccb11dba2ecad2471dd0f62bd674a7f89ed73` |
+| SHA-256 | `1ca13555b1fc6ec12dd4b830aec97262b4481b70b7cfec6d2a9bea912e1d6277` |
 | ライセンス | NAIST-2003 (条文は [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)) |
 
 NEologd の語彙を含む辞書 (ipadic-neologd など) は 220MB を超えるので同梱しません。使いたい場合は `noslop dict download <名前>` で hasami の share ディレクトリに取得し、`--dict share:<名前>` か設定の `dictionary` で指定します。これと同じ `ipadic.hsd` も `noslop dict download ipadic` で取得できます。

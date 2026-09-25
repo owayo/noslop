@@ -380,7 +380,7 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 #   auto (既定。HASAMI_DICT か同梱の辞書を使う) / required (必ず使う) / off (使わない)
 # mode = "auto"
 # 同梱の辞書の代わりに使う辞書。share:<名前> は hasami の share ディレクトリ
-# (~/.local/share/hasami) の辞書で、noslop dict download <名前> で取得できる。
+# (既定は ~/.local/share/hasami) の辞書で、noslop dict download <名前> で取得できる。
 # ファイルのパスも書ける (相対パスはこのファイルのあるディレクトリ基準)
 # dictionary = "share:ipadic-neologd-sudachi"
 
