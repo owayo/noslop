@@ -73,9 +73,12 @@ impl Reviewer {
         })
     }
 
-    /// `root` を起点に検査するとき、`path` を検査するか (文書・コードの拡張子と設定の除外)。
+    /// `root` を起点に検査するとき、`path` を検査するか (文書・コードの拡張子、設定の除外、
+    /// `.noslopignore`)。
     fn selects(&self, root: &Path, path: &Path) -> bool {
-        self.walk.selects(path) && !self.walk.is_excluded(root, path, false)
+        self.walk.selects(path)
+            && !self.walk.is_excluded(root, path, false)
+            && !crate::walk::is_noslopignored(path)
     }
 
     /// ファイルを読んで検査する。消えたファイルと大きすぎるファイルは `None`。

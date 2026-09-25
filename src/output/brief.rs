@@ -493,61 +493,80 @@ fn message<'a>(message: &'a str, previous: &mut Option<&'a str>) -> &'a str {
     if same { "同上" } else { message }
 }
 
+/// 短い改稿指示の見出しの後半。
+const COMPACT_JUDGE: &str = "直すかどうかは文脈で判断してください。直さない判断もできます。";
+
+/// 短い改稿指示の結び。
+const COMPACT_FOOTER: &str = "材料 (固有名詞・数字・実例) が足りない箇所は、推測で足さず書き手に確認してください。ルールの詳細は `noslop explain <ID>` で確認できます。";
+
 /// フックから AI に返す短い改稿指示。
+///
+/// 見出し・改稿のルール・結びは 1 度だけ書く (Stop のフックのように複数のファイルをまとめて返すとき、
+/// ファイルごとに繰り返すと、呼び出し側の文字数の上限にファイルが入らなくなるため)。
 fn render_compact(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> io::Result<()> {
     let brief = Brief::build(report, opts, opts.brief_limit.unwrap_or(COMPACT_LIMIT));
-    for file in &brief.files {
-        let c = &file.counts;
-        // レーンごとに分けて数える (独自ルールを AI 臭さに混ぜると、各行の件数と合わなくなる)
-        let found: Vec<String> = [
-            (Lane::Slop, "疑い", c.stable_slop + c.experimental_slop),
-            (Lane::Custom, "指摘", c.custom),
-            (Lane::Readability, "指摘", c.readability),
-        ]
-        .into_iter()
-        .filter(|&(_, _, n)| n > 0)
-        .map(|(lane, noun, n)| format!("{}の{noun}を {n} 件", lane.label_ja()))
-        .collect();
-        writeln!(
+    match brief.files.as_slice() {
+        [] => return Ok(()),
+        [file] => writeln!(
             out,
-            "noslop が {} に {}見つけました。直すかどうかは文脈で判断してください。直さない判断もできます。",
+            "noslop が {} に {}見つけました。{COMPACT_JUDGE}",
             file.path,
-            found.join("、")
-        )?;
-        writeln!(out, "改稿のルール: {REVISION_RULES_COMPACT}")?;
-        for w in brief.warnings_of(file.path) {
-            writeln!(out, "抑制コメントの注意: {w}")?;
+            file.counts.found("を ").join("、")
+        )?,
+        files => {
+            let total = files.iter().fold(Counts::default(), |mut total, f| {
+                total.add(&f.counts);
+                total
+            });
+            writeln!(
+                out,
+                "noslop が {} ファイルに {}見つけました。{COMPACT_JUDGE}",
+                files.len(),
+                total.found("を ").join("、")
+            )?;
         }
-        for r in &file.rules {
-            let mut line = format!("- {}", r.rule_id);
-            if let Some(title) = r.title {
-                line.push(' ');
-                line.push_str(title);
-            }
-            // レーン名は件数の括弧に入る
-            line.push_str(&format!(" ({})", r.count_label()));
-            if let Some(hint) = r.hints.first() {
-                line.push_str(": ");
-                line.push_str(hint);
-            }
-            writeln!(out, "{line}")?;
-            let mut previous: Option<&str> = None;
-            for o in file.occurrences_of(r.rule_id) {
-                writeln!(
-                    out,
-                    "  - L{}: {}",
-                    o.line,
-                    message(o.message, &mut previous)
-                )?;
-            }
-            if r.omitted_count > 0 {
-                writeln!(out, "  - ほか {} 件", r.omitted_count)?;
-            }
+    }
+    writeln!(out, "改稿のルール: {REVISION_RULES_COMPACT}")?;
+    let several = brief.files.len() > 1;
+    for file in &brief.files {
+        if several {
+            writeln!(out, "{}: {}", file.path, file.counts.found(" ").join("、"))?;
         }
-        writeln!(
-            out,
-            "材料 (固有名詞・数字・実例) が足りない箇所は、推測で足さず書き手に確認してください。ルールの詳細は `noslop explain <ID>` で確認できます。"
-        )?;
+        render_compact_file(&brief, file, out)?;
+    }
+    writeln!(out, "{COMPACT_FOOTER}")
+}
+
+/// 短い改稿指示の、1 ファイルぶんの指摘 (抑制コメントの注意・ルール・該当箇所)。
+fn render_compact_file(brief: &Brief, file: &BriefFile, out: &mut dyn Write) -> io::Result<()> {
+    for w in brief.warnings_of(file.path) {
+        writeln!(out, "抑制コメントの注意: {w}")?;
+    }
+    for r in &file.rules {
+        let mut line = format!("- {}", r.rule_id);
+        if let Some(title) = r.title {
+            line.push(' ');
+            line.push_str(title);
+        }
+        // レーン名は件数の括弧に入る
+        line.push_str(&format!(" ({})", r.count_label()));
+        if let Some(hint) = r.hints.first() {
+            line.push_str(": ");
+            line.push_str(hint);
+        }
+        writeln!(out, "{line}")?;
+        let mut previous: Option<&str> = None;
+        for o in file.occurrences_of(r.rule_id) {
+            writeln!(
+                out,
+                "  - L{}: {}",
+                o.line,
+                message(o.message, &mut previous)
+            )?;
+        }
+        if r.omitted_count > 0 {
+            writeln!(out, "  - ほか {} 件", r.omitted_count)?;
+        }
     }
     Ok(())
 }
@@ -728,6 +747,31 @@ struct Counts {
 }
 
 impl Counts {
+    /// レーンごとの件数の言い表し (「AI 臭さの疑い{sep}3 件」など。0 件のレーンは入れない)。
+    /// レーンごとに分けて数える (独自ルールを AI 臭さに混ぜると、各行の件数と合わなくなる)。
+    fn found(&self, sep: &str) -> Vec<String> {
+        [
+            (
+                Lane::Slop,
+                "疑い",
+                self.stable_slop + self.experimental_slop,
+            ),
+            (Lane::Custom, "指摘", self.custom),
+            (Lane::Readability, "指摘", self.readability),
+        ]
+        .into_iter()
+        .filter(|&(_, _, n)| n > 0)
+        .map(|(lane, noun, n)| format!("{}の{noun}{sep}{n} 件", lane.label_ja()))
+        .collect()
+    }
+
+    fn add(&mut self, other: &Counts) {
+        self.stable_slop += other.stable_slop;
+        self.experimental_slop += other.experimental_slop;
+        self.custom += other.custom;
+        self.readability += other.readability;
+    }
+
     fn of(file: &FileReport) -> Self {
         let mut c = Counts::default();
         for d in file.visible() {
@@ -955,6 +999,43 @@ mod tests {
         assert!(s.contains("- T01 テスト (AI 臭さ・警告 2 件)"), "{s}");
         assert!(s.contains("  - ほか 1 件"), "{s}");
         assert!(!s.contains("## "), "短縮版には見出しを付けない: {s}");
+    }
+
+    /// 複数のファイルをまとめた短縮版では、見出し・改稿のルール・結びを 1 度だけ書き、ファイルごとには
+    /// 件数の 1 行と指摘だけを書く。
+    #[test]
+    fn compact_brief_writes_the_rules_once_for_several_files() {
+        let e = engine(false);
+        let doc = |name: &str, text: &str| {
+            crate::document::Document::parse(
+                name,
+                text,
+                crate::document::SourceFormat::Markdown,
+                &Default::default(),
+            )
+        };
+        let report = RunReport {
+            files: vec![
+                e.lint(doc("a.md", "これは言えるでしょう。\n")),
+                e.lint(doc("b.md", "また言えるでしょう。さらに言えるでしょう。\n")),
+            ],
+            errors: Vec::new(),
+            morphology: Default::default(),
+        };
+        let o = RenderOptions {
+            brief_compact: true,
+            ..opts(&e)
+        };
+        let s = render_str(&report, &o);
+        assert!(
+            s.starts_with("noslop が 2 ファイルに AI 臭さの疑いを 3 件見つけました。"),
+            "{s}"
+        );
+        assert_eq!(s.matches("改稿のルール:").count(), 1, "{s}");
+        assert_eq!(s.matches("材料 (固有名詞").count(), 1, "{s}");
+        assert!(s.contains("a.md: AI 臭さの疑い 1 件\n"), "{s}");
+        assert!(s.contains("b.md: AI 臭さの疑い 2 件\n"), "{s}");
+        assert!(s.find("a.md:") < s.find("b.md:"), "{s}");
     }
 
     #[test]

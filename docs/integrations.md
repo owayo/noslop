@@ -1,14 +1,15 @@
 # AI エージェントとの連携
 
-noslop の指摘を、文章を書いた AI エージェント (または人間の編集者) に渡す方法は 5 つあります。
+noslop の指摘を、文章を書いた AI エージェント (または人間の編集者) に渡す方法は 6 つあります。
 
 | 方法 | 使いどころ | 渡すもの |
 |---|---|---|
 | `noslop check --report brief` | 検査結果を AI や編集者に貼り付けて直してもらう。プログラムや LLM に渡すなら JSON・TOON | 改稿指示 (Markdown・JSON・TOON) |
 | `noslop skill-install` | エージェントに、日本語の文章を書いた・直した後の見直しの手順を覚えさせる | スキル (`SKILL.md`) |
 | `noslop mcp` | エージェントが自分で検査・改稿の前後の比較を呼ぶ (Claude Code・Codex CLI など) | 改稿指示・確認事項 (Markdown・JSON・TOON) |
-| `noslop hook claude-code` | Claude Code がファイルを書いた直後に、自動で指摘を渡す | 短い改稿指示 |
-| `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み (claw-hooks など) から、同じ指摘を渡す | 短い改稿指示 (テキスト) |
+| `noslop hook claude-code` | Claude Code がファイルを書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたときに、自動で指摘を渡す | 短い改稿指示 |
+| `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み (claw-hooks の extension_hooks など) から、同じ指摘を渡す | 短い改稿指示 (テキスト) |
+| `noslop hook git-diff` | フックの入力を渡せない Stop の仕組み (claw-hooks の stop_hooks など) から、リポジトリのコミットしていない変更の指摘を渡す | 短い改稿指示 (テキスト) |
 
 どの方法でも、渡すのは「どこを、なぜ見直すか」と改稿の制約です。語句の置き換え方は指示しません。指摘は疑いの提示なので、件数を減らすこと自体を目的にすると、読点を一律に削る・体言止めを機械的に足すといった別の均一さが生まれます。そのため改稿指示には、残してよいことと、再実行を 1 回で打ち切ることを必ず書いています。
 
@@ -154,9 +155,17 @@ args = ["mcp"]
 
 ## Claude Code のフック (`noslop hook claude-code`)
 
-Claude Code の PostToolUse フックとして動き、Write / Edit / MultiEdit で書き換えたファイルを検査します。指摘があれば、短い改稿指示を `hookSpecificOutput.additionalContext` で返します。Claude Code はこれをシステムリマインダーとしてツールの結果の横に添えるので、Claude は補足として受け取ります。`decision: "block"` や終了コード 2 はツールの失敗に見えるので使いません。
+Claude Code のフックとして、次の 3 つのイベントを検査します。どれも指摘があるときだけ短い改稿指示を返し、ないとき・対象外のときは何も出力せず、終了コード 0 で終わります。
 
-設定例は [examples/claude-code-settings.json](../examples/claude-code-settings.json) にあります。`~/.claude/settings.json` (すべてのプロジェクト)、`.claude/settings.json` (プロジェクトで共有)、`.claude/settings.local.json` (自分だけ) のいずれかに書きます。
+| イベント | 見るもの | 返し方 |
+|---|---|---|
+| PostToolUse (Write / Edit / MultiEdit) | 書き換えたファイルの、今回変わった行 | `additionalContext` (ツールの結果の横に添える) |
+| PreToolUse (Bash) | gws で Google ドキュメント・スプレッドシートに書き込む値 | ドキュメントの本文に指摘があれば 1 度だけ `deny` (理由に改稿指示)。ほかは `additionalContext` |
+| Stop | リポジトリのコミットしていない変更 (HEAD との差分と、追跡していないファイル) の変わった行 | `additionalContext` (エラーでない指摘として会話が続く) |
+
+`additionalContext` は、Claude Code がシステムリマインダーとして添えるので、Claude は補足として受け取ります。PostToolUse で `decision: "block"` や終了コード 2 を使わないのは、ツールの失敗に見えるためです。
+
+設定例は [examples/claude-code-settings.json](../examples/claude-code-settings.json) にあります。`~/.claude/settings.json` (すべてのプロジェクト)、`.claude/settings.json` (プロジェクトで共有)、`.claude/settings.local.json` (自分だけ) のいずれかに書きます。使わないイベントは書かなくてかまいません。
 
 ```json
 {
@@ -165,11 +174,22 @@ Claude Code の PostToolUse フックとして動き、Write / Edit / MultiEdit 
       {
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
-          {
-            "type": "command",
-            "command": "noslop hook claude-code",
-            "timeout": 30
-          }
+          { "type": "command", "command": "noslop hook claude-code", "timeout": 30 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "noslop hook claude-code", "timeout": 30 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "noslop hook claude-code", "timeout": 60 }
         ]
       }
     ]
@@ -177,26 +197,65 @@ Claude Code の PostToolUse フックとして動き、Write / Edit / MultiEdit 
 }
 ```
 
-### 動き
+どのイベントにも共通することです。
 
-- 対象は Write / Edit / MultiEdit で、設定の `[files] extensions` (既定 `md` / `markdown` / `txt`) の拡張子を持ち、`[files] exclude` に当たらないファイルだけです。それ以外は何も出力せず、終了コード 0 で終わります
 - プロジェクトの設定は、フックの入力にある `cwd` から親へたどって探し、ユーザーの設定 (`~/.config/noslop/config.toml`) に重ねます (`--config` でプロジェクトの設定を差し替え、`--no-config` でどちらも読まないようにできます)
 - 既定では読みやすさのルールを止めて検査し、AI 臭さ (校正済み) と独自ルールの指摘があるときだけ返します。`--experimental` で実験的なルールを、`--include-readability` で読みやすさの指摘を加えます (設定ファイルで `experimental = true` にしていれば、実験的なルールも既定で動きます)
+- 1 ルールあたりの箇所は `--brief-limit` 件 (既定 3) までです
+- Claude Code は 10,000 文字を超える文字列をファイルに逃がして先頭しか見せないので、それより短く (9,000 文字まで) 行単位で切ります
+- 入力が JSON として読めない・32 MiB を超える・設定ファイルが壊れているなどの誤りは、標準エラーに書いて終了コード 1 で終わります。Claude Code はこれを処理を止めないエラーとして扱います
+
+### 書き換えたファイル (PostToolUse)
+
+- 対象は Write / Edit / MultiEdit で、設定の `[files] extensions` (既定 `md` / `markdown` / `txt`) か `[code] extensions` (コメントを検査するコードの拡張子。既定は空) の拡張子を持ち、`[files] exclude` と `.noslopignore` に当たらないファイルだけです
 - 返すのは、今回のツール呼び出しで変わった行に、指摘の箇所か文脈 (文・段落) が重なるものだけです。編集のたびに同じ指摘を渡して、残すと決めた箇所まで直させないためです。変わった行は、ツールの結果にある差分 (`tool_response.structuredPatch`) から求めます。差分がなければ Edit / MultiEdit の `new_string` の位置から求め、同じ文字列がほかにもある・削除だけの編集・見つからない (別のフックが整形したなど) ときは、ファイル全体の指摘を返します。新しく作ったファイルも全体を見ます。常にファイル全体を見るなら `--whole-file` を付けます
 - 返す改稿指示は、1 行目で指摘をレーンごとに数え (「noslop が draft.md に AI 臭さの疑いを 2 件、独自ルールの指摘を 1 件見つけました。」。0 件のレーンは出しません)、改稿のルールに続けて、ルールごとの件数 (「AI 臭さ・警告 1 件」)・直し方の方向・該当箇所を並べます
-- 1 ルールあたりの箇所は `--brief-limit` 件 (既定 3) までです
-- Claude Code は 10,000 文字を超える additionalContext をファイルに逃がして先頭しか見せないので、それより短く (9,000 文字まで) 行単位で切ります
-- 入力が JSON として読めない・32 MiB を超える・設定ファイルが壊れているなどの誤りは、標準エラーに書いて終了コード 1 で終わります。Claude Code はこれを処理を止めないエラーとして扱います。8 MiB を超えるファイルは検査せずに飛ばします
-- PostToolUse 以外のイベント (Stop など) の入力には何も出力しません。Stop の入力には、そのターンに編集したファイルが含まれず、知るには形式の保証されていない transcript を読むしかないためです。編集のたびに指摘が出るのが煩わしいときは、1 ルールあたりの箇所を減らす (`--brief-limit 1`) か、読みやすさのルールを止めたまま (既定) にします
+- 8 MiB を超えるファイルは検査せずに飛ばします。編集のたびに指摘が出るのが煩わしいときは、1 ルールあたりの箇所を減らす (`--brief-limit 1`) か、読みやすさのルールを止めたまま (既定) にします
+
+### 応答を終えたとき (Stop)
+
+Stop の入力には、そのターンに編集したファイルが含まれません。そこで、作業ディレクトリ (入力の `cwd`) を含む git の作業ツリーの、コミットしていない変更を検査します。Bash で書き換えたファイルのように、PostToolUse の検査を通らなかった変更も拾えます。
+
+- HEAD との差分 (index と作業ツリーの両方) のあるファイルは変わった行に、追跡していないファイル (`.gitignore` などで無視するものを除く) はファイル全体に、重なる指摘だけを返します。消したファイルは見ず、名前を変えたファイルは変える前との差分の行を見ます。コミットがまだなければ、index と追跡していないファイルの全体を見ます。`--whole-file` を付けると、変わったファイルの全体の指摘を返します
+- 対象の選び方は PostToolUse と同じです (拡張子・`[files] exclude`・`.noslopignore`)。シンボリックリンクと 8 MiB を超えるファイルは見ません。UTF-8 でないファイルは、標準エラーに 1 行書いて飛ばします。git の外では何もしません
+- 複数のファイルの指摘は、1 つの改稿指示にまとめます (見出しと改稿のルールは 1 度だけ書き、ファイルごとに件数の行と指摘を並べます)
+- `stop_hook_active` が真 (このフックで会話を続けた後の Stop) なら何もしません。同じ指摘をもう出さないための記録は持たないので、コミットするまでは、残した指摘も応答を終えるたびに出ます。改稿指示の注記で、残すと決めた指摘は直さなくてよいと伝えます
+- git の index は書き換えません (`diff.autoRefreshIndex=false` で差分を取ります)。Stop のたびに自動でコミットする仕組みを併用するなら、noslop を先に動かしてください。コミットの後では差分が空になります
+
+### gws の書き込み (PreToolUse)
+
+Bash の呼び出しのうち、[gws](https://github.com/googleworkspace/cli) (Google Workspace CLI) で Google ドキュメント・スプレッドシートに書き込むものを、書き込む前に検査します。
+
+- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。変数やコマンド置換で決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`gws` を含まないコマンドは、設定も読まずに素通しします
+- 検査する値は次のとおりです。日本語を含まない値と、`=` で始まるセル (数式) は見ません
+
+  | コマンド | 値 | 扱い |
+  |---|---|---|
+  | `gws docs +write` | `--text` | 本文 |
+  | `gws docs documents batchUpdate` | `requests[].insertText.text` | 本文 |
+  | 〃 | `requests[].replaceAllText.replaceText` | 短い値 |
+  | `gws docs documents create` | `title` | 短い値 |
+  | `gws sheets +append` | `--values` (カンマ区切り)・`--json-values` | 短い値 (セルごと) |
+  | `gws sheets spreadsheets values update` / `append` | `values` | 短い値 (セルごと) |
+  | `gws sheets spreadsheets values batchUpdate` / `batchUpdateByDataFilter` | `data[].values` | 短い値 (セルごと) |
+  | `gws sheets spreadsheets batchUpdate` | `updateCells`・`appendCells`・`repeatCell` の `userEnteredValue.stringValue` | 短い値 (セルごと) |
+
+- ドキュメントの本文に警告以上の指摘があれば、1 度目は書き込みを止め (`deny`)、理由に改稿指示を載せます。Claude は直してから書き込み直すか、残すと決めたら同じコマンドをもう一度実行します。同じセッションで、同じ宛先に同じ値を書き込む打ち直しは、30 分以内に 1 回だけそのまま通します
+- セル・タイトルのような短い値の指摘、情報の指摘だけのとき、`--dry-run` のときは止めずに、改稿指示をツールの結果の横に添えます (`additionalContext`)。短い値は、1 文ずつ判定するルールだけを当てた未校正の判定だからです。入力にセッションの ID がないときも止めません
+- 「1 回だけ通す」ための記録はキャッシュのディレクトリ (`$XDG_CACHE_HOME/noslop/hook-state`、なければ macOS は `~/Library/Caches/noslop/hook-state`、Linux は `~/.cache/noslop/hook-state`、Windows は `%LOCALAPPDATA%\noslop\cache\hook-state`) に置きます。置くのは宛先と値のハッシュだけで、書き込む値やコマンドは保存しません
 
 ### 手で試す
 
 ```bash
+# 書き換えたファイル
 printf '{"hook_event_name":"PostToolUse","tool_name":"Write","cwd":"%s","tool_input":{"file_path":"docs/guide.md"}}' "$PWD" \
   | noslop hook claude-code
+
+# 応答を終えたとき (リポジトリのコミットしていない変更)
+printf '{"hook_event_name":"Stop","cwd":"%s","stop_hook_active":false}' "$PWD" | noslop hook claude-code
 ```
 
-指摘があれば `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"..."}}` が 1 行出ます。何も出なければ、対象外のファイルか指摘がないかのどちらかです。
+指摘があれば `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"..."}}` のような JSON が 1 行出ます。何も出なければ、対象外か指摘がないかのどちらかです。
 
 ## パスだけを渡すフック (`noslop hook file`)
 
@@ -207,11 +266,13 @@ printf '{"hook_event_name":"PostToolUse","tool_name":"Write","cwd":"%s","tool_in
 [extension_hooks]
 ".md" = ["noslop hook file --max-chars 900 {file}"]
 ".markdown" = ["noslop hook file --max-chars 900 {file}"]
+# コードのコメントも見るなら、noslop の設定の [code] extensions にも拡張子を書く
+".rs" = ["rustfmt {file}", "noslop hook file --max-chars 900 {file}"]
 ```
 
 ### 動き
 
-- 検査の中身と改稿指示の形は `noslop hook claude-code` と同じです。対象の拡張子と除外、既定で読みやすさのルールを止めること、`--brief-limit`・`--include-readability`・`--experimental`・`--genre`・`--whole-file`・`--config`・`--no-config` の意味も変わりません
+- 検査の中身と改稿指示の形は `noslop hook claude-code` と同じです。対象の拡張子 (`[files] extensions` と `[code] extensions`) と除外 (`[files] exclude` と `.noslopignore`)、既定で読みやすさのルールを止めること、`--brief-limit`・`--include-readability`・`--experimental`・`--genre`・`--whole-file`・`--config`・`--no-config` の意味も変わりません。コードのファイルは、`[code] extensions` に拡張子を書いたときだけ見ます
 - 結果は JSON ではなくテキストで標準出力に書きます (呼び出し側がエージェントに渡します)。指摘がないとき・対象外のファイルのときは何も書かず、終了コード 0 で終わります
 - プロジェクトの設定はカレントディレクトリ (エージェントの作業ディレクトリ) から親へ探し、表示名もそこからの相対パスにします
 - 変わった行は、git の差分 (HEAD との比較) から求めます。フックの入力がないので、今回のツール呼び出しで変わった行は分かりません。代わりに、コミットしていない変更に重なる指摘だけを返し、前のコミットの時点で残すと決めた指摘を繰り返し渡さないようにします。git の外・追跡していないファイル・コミットがまだないときは、ファイル全体を見ます
@@ -222,6 +283,31 @@ printf '{"hook_event_name":"PostToolUse","tool_name":"Write","cwd":"%s","tool_in
 
 ```bash
 noslop hook file docs/guide.md
+```
+
+## Stop の仕組み向けのフック (`noslop hook git-diff`)
+
+フックの入力 (JSON) を渡せない Stop の仕組みから呼ぶためのものです。たとえば claw-hooks の `stop_hooks` は、エージェントが応答を終えたときにコマンドを作業ディレクトリで実行し、終了コードが 0 でなければ出力をエージェントに返します。
+
+```toml
+# ~/.config/claw-hooks/config.toml
+[[stop_hooks]]
+commands = ["noslop hook git-diff --max-chars 900"]
+stage = 1      # Stop のたびに自動でコミットする仕組みより前に動かす
+report = true  # 終了コードが 0 でなければ、出力をエージェントに返す
+```
+
+### 動き
+
+- 検査の中身は `noslop hook claude-code` の Stop と同じです (作業ディレクトリを含む git の作業ツリーの、コミットしていない変更の変わった行)。対象の選び方と、`--brief-limit`・`--include-readability`・`--experimental`・`--genre`・`--whole-file`・`--config`・`--no-config` の意味も変わりません
+- 指摘があれば改稿指示をテキストで標準出力に書き、終了コード 1 で終わります。指摘がないとき・git の外では何も書かず、0 で終わります。設定ファイルの誤りや git の失敗は標準エラーに書き、2 で終わります
+- 出力は `--max-chars` 文字 (既定 9,000) に収めます。改稿指示の後ろを行の単位で省き、末尾の注記は残します。claw-hooks は出力全体を `output_max_length` (既定 1,000 文字) で切るので、それより短くしてください
+- claw-hooks は、Stop のフックで会話を続けた後の Stop (`stop_hook_active`) では Stop のフックを動かしません。同じ応答の中で同じ指摘を繰り返すことはありません
+
+### 手で試す
+
+```bash
+noslop hook git-diff; echo "exit=$?"
 ```
 
 ## 参考

@@ -429,6 +429,10 @@ mod tests {
         assert_eq!(run(&ev("guide.md"), &[]), None);
         assert_eq!(run(&ev("drafts/a.mdx"), &[]), None);
         assert!(run(&ev("page.mdx"), &[]).is_some());
+
+        // .noslopignore で除外したファイルも見ない
+        std::fs::write(dir.path().join(".noslopignore"), "page.mdx\n").unwrap();
+        assert_eq!(run(&ev("page.mdx"), &[]), None);
     }
 
     #[test]
