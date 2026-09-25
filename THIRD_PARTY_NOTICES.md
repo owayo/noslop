@@ -30,6 +30,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+
+
 ## hasami（MIT License）
 
 noslop の文分割は、日本語の形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割（`hasami::sentence`）を使っています。配布するバイナリには hasami が静的にリンクされています。hasami は noslop と同じ作者によるもので、著作権表示とライセンス（MIT License、Copyright (c) 2026 Yohei）は noslop の [LICENSE](LICENSE) と同じです。
