@@ -671,7 +671,7 @@ hasami は、ほかにもビルド済みの辞書を配布しています。NEol
 
 | 名前 | 大きさ | 中身 |
 |---|---:|---|
-| `ipadic` | 約 18MB | IPAdic（noslop が同梱しているものと同じ） |
+| `ipadic` | 約 18MB | IPAdic（同梱の辞書と同じ mecab-ipadic から作ったもの） |
 | `ipadic-neologd` | 約 222MB | IPAdic + NEologd |
 | `ipadic-neologd-sudachi` | 約 238MB | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
 
@@ -688,7 +688,7 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 
 設定ファイルなら `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます。取得しただけでは使いません。指定しないときは、これまでどおり同梱の辞書を使います。
 
-- 取得元は、noslop が依存する hasami の版（`noslop dict list` の 1 行目に出ます）の GitHub のリリースに添付された辞書です。取得した中身は、noslop に記録した大きさと SHA-256（そのリリースに添付された `dictionaries.json` と同じ値）で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
+- 取得元は、noslop に組み込んだ hasami のリリースの目録（`noslop dict list` の 1 行目に出る版）にある、そのリリースの添付ファイルです。目録は noslop をリリースするたびに hasami の最新のリリースに合わせます。取得した中身は目録の大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
 - 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
 - ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
 - 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります
@@ -745,6 +745,8 @@ make ci      # CI と同じ検査
 | `make docs-check` | docs/rules.md が最新かを確かめる (書き換えない) |
 | `make ci` | CI と同じ検査 (整形・clippy・テスト・docs/rules.md) |
 | `make clean` | ビルドの成果物を消す |
+| `make dict-catalog` | 配布辞書の目録 (dict/catalog.json) を hasami のリリースに合わせる (TAG=... で版を指定、省くと最新) |
+| `make dict-check` | 目録の辞書を実際に取得し、大きさ・SHA-256・読めることを確かめる (通信が要る) |
 | `make help` | このヘルプを表示する |
 
 `make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
@@ -754,6 +756,8 @@ cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに�
 ## リリース
 
 GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64、macOS x86_64 / arm64、Windows x86_64 のバイナリと、`SHA256SUMS`・`LICENSE`・`THIRD_PARTY_NOTICES.md` が付きます。
+
+Release ワークフローは、`noslop dict download` が使う配布辞書の目録（`dict/catalog.json`）も hasami の最新のリリースに合わせます。目録が変わったときは、`make ci` と、3 つの辞書を実際に取得して確かめる `make dict-check` を通してから、版の更新と同じコミットに入れます。
 
 ## ロードマップ
 

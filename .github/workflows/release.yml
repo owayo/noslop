@@ -22,8 +22,61 @@ env:
   MISE_VERSION: "2026.9.4"
 
 jobs:
+  # 配布辞書の目録 (dict/catalog.json) を hasami の最新のリリースに合わせる (make dict-catalog)。
+  # 変わっていれば、このジョブで make ci と make dict-check (目録の辞書を実際に取得し、大きさ・SHA-256・
+  # 今の依存の hasami で読めることを確かめる) を通してから、artifact で prepare-release に渡す。
+  # prepare-release が GITHUB_TOKEN で push するコミットでは ci.yml が走らないので、目録が変わったときの
+  # 検査はここで完結させる。書き込みの権限は持たせない (コミットと push は prepare-release だけが行う)
+  dictionary-catalog:
+    name: Dictionary catalog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.catalog.outputs.changed }}
+      tag: ${{ steps.catalog.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: ${{ env.MISE_VERSION }}
+
+      # 最新のリリースと dictionaries.json を gh で取る (outputs: changed・tag)
+      - name: Update dictionary catalog
+        id: catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make dict-catalog
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.catalog.outputs.changed == 'true'
+
+      - name: Set up
+        if: steps.catalog.outputs.changed == 'true'
+        run: make setup
+
+      - name: Run checks (make ci)
+        if: steps.catalog.outputs.changed == 'true'
+        run: make ci
+
+      - name: Download and verify the dictionaries (make dict-check)
+        if: steps.catalog.outputs.changed == 'true'
+        run: make dict-check
+
+      - name: Upload dictionary catalog
+        if: steps.catalog.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dictionary-catalog
+          path: dict/catalog.json
+          if-no-files-found: error
+
   prepare-release:
     name: Prepare Release
+    needs: dictionary-catalog
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.bump.outputs.version }}
@@ -32,6 +85,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # dictionary-catalog が新しい目録を取り込んで確かめたら、このリリースのコミットに含める
+      - name: Download dictionary catalog
+        if: needs.dictionary-catalog.outputs.changed == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dictionary-catalog
+          path: dict
 
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
@@ -88,18 +149,28 @@ jobs:
 
       - name: Commit and tag
         if: ${{ inputs.dry_run != true }}
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+          CATALOG_CHANGED: ${{ needs.dictionary-catalog.outputs.changed }}
+          CATALOG_TAG: ${{ needs.dictionary-catalog.outputs.tag }}
         run: |
-          git add Cargo.toml Cargo.lock
-          git commit -m "Release ${{ steps.bump.outputs.tag }}"
-          git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.tag }}"
-          git push origin "${{ github.ref_name }}" "${{ steps.bump.outputs.tag }}"
+          set -euo pipefail
+          # 目録が変わっていなければ dict/catalog.json の差分は無い
+          git add Cargo.toml Cargo.lock dict/catalog.json
+          message=(-m "Release ${TAG}")
+          if [ "${CATALOG_CHANGED}" = "true" ]; then
+            message+=(-m "配布辞書の目録を hasami ${CATALOG_TAG} に更新")
+          fi
+          git commit "${message[@]}"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${{ github.ref_name }}" "${TAG}"
 
       - name: Dry run info
         if: ${{ inputs.dry_run == true }}
         run: |
           echo "🧪 Dry run mode - skipping commit and tag"
           echo "Would release: ${{ steps.bump.outputs.tag }}"
-          git diff -- Cargo.toml Cargo.lock
+          git diff -- Cargo.toml Cargo.lock dict/catalog.json
 
   build-and-release:
     name: Build (${{ matrix.target }})

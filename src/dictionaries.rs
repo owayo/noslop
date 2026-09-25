@@ -3,9 +3,11 @@
 //! hasami のリリースに添付されたビルド済みの辞書 (`.hsd`) を、hasami の share
 //! ディレクトリ (hasami が辞書を探す場所。既定は `~/.local/share/hasami`) に取得する。
 //!
-//! - 取得元は hasami のタグ ([`HASAMI_TAG`]) のリリースに固定し、取得した中身を、そのリリースの
-//!   `dictionaries.json` と同じ大きさと SHA-256 ([`DICTIONARIES`]) で確かめる。hasami を上げるときは、
-//!   `Cargo.toml` の hasami のタグと一緒に、[`HASAMI_TAG`]・[`DEFAULT_SOURCE`]・[`DICTIONARIES`] を書き換える
+//! - 取得元と照合の値は、hasami のリリースの目録 (`dictionaries.json`) を写した `dict/catalog.json` から
+//!   build.rs が作る ([`HASAMI_TAG`]・[`DEFAULT_SOURCE`]・[`DICTIONARIES`])。取得した中身は、目録の大きさと
+//!   SHA-256 で確かめる。目録は Release のワークフロー (`make dict-catalog`) が hasami の新しいリリースに
+//!   合わせて更新する。依存の hasami (`Cargo.toml` のタグ) と同梱の辞書 (`dict/ipadic.hsd`) は目録とは
+//!   別で、判定の結果を左右するので人が上げる。目録の辞書の形式が依存の hasami で読めることはテストで確かめる
 //! - 取得しただけでは使わない。辞書を指定しないときは、同じ版の noslop なら手元に入れた辞書によらず
 //!   同じ結果になるよう、同梱の辞書を使う ([`crate::morph::resolve`]。同梱しないビルドだけは、hasami と
 //!   同じく share ディレクトリの辞書を推奨順に探す)
@@ -24,29 +26,15 @@ use ureq::config::ConfigBuilder;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 use ureq::typestate::AgentScope;
 
-/// 配布辞書を取る hasami のタグ。`Cargo.toml` の hasami の依存のタグと同じにする (テストで確かめる)。
-pub const HASAMI_TAG: &str = "v26.9.105";
-
-/// 配布辞書の取得元 (URL の接頭辞。この後に `/<名前>.hsd` を付けて取得する)。
-///
-/// [`HASAMI_TAG`] のタグの GitHub のリリースの添付ファイルを指す。hasami は辞書をリポジトリ
-/// (Git LFS) から外し、既存のタグからも消したので、リポジトリの中のパスは指さない (noslop v26.9.100 は
-/// LFS のパスを指していて、404 になる)。ミラーがあれば `noslop dict download --source` で切り替えられる。
-/// どの取得元でも、取得した中身は大きさと SHA-256 で確かめる。
-pub const DEFAULT_SOURCE: &str = "https://github.com/owayo/hasami/releases/download/v26.9.105";
-
 /// 辞書の指定 (`--dict`・設定の `dictionary`) で、share ディレクトリの辞書を指す接頭辞。
 pub const SHARE_PREFIX: &str = "share:";
-
-/// `noslop dict download` で名前を省いたときに取る辞書 (hasami の推奨)。
-pub const RECOMMENDED: &str = "ipadic-neologd-sudachi";
 
 /// hasami が配布するビルド済みの辞書。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Distributed {
     /// 名前 (ファイル名は `<名前>.hsd`)。
     pub name: &'static str,
-    /// 中身の説明。
+    /// 目録の中身の説明 (英語)。表示には [`Distributed::description`] を使う。
     pub summary: &'static str,
     /// 大きさ (バイト)。
     pub size: u64,
@@ -59,30 +47,25 @@ impl Distributed {
     pub fn file_name(&self) -> String {
         format!("{}.hsd", self.name)
     }
+
+    /// 一覧やヘルプに出す説明。知っている辞書は日本語で、知らない辞書は目録の説明のまま。
+    pub fn description(&self) -> &'static str {
+        match self.name {
+            "ipadic" => "IPAdic",
+            "ipadic-neologd" => "IPAdic + NEologd",
+            "ipadic-neologd-sudachi" => {
+                "IPAdic + NEologd + SudachiDict (hasami の推奨、最大の語彙)"
+            }
+            _ => self.summary,
+        }
+    }
 }
 
-/// [`HASAMI_TAG`] の配布辞書。大きさと SHA-256 は、そのタグのリリースに添付された
-/// `dictionaries.json` の `size` と `sha256` の値。
-pub const DICTIONARIES: [Distributed; 3] = [
-    Distributed {
-        name: "ipadic",
-        summary: "IPAdic (noslop が同梱しているもの)",
-        size: 18_125_804,
-        sha256: "1ca13555b1fc6ec12dd4b830aec97262b4481b70b7cfec6d2a9bea912e1d6277",
-    },
-    Distributed {
-        name: "ipadic-neologd",
-        summary: "IPAdic + NEologd",
-        size: 221_759_218,
-        sha256: "d1e4024898e33dfd5817f39a93d52a3b520ad94dfca4ad4aeebcefd0dcc40d56",
-    },
-    Distributed {
-        name: "ipadic-neologd-sudachi",
-        summary: "IPAdic + NEologd + SudachiDict (hasami の推奨、最大の語彙)",
-        size: 237_760_279,
-        sha256: "061fe9b1dc328efb82edafca06f894aa62900b44bd226b5c1a188d9e5c0d6c89",
-    },
-];
+// HASAMI_TAG・DEFAULT_SOURCE・CATALOG_FORMAT_VERSION・RECOMMENDED・DICTIONARIES は、
+// dict/catalog.json から build.rs が作る。取得元は HASAMI_TAG のリリースの添付ファイルで、hasami は
+// 辞書をリポジトリ (Git LFS) から外して既存のタグからも消したので、リポジトリの中のパスは指さない。
+// ミラーがあれば `noslop dict download --source` で切り替えられ、どの取得元でも大きさと SHA-256 を確かめる
+include!(concat!(env!("OUT_DIR"), "/catalog.rs"));
 
 /// 名前で配布辞書を探す。
 pub fn find(name: &str) -> Option<&'static Distributed> {
@@ -696,26 +679,15 @@ mod tests {
     // 表の整合
     // -----------------------------------------------------------------------
 
-    /// `Cargo.toml` の hasami の依存 (通常と dev の 2 つ) のタグ。
-    fn hasami_tags_in_the_manifest() -> Vec<String> {
-        let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
-        manifest
-            .lines()
-            .filter(|line| line.starts_with("hasami = "))
-            .map(|line| {
-                let rest = &line[line.find("tag = \"").expect(line) + "tag = \"".len()..];
-                rest[..rest.find('"').unwrap()].to_string()
-            })
-            .collect()
-    }
-
+    /// 目録 (dict/catalog.json) の辞書を、依存の hasami で読める。目録の形 (名前・ファイル名・大きさ・
+    /// SHA-256 の書式) は build.rs が確かめる。
     #[test]
-    fn the_table_is_pinned_to_the_hasami_dependency() {
-        let tags = hasami_tags_in_the_manifest();
-        assert_eq!(tags.len(), 2, "{tags:?}");
-        for tag in &tags {
-            assert_eq!(tag, HASAMI_TAG, "Cargo.toml の hasami のタグと HASAMI_TAG");
-        }
+    fn the_catalog_is_readable_by_the_linked_hasami() {
+        assert_eq!(
+            CATALOG_FORMAT_VERSION,
+            hasami::hsd::FORMAT_VERSION,
+            "目録 (dict/catalog.json) の辞書の形式を、依存の hasami は読めない。目録を戻すか、依存を上げる"
+        );
         assert_eq!(
             DEFAULT_SOURCE,
             format!("https://github.com/owayo/hasami/releases/download/{HASAMI_TAG}"),
@@ -724,35 +696,41 @@ mod tests {
 
         for (i, dict) in DICTIONARIES.iter().enumerate() {
             assert!(
-                DICTIONARIES[..i].iter().all(|d| d.name != dict.name),
-                "名前が重なる: {}",
-                dict.name
-            );
-            assert_eq!(dict.sha256.len(), 64, "{}", dict.name);
-            assert!(
-                dict.sha256
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-                "SHA-256 は小文字の 16 進: {}",
+                DICTIONARIES[..i].iter().all(|d| d.size <= dict.size),
+                "小さい順に並ぶ: {}",
                 dict.name
             );
             assert!(share_file_name(dict.name).is_ok(), "{}", dict.name);
             assert_eq!(find(dict.name), Some(dict));
+            assert!(!dict.description().is_empty(), "{}", dict.name);
         }
         assert!(find(RECOMMENDED).is_some());
         assert!(find("unidic").is_none());
     }
 
-    /// 同梱の辞書 (dict/ipadic.hsd) は、配布辞書の ipadic と同じ版。
+    /// 同梱の辞書 (dict/ipadic.hsd) は、dict/README.md に記した大きさと SHA-256 のもの。目録の ipadic とは
+    /// 別に上げる (目録は hasami のリリースごとに変わり、同梱の辞書は判定の校正の前提になるため)。
     #[test]
-    fn the_bundled_dictionary_is_the_distributed_ipadic() {
-        let bundled = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("dict")
-            .join("ipadic.hsd");
-        let ipadic = find("ipadic").unwrap();
-        assert_eq!(fs::metadata(&bundled).unwrap().len(), ipadic.size);
-        assert_eq!(sha256_file(&bundled).unwrap(), ipadic.sha256);
-        assert_eq!(check_file(&bundled, ipadic).unwrap(), Check::Verified);
+    fn the_bundled_dictionary_matches_dict_readme() {
+        let dict_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("dict");
+        let readme = fs::read_to_string(dict_dir.join("README.md")).unwrap();
+        let row = |label: &str| {
+            readme
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("| {label} | ")))
+                .and_then(|rest| rest.strip_suffix(" |"))
+                .unwrap_or_else(|| panic!("dict/README.md に {label} の行がない"))
+                .to_string()
+        };
+        let size: u64 = row("大きさ")
+            .trim_end_matches(" バイト")
+            .replace(',', "")
+            .parse()
+            .unwrap();
+        let sha256 = row("SHA-256").trim_matches('`').to_string();
+        let bundled = dict_dir.join("ipadic.hsd");
+        assert_eq!(fs::metadata(&bundled).unwrap().len(), size);
+        assert_eq!(sha256_file(&bundled).unwrap(), sha256);
     }
 
     // -----------------------------------------------------------------------
@@ -1182,5 +1160,22 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         assert_eq!(length, Some(dict.size), "{url}");
+    }
+
+    /// 目録の辞書をすべて本番の取得元から取得し、大きさ・SHA-256・依存の hasami で読めることを確かめる
+    /// (`make dict-check`。Release のワークフローが目録を更新したときに回す)。
+    #[test]
+    #[ignore = "ネットワークが必要 (目録の辞書をすべて、合わせて約 477MB 取得する)"]
+    fn every_catalog_dictionary_can_be_downloaded_and_read() {
+        let dir = tempfile::tempdir().unwrap();
+        for dict in &DICTIONARIES {
+            let path = dir.path().join(dict.file_name());
+            let outcome = download(dict, dir.path(), DEFAULT_SOURCE, false, &mut |_, _| {})
+                .unwrap_or_else(|e| panic!("{}: {e}", dict.name));
+            assert_eq!(outcome, Outcome::Downloaded(path.clone()), "{}", dict.name);
+            assert_eq!(check_file(&path, dict).unwrap(), Check::Verified);
+            // 次の辞書の分のディスクを空ける
+            fs::remove_file(&path).unwrap();
+        }
     }
 }

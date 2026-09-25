@@ -15,7 +15,7 @@
 # macOS 標準の GNU Make 3.81 で動く書き方に限っている
 # (.ONESHELL / .SHELLFLAGS / $(file ...) / != は使わない)。
 
-.PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean
+.PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean dict-catalog dict-check
 
 # 引数なしの make はヘルプを表示する
 .DEFAULT_GOAL := help
@@ -31,6 +31,8 @@ SKILL_TARGETS ?= claude codex
 # docs と docs-check が生成したルールの一覧を置く場所。生成に失敗したときに
 # docs/rules.md を空にしないよう、いったんここに書く
 RULES_MD_TMP := target/rules.md
+# make dict-catalog で取り込む hasami のリリースのタグ (例: TAG=v26.9.110。空なら最新のリリース)
+TAG ?=
 
 # ---- ツールチェーン -----------------------------------------------------------
 # mise は PATH、よくある導入先の順に探す。GUI から起動した make はシェルの PATH を
@@ -133,6 +135,19 @@ ci: check test-no-default-features test docs-check ## CI と同じ検査 (整形
 
 clean: ## ビルドの成果物を消す
 	$(RUN) cargo clean
+
+## 配布辞書の目録
+
+# dict/catalog.json は hasami のリリースに添付された dictionaries.json をそのまま置いたもの。
+# build.rs がこれから取得元のタグ・URL・大きさ・SHA-256 を作る。Release のワークフローも
+# リリースの前にこれを呼び、変わっていれば make ci と dict-check を通してから一緒にコミットする。
+# gh (GitHub CLI) を使う
+dict-catalog: ## 配布辞書の目録 (dict/catalog.json) を hasami のリリースに合わせる (TAG=... で版を指定、省くと最新)
+	tools/dict-catalog.sh $(TAG)
+
+# 通信が要り重い (3 つの辞書で約 477MB を取得する) ので、ci には入れない
+dict-check: ## 目録の辞書を実際に取得し、大きさ・SHA-256・読めることを確かめる (通信が要る)
+	$(RUN) cargo test $(CARGO_FLAGS) --lib dictionaries::tests:: -- --ignored
 
 ## ヘルプ
 
