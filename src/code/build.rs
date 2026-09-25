@@ -641,16 +641,39 @@ impl Draft {
     }
 }
 
+/// 文の途中でしか行を終えない字 (読点・助詞)。コメントの行がこれで終わるなら、次の行へ続く文。
+const CONTINUES_TO_NEXT_LINE: &str = "、，,をにがはのへやてでとば";
+
+/// 開き括弧。コメントの行がこれで終わるなら、次の行へ続く文。
+const OPENING_BRACKETS: &str = "（(「『[［【〈《{｛";
+
+/// 前の行の続きとして読む行頭の字 (閉じ括弧・読点・句点と、前の文への注記を始める丸括弧)。
+const CONTINUES_FROM_PREVIOUS_LINE: &str = "、，,。．.）)」』]］】〉》}｝（(";
+
 /// 隣り合うコメント行の間の改行が、文の区切りか。
 ///
-/// 前の行が文末記号で終わる、Markdown の文書と同じ判定 (箇条書きの記号・ラベル・コロン・丁寧体の
-/// 文末など) に当たる、次の行がタグ (`@param`・`\brief`・`:param x:`) で始まる、のどれか。
+/// コードのコメントは、句点を打たずに 1 行に 1 つのことを書くことが多い (「設定を読む」の次の行に
+/// 「見つからなければ既定値を使う」)。つなぐと、別々の文が 1 つの長い文として数えられるので、改行は
+/// 既定で文の区切りにする。つなぐのは、前の行が文の途中でしか終わらない字 (読点・助詞・開き括弧) で
+/// 終わるか、次の行が前の行の続きとして読む字 (閉じ括弧・読点・句点・注記の丸括弧) で始まるか、英文を折り
+/// 返したとき (前の行の終わりと次の行の始まりがどちらも英数字) だけ。ただし、Markdown の文書と同じ
+/// 判定 (箇条書きの記号・ラベル・コロン・丁寧体の文末など) に当たるか、次の行がタグ (`@param`・
+/// `\brief`・`:param x:`) で始まるなら、前の行の終わりによらず区切る。
 fn breaks_sentence(prev: &str, next: &str) -> bool {
-    prev.chars()
-        .next_back()
-        .is_some_and(text::is_sentence_ender)
-        || crate::markdown::lines_break_sentence(prev, next, false)
-        || TAG_LINE.is_match(next)
+    if crate::markdown::lines_break_sentence(prev, next, false) || TAG_LINE.is_match(next) {
+        return true;
+    }
+    let (Some(last), Some(first)) = (
+        prev.trim_end().chars().next_back(),
+        next.trim_start().chars().next(),
+    ) else {
+        return true;
+    };
+    let continues = CONTINUES_TO_NEXT_LINE.contains(last)
+        || OPENING_BRACKETS.contains(last)
+        || CONTINUES_FROM_PREVIOUS_LINE.contains(first)
+        || (last.is_ascii_alphanumeric() && first.is_ascii_alphanumeric());
+    !continues
 }
 
 #[cfg(test)]
@@ -713,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn line_breaks_become_sentence_breaks_only_when_the_format_says_so() {
+    fn line_breaks_become_sentence_breaks_unless_the_line_continues() {
         let heads = |v: &str| -> Vec<String> {
             let b = &paragraphs(v, &[])[0];
             b.sentence_breaks
@@ -726,8 +749,20 @@ mod tests {
         assert_eq!(heads("設定を読みます\n保存します"), ["保存し"]);
         assert_eq!(heads("引数:\n設定のパス"), ["設定の"]);
         assert_eq!(heads("設定を読む\n@param path パス"), ["@pa"]);
-        // 読点・助詞で折り返した本文はつなぐ
+        // 句点のない 1 行 1 文のコメント (体言止め・常体の文末) も区切る
+        assert_eq!(
+            heads(
+                "設定のディレクトリを使用\nパスが既定値と一致するかを確かめる\n見つからなければ空で返す"
+            ),
+            ["パスが", "見つか"]
+        );
+        // 読点・助詞・開き括弧で折り返した本文と、閉じ括弧・読点で始まる行はつなぐ
         assert!(heads("設定を読み、\n既定値と重ねた結果を\n返す").is_empty());
+        assert!(heads("ユーザーの設定と\nプロジェクトの設定を重ねる").is_empty());
+        assert!(heads("既定値 (\n設定ファイルがないとき) を使う").is_empty());
+        assert!(heads("既定値を使う\n（設定ファイルがないとき）").is_empty());
+        // 英文の折り返しはつなぐ
+        assert!(heads("reads the config and\nmerges the defaults").is_empty());
     }
 
     #[test]
