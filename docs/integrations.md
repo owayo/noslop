@@ -226,7 +226,7 @@ Stop の入力には、そのターンに編集したファイルが含まれま
 
 Bash の呼び出しのうち、[gws](https://github.com/googleworkspace/cli) (Google Workspace CLI) で Google ドキュメント・スプレッドシートに書き込むものを、書き込む前に検査します。
 
-- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。変数やコマンド置換で決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`gws` を含まないコマンドは、設定も読まずに素通しします
+- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。変数やコマンド置換で決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`&&`・`;`・パイプ・サブシェルでつないだ gws と、`env`・`command` を前に付けた gws は読み、`bash -c '...'`・`sudo`・スクリプトの中の gws は読みません。`gws` を含まないコマンドは、設定も読まずに素通しします
 - 検査する値は次のとおりです。日本語を含まない値と、`=` で始まるセル (数式) は見ません
 
   | コマンド | 値 | 扱い |
@@ -241,8 +241,8 @@ Bash の呼び出しのうち、[gws](https://github.com/googleworkspace/cli) (G
   | `gws sheets spreadsheets batchUpdate` | `updateCells`・`appendCells`・`repeatCell` の `userEnteredValue.stringValue` | 短い値 (セルごと) |
 
 - ドキュメントの本文に警告以上の指摘があれば、1 度目は書き込みを止め (`deny`)、理由に改稿指示を載せます。Claude は直してから書き込み直すか、残すと決めたら同じコマンドをもう一度実行します。同じセッションで、同じ宛先に同じ値を書き込む打ち直しは、30 分以内に 1 回だけそのまま通します
-- セル・タイトルのような短い値の指摘、情報の指摘だけのとき、`--dry-run` のときは止めずに、改稿指示をツールの結果の横に添えます (`additionalContext`)。短い値は、1 文ずつ判定するルールだけを当てた未校正の判定だからです。入力にセッションの ID がないときも止めません
-- 「1 回だけ通す」ための記録はキャッシュのディレクトリ (`$XDG_CACHE_HOME/noslop/hook-state`、なければ macOS は `~/Library/Caches/noslop/hook-state`、Linux は `~/.cache/noslop/hook-state`、Windows は `%LOCALAPPDATA%\noslop\cache\hook-state`) に置きます。置くのは宛先と値のハッシュだけで、書き込む値やコマンドは保存しません
+- セル・タイトルのような短い値の指摘、情報の指摘だけのとき、`--dry-run` のときは止めずに、改稿指示をツールの結果の横に添えます (`additionalContext`。Claude には書き込みの後に届きます)。短い値は、1 文ずつ判定するルールだけを当てた未校正の判定だからです。短い値は 1 行に 1 つ並べて検査し、改稿指示の後ろに行と値の対応 (`L2 = values[0][1]` など) を添えます
+- 「1 回だけ通す」ための記録はキャッシュのディレクトリ (`$XDG_CACHE_HOME/noslop/hook-state`、なければ macOS は `~/Library/Caches/noslop/hook-state`、Linux は `~/.cache/noslop/hook-state`、Windows は `%LOCALAPPDATA%\noslop\cache\hook-state`) に置きます。置くのはハッシュと時刻だけで、書き込む値やコマンドは保存しません。記録を残せないとき (入力にセッションの ID がない・キャッシュのディレクトリに書けない) は、打ち直しても通せないので止めずに知らせます
 
 ### 手で試す
 
