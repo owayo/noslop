@@ -4,12 +4,13 @@
 //! 独自ルール (`X01`) と `--only-rules` を使う。
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -1100,7 +1101,9 @@ fn rule_count(v: &serde_json::Value, id: &str) -> usize {
 /// 辞書を探す場所を空にした noslop (手元に入れた辞書に左右されないように)。
 fn noslop_without_installed_dictionary(empty: &Path) -> Command {
     let mut cmd = noslop();
-    cmd.env_remove("HASAMI_DICT").env("XDG_DATA_HOME", empty);
+    cmd.env_remove("HASAMI_DICT")
+        .env_remove("HASAMI_DATA_DIR")
+        .env("XDG_DATA_HOME", empty);
     cmd
 }
 
@@ -1348,10 +1351,22 @@ fn serve_dictionary(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
             );
             let _ = stream
                 .write_all(head.as_bytes())
-                .and_then(|()| stream.write_all(body));
+                .and_then(|()| stream.write_all(body))
+                .and_then(|()| close_after_peer(&stream, &mut reader));
         }
     });
     (url, requests)
+}
+
+/// 送信側だけを閉じ、相手が読み終えて閉じるまで待つ (待つのは 10 秒まで)。書き終えてすぐに
+/// 閉じると、Windows では相手が本文を受け取っている途中で接続が切られることがある
+/// (CI の Windows で `Peer disconnected` になった)。
+fn close_after_peer(stream: &TcpStream, reader: &mut BufReader<TcpStream>) -> io::Result<()> {
+    stream.shutdown(Shutdown::Write)?;
+    reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))?;
+    io::copy(reader, &mut io::sink()).map(drop)
 }
 
 /// `dict list` の表で、名前が `name` の行。
@@ -1439,6 +1454,7 @@ fn dict_download_fetches_and_verifies_a_dictionary_once() {
     // 保存先を省くと share ディレクトリ ($XDG_DATA_HOME/hasami) に置き、share:<名前> を案内する
     let data = tempfile::tempdir().unwrap();
     noslop_offline()
+        .env_remove("HASAMI_DATA_DIR")
         .env("XDG_DATA_HOME", data.path())
         .args(["dict", "download", "ipadic", "--source", &url])
         .assert()
@@ -1491,6 +1507,7 @@ fn share_specs_point_to_the_share_directory() {
     let check = || {
         let mut cmd = noslop();
         cmd.env_remove("HASAMI_DICT")
+            .env_remove("HASAMI_DATA_DIR")
             .env("XDG_DATA_HOME", data.path())
             .args([
                 "check",
@@ -1544,6 +1561,7 @@ fn share_specs_point_to_the_share_directory() {
     .unwrap();
     let out = noslop()
         .env_remove("HASAMI_DICT")
+        .env_remove("HASAMI_DATA_DIR")
         .env("XDG_DATA_HOME", data.path())
         .current_dir(project.path())
         .args(["check", "--only-rules", "P16", "--format", "json"])
@@ -1554,5 +1572,26 @@ fn share_specs_point_to_the_share_directory() {
     assert_eq!(
         v["settings"]["morphology"]["dictionary"]["path"].as_str(),
         placed.to_str()
+    );
+
+    // HASAMI_DATA_DIR があれば XDG_DATA_HOME より先に見る (hasami の data_dir と同じ規則)。
+    // HASAMI_DATA_DIR は置き場そのもので、下に hasami を足さない
+    let preferred = tempfile::tempdir().unwrap();
+    let placed_in_preferred = preferred.path().join("ipadic.hsd");
+    fs::copy(bundled_dictionary(), &placed_in_preferred).unwrap();
+    let out = check()
+        .env("HASAMI_DATA_DIR", preferred.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = json(&out.stdout);
+    assert_eq!(
+        v["settings"]["morphology"]["dictionary"]["path"].as_str(),
+        placed_in_preferred.to_str()
     );
 }

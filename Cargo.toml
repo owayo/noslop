@@ -2,7 +2,7 @@
 name = "noslop"
 version = "26.9.101"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 description = "A fast linter that flags AI-generated \"slop\" patterns in Japanese prose"
 license = "MIT"
 repository = "https://github.com/owayo/noslop"
@@ -35,7 +35,7 @@ globset = "0.4.20"
 # 文分割 (辞書を使わない hasami::sentence) と、辞書があるときの形態素解析 (analyzer)。
 # crates.io の同名クレートは別物なので、git のタグで入れる。既定の feature (cli) は辞書の構築と
 # CLI の依存を引くので切る
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.103", default-features = false, features = ["analyzer"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer"] }
 ignore = "0.4.33"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rayon = "1.12.0"
@@ -58,7 +58,7 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls", "pla
 [dev-dependencies]
 assert_cmd = "2.2.2"
 # テストで小さな辞書を組み立てる (build)。CI に辞書を置かずに、辞書ありの判定を確かめるため
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.103", default-features = false, features = ["analyzer", "build"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "build"] }
 predicates = "3.1.4"
 
 [profile.release]

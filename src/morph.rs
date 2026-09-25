@@ -55,7 +55,7 @@ pub struct MorphologyOptions {
     pub mode: MorphologyMode,
     /// 辞書のパスか、`share:<名前>` (hasami の share ディレクトリの `<名前>.hsd`)。なければ
     /// `HASAMI_DICT`、次に同梱の辞書を使う (同梱しないビルドでは hasami の既定の場所
-    /// `~/.local/share/hasami` を探す)。
+    /// (share ディレクトリ。既定は `~/.local/share/hasami`) を探す)。
     pub dictionary: Option<PathBuf>,
 }
 
@@ -232,7 +232,7 @@ static BUNDLED_HSD: &[u8] = hasami::include_hsd!("../dict/ipadic.hsd");
 /// `needed` は辞書を使う有効なルールがあるか。なければ辞書を探さない。
 ///
 /// 探す順は、明示のパス (`--dict`・設定の `dictionary`) → `HASAMI_DICT` → 同梱の辞書。
-/// `~/.local/share/hasami` は探さない (同じ版の noslop なら、手元に入れた辞書によらず同じ結果に
+/// share ディレクトリ (既定は `~/.local/share/hasami`) は探さない (同じ版の noslop なら、手元に入れた辞書によらず同じ結果に
 /// するため)。同梱しないビルドでは、同梱の辞書の代わりに hasami の既定の場所を探す。
 ///
 /// 明示の指定が `share:<名前>` なら、hasami の share ディレクトリの `<名前>.hsd` を使う

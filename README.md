@@ -1,10 +1,10 @@
 <h1 align="center">noslop</h1>
 
 <p align="center">
-  <strong>A fast linter that flags AI-generated "slop" patterns in Japanese prose</strong>
+  <strong>日本語の文章から「AI 臭さ」を機械的に拾う Linter</strong>
 </p>
 
-<h3 align="center">Supported Platforms</h3>
+<h3 align="center">対応プラットフォーム</h3>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&amp;logoColor=black" alt="Linux">
@@ -27,52 +27,48 @@
   </a>
 </p>
 
-<p align="center">
-  English | <a href="README.ja.md">日本語</a>
-</p>
-
 ---
 
-## Overview
+## 概要
 
-noslop points at the habits that LLM-written Japanese tends to show in minutes, blog posts and technical documents: stock phrases such as `と言えるでしょう`, repeated "not X but Y" contrasts (`〜ではなく`), a flat rhythm where every sentence has about the same length, and textbook-style layouts built from headings and bold text alone.
+noslop は、LLM が書いた日本語（議事録・ブログ・技術文書）に出やすい癖を、決まった規則で指さす Linter です。`と言えるでしょう` のような定型句、`〜ではなく` の対比の繰り返し、文の長さがそろいすぎた単調なリズム、見出しと太字だけで組んだ教科書的な構成を検出します。
 
-noslop is not a detector that decides "an AI wrote this". Writers rarely notice their own habits, and reading a long document by eye always misses some. noslop lists every suspicious spot deterministically; whether to fix or keep each one is the writer's call. When you decide to keep something, you can record the reason in a suppression comment.
+noslop は「この文章は AI が書いた」と判定する道具ではありません。書き手は自分の文章の癖に気づきにくく、長い文書を目で追うと必ず見落としが出ます。noslop は疑わしい箇所を漏れなく並べるところまでを受け持ち、直すか残すかは書き手が文脈で決めます。残すと決めた箇所には、理由を添えた抑制コメントを書けます。
 
-noslop judges text by character classes, phrase patterns and sentence-length statistics, and uses a bundled morphological-analysis dictionary for rules that count parts of speech (chains of 「の」 and kanji runs). It ships as a single binary, starts instantly and lints large repositories in parallel.
+文字種と語句のパターン、文長の統計で判定し、品詞で数えるルール（「の」の連鎖・連続漢字）は、同梱した形態素解析の辞書で判定します。単一のバイナリで動き、起動も速く、大きなリポジトリでもファイルを並列に処理します。
 
-## Features
+## 特徴
 
-- **Dictionary bundled**: the IPAdic dictionary of the morphological analyzer hasami is built into the binary, so chains of 「の」 (P16) and kanji runs (P15) are judged by part of speech with no installation or setup ([Morphological-analysis dictionary](#morphological-analysis-dictionary))
-- **Calibrated thresholds**: only phrases and thresholds whose false-positive rates were measured on human and model-generated documents (7 models) are enabled by default; uncalibrated checks run only when you opt in as experimental rules
-- **Two lanes**: AI "slop" findings (`slop`) and readability findings (`readability`) are reported separately. noslop gives no document-level score; it lists the findings and counts them
-- **Markdown-aware**: skips code blocks, inline code, URLs and front matter at the top of the document (YAML `---` or TOML `+++`), and tells headings, lists, tables and quotes apart. A `---` further down is read as a thematic break or a heading underline, so no text is dropped
-- **Bracket-aware sentence splitting**: uses the dictionary-free splitter of the morphological analyzer [hasami](https://github.com/owayo/hasami); it never splits at a full stop inside 「」 or （）, an unclosed bracket does not swallow the following sentences, and words that contain sentence-ending marks such as `Yahoo!ニュース` stay whole
-- **Records your decisions**: write why you keep a flagged spot, e.g. `<!-- noslop-disable-next-line P01 -- quoted remark -->`
-- **CI-friendly output**: colored text, JSON with a stable schema and GitHub Actions annotations; by default it never fails the job
-- **Hands findings back to AI agents**: a revision brief that groups what to fix by rule, as Markdown, JSON or TOON (the same data in fewer tokens), plus an MCP server (`noslop mcp`), a Claude Code hook (`noslop hook claude-code`) and a skill (`noslop skill-install`) let the agent that wrote the text review it
-- **Compares revisions**: `noslop diff` shows findings introduced by a rewrite, numbers and names that disappeared, and edits applied uniformly across the whole document
-- **Calibrates on your own corpus**: `noslop calibrate` measures each rule's false-positive and detection rates on human and generated documents and suggests thresholds
+- **辞書を同梱**: 形態素解析器 hasami の IPAdic の辞書をバイナリに同梱し、「の」の連鎖（P16）と連続漢字（P15）を品詞で判定する。インストールも設定も要らない（[形態素解析の辞書](#形態素解析の辞書)）
+- **校正済みの閾値**: 人間とモデル 7 種の文書で誤検知率を確かめた語句と閾値だけを既定で有効にする。未校正のものは実験的ルールとして明示的に有効にしたときだけ動く
+- **2 つのレーン**: AI 臭さ（`slop`）と読みやすさ（`readability`）の指摘を分けて出す。文書全体の点数は出さず、指摘とその件数だけを並べる
+- **Markdown を理解する**: コードブロック・インラインコード・URL・文書の先頭の front matter（YAML の `---`・TOML の `+++`）を除き、見出し・リスト・表・引用を区別して解析する。文書の途中の `---` は区切り線か見出しの下線として読み、本文を捨てない
+- **括弧を考慮した文分割**: 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割を使う。「」や（）の内側の句点では文を切らず、閉じ忘れた括弧があっても後続の文を巻き込まない。`Yahoo!ニュース` のように文末記号を含む語の途中でも切らない
+- **判断を記録できる**: `<!-- noslop-disable-next-line P01 -- 引用のため -->` のように、残す理由を文書に書ける
+- **CI 向けの出力**: text（色付き）・JSON（安定したスキーマ）・GitHub Actions の注釈に対応する。既定ではジョブを落とさない
+- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる
+- **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
+- **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ
 
-## Requirements
+## 動作環境
 
-- **OS**: macOS, Linux, Windows
-- **Rust**: 1.88+ (for building from source)
+- **OS**: macOS、Linux、Windows
+- **Rust**: 1.98 以上（ソースからビルドする場合）
 
-## Installation
+## インストール
 
-### Binary Download
+### バイナリ
 
-Download the file for your OS from [Releases](https://github.com/owayo/noslop/releases).
+[Releases](https://github.com/owayo/noslop/releases) から OS に合うファイルを取得します。
 
-| OS | File |
-|----|------|
+| OS | ファイル名 |
+|----|-----------|
 | Linux (x86_64) | `noslop-linux-amd64` |
 | macOS (Apple Silicon) | `noslop-darwin-arm64` |
 | macOS (Intel) | `noslop-darwin-amd64` |
 | Windows (x86_64) | `noslop-windows-amd64.exe` |
 
-Every release includes `SHA256SUMS`; use it to verify the download.
+各リリースに `SHA256SUMS` を添付しています。取得したファイルの検証に使ってください。
 
 ### cargo
 
@@ -80,202 +76,202 @@ Every release includes `SHA256SUMS`; use it to verify the download.
 cargo install --git https://github.com/owayo/noslop --locked
 ```
 
-`--locked` resolves dependencies exactly as in `Cargo.lock`, like the CI and release builds.
+`--locked` を付けると、CI とリリースのビルドと同じく `Cargo.lock` のとおりに依存を解決します。
 
-### From Source
+### ソースから
 
 ```bash
 git clone https://github.com/owayo/noslop
 cd noslop
-make install   # installs to /usr/local/bin (override with INSTALL_PATH)
+make install   # /usr/local/bin にインストール（INSTALL_PATH で変更可）
 ```
 
-The Makefile uses [mise](https://mise.jdx.dev/) to build with the Rust version in `mise.toml`. Without mise, run `make install SYSTEM_TOOLS=1` to build with the cargo on your `PATH`.
+Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使います。mise を使わない場合は `make install SYSTEM_TOOLS=1` で、`PATH` 上の cargo でビルドします。
 
-After installing the binary, `make install` uses it to install the skills for Claude Code and Codex CLI (`~/.claude/skills/noslop/SKILL.md` and `~/.codex/skills/noslop/SKILL.md`; see [Using noslop with AI Agents](#using-noslop-with-ai-agents)). Choose the agents with `SKILL_TARGETS` (`make install SKILL_TARGETS=claude`, or `make install SKILL_TARGETS=` to skip the skills). `make uninstall` removes only the binary and keeps the skills.
+`make install` は、バイナリを入れたあと、そのバイナリで Claude Code と Codex CLI のスキル（`~/.claude/skills/noslop/SKILL.md`・`~/.codex/skills/noslop/SKILL.md`）も入れます（[AI エージェントと使う](#ai-エージェントと使う)）。入れる先は `SKILL_TARGETS` で選べます（`make install SKILL_TARGETS=claude`、入れないなら `make install SKILL_TARGETS=`）。`make uninstall` はバイナリだけを取り除き、スキルは残します。
 
-## Usage
+## 使い方
 
-### Commands
+### コマンド
 
-| Command | Description |
-|---------|-------------|
-| `noslop check [PATH]...` | Lint files or directories (alias: `lint`). Defaults to the current directory |
-| `noslop diff <BEFORE> <AFTER>` | Compare two revisions: new findings, lost facts and uniform rewrites |
-| `noslop rules` | List the rules |
-| `noslop explain <RULE>` | Explain a rule: what it looks at, why it matters, how to fix it, examples and evidence |
-| `noslop init` | Create a `noslop.toml` template |
-| `noslop mcp` | Run as an MCP server over stdio so AI agents can call the linter |
-| `noslop hook claude-code` | Act as a Claude Code PostToolUse hook and hand back findings for the edited file |
-| `noslop skill-install <claude\|codex>` | Install the noslop skill for Claude Code or Codex CLI |
-| `noslop dict download [NAME]` | Download a dictionary distributed by hasami (default `ipadic-neologd-sudachi`) into the share directory, verifying its size and SHA-256 before placing it |
-| `noslop dict list` | List the distributed dictionaries and whether each is downloaded (no network access) |
-| `noslop calibrate --human <PATH> --ai <PATH>` | Measure false-positive and detection rates and thresholds on a corpus |
+| コマンド | 内容 |
+|---------|------|
+| `noslop check [PATH]...` | ファイルやディレクトリを検査する（別名 `lint`）。省略時はカレントディレクトリ |
+| `noslop diff <BEFORE> <AFTER>` | 改稿の前後を比べる（新しく出た指摘・消えた事実・改稿の偏り） |
+| `noslop rules` | ルールの一覧を表示する |
+| `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
+| `noslop init` | 設定ファイル `noslop.toml` の雛形を作る |
+| `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
+| `noslop hook claude-code` | Claude Code の PostToolUse フックとして、書き換えたファイルの指摘を返す |
+| `noslop skill-install <claude\|codex>` | Claude Code・Codex CLI に noslop のスキルを入れる |
+| `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。大きさと SHA-256 を確かめてから置く |
+| `noslop dict list` | 配布辞書と、取得済みかを表示する（通信しない） |
+| `noslop calibrate --human <PATH> --ai <PATH>` | 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率と閾値を測る |
 
 ```bash
-# Lint one file
+# 1 ファイルを検査する
 noslop check docs/intro.md
 
-# Lint every Markdown and text file under a directory (respects .gitignore, .ignore and .noslopignore)
+# ディレクトリ配下の Markdown とテキストをまとめて検査する（.gitignore・.ignore・.noslopignore を尊重）
 noslop check .
 
-# Read from stdin (e.g. pipe an AI draft straight in)
+# 標準入力から読む（AI の下書きをそのまま流し込む用途）
 pbpaste | noslop check - --stdin-filename draft.md
 
-# Produce a revision brief to hand to an AI or an editor
+# AI や編集者に渡す改稿指示を作る
 noslop check draft.md --format brief | pbcopy
 
-# The same brief as JSON, or as TOON (fewer tokens for an LLM)
+# 改稿指示を JSON・TOON（少ないトークンで LLM に渡す）で出す
 noslop check draft.md --report brief --format json
 noslop check draft.md --report brief --format toon
 
-# Use the thresholds for technical writing and enable experimental rules
+# 技術文書の閾値で検査し、実験的ルールも有効にする
 noslop check docs --genre tech --experimental
 
-# Ignore specific rules
+# 特定のルールを無視する
 noslop check draft.md --ignore-rules P01,R03
 
-# Compare two revisions (pipe the committed version through stdin to compare with HEAD)
+# 改稿の前後を比べる（直前のコミットの版と比べるなら標準入力から渡す）
 noslop diff draft-v1.md draft-v2.md
 git show HEAD:docs/intro.md | noslop diff - docs/intro.md --stdin-filename docs/intro.md
 
-# Read a rule's explanation
+# ルールの説明を読む
 noslop explain R01
 ```
 
-When a directory is given, files with the extensions `md` / `markdown` / `txt` are linted (configurable). Files passed explicitly are always linted, whatever their extension. If a directory you pass yields no files at all, a warning goes to stderr (a `.gitignore` line that matches files, such as `dir/**`, also excludes the contents of a directory you pass explicitly; write `dir/` instead).
+ディレクトリを渡したときは、拡張子 `md` / `markdown` / `txt` のファイルを対象にします（設定で変更できます）。ファイルを直接指定した場合は拡張子に関わらず検査します。渡したディレクトリから検査するファイルが 1 件も見つからなければ、標準エラーに警告を出します（`.gitignore` に `dir/**` のようなファイルに当たる行があると、渡したディレクトリの中身も除外されます。除外するなら `dir/` と書いてください）。
 
-### `check` Options
+### `check` のオプション
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--report <KIND>` | | What to output: `full` (every finding; default) / `brief` (a revision brief that groups what to fix by rule) |
-| `--format <FORMAT>` | `-f` | Output format. The full report: `text` (default) / `json` / `toon` / `github` (alias `github-actions`). The brief: `markdown` (default) / `json` / `toon`. `brief` is shorthand for `--report brief --format markdown` |
-| `--genre <GENRE>` | | Genre: `general` (default) / `tech` / `business` / `essay`; aliases `blog`→essay, `minutes`→business |
-| `--ignore-rules <IDS>` | | Rules to ignore (comma-separated IDs or names) |
-| `--enable-rules <IDS>` | | Rules to enable in addition (e.g. a single experimental rule) |
-| `--only-rules <IDS>` | | Run only these rules |
-| `--experimental` | | Enable every experimental rule and phrase |
-| `--config <PATH>` | | Use this configuration file |
-| `--no-config` | | Do not read any configuration file |
-| `--fail-on <LEVEL>` | | Exit with 1 when a finding at or above this severity exists: `never` (default) / `info` / `warning` / `error` |
-| `--stdin-filename <NAME>` | | Display name when reading stdin (`-`); its extension selects the format |
-| `--show-suppressed` | | Also show findings kept by suppression comments |
-| `--no-readability` | | Do not report readability findings |
-| `--include <KINDS>` | | Also apply phrase rules to lists, tables and quotes: `lists` / `tables` / `quotes` / `all` (comma-separated) |
-| `--line-breaks <MODE>` | | How line breaks inside a paragraph are treated: `space` (default) / `sentence` |
-| `--dict <PATH>` | | Use this morphological-analysis dictionary (a hasami `.hsd`) instead of the bundled one |
-| `--no-dict` | | Do not use a morphological-analysis dictionary; judge with the dictionary-free approximations |
-| `--color <WHEN>` | | Coloring: `auto` (default) / `always` / `never`; `NO_COLOR` is honored |
-| `--quiet` | `-q` | Hide files without findings and the summary |
-| `--brief-limit <N>` | | Maximum number of spots listed per rule in the `brief` format (default 5) |
-| `--help` | `-h` | Show help |
-| `--version` | `-V` | Show version |
+| オプション | 短縮形 | 説明 |
+|-----------|-------|------|
+| `--report <KIND>` | | 出力する内容。`full`（全指摘のレポート。既定）/ `brief`（直す箇所をルールごとにまとめた改稿指示） |
+| `--format <FORMAT>` | `-f` | 出力形式。全指摘のレポートは `text`（既定）/ `json` / `toon` / `github`（別名 `github-actions`）、改稿指示は `markdown`（既定）/ `json` / `toon`。`brief` は `--report brief --format markdown` の省略形 |
+| `--genre <GENRE>` | | ジャンル。`general`（既定）/ `tech` / `business` / `essay`。別名 `blog`→essay、`minutes`→business |
+| `--ignore-rules <IDS>` | | 無視するルール（カンマ区切り、ID か名前） |
+| `--enable-rules <IDS>` | | 追加で有効にするルール（実験的ルールを個別に有効にする用途） |
+| `--only-rules <IDS>` | | 指定したルールだけを動かす |
+| `--experimental` | | 実験的なルールと語句をすべて有効にする |
+| `--config <PATH>` | | 設定ファイルを指定する |
+| `--no-config` | | 設定ファイルを読まない |
+| `--fail-on <LEVEL>` | | この重大度以上の指摘があれば終了コード 1 にする。`never`（既定）/ `info` / `warning` / `error` |
+| `--stdin-filename <NAME>` | | 標準入力（`-`）を読むときの表示名。拡張子で形式を決める |
+| `--show-suppressed` | | 抑制コメントで残した指摘も表示する |
+| `--no-readability` | | 読みやすさの指摘を出さない |
+| `--include <KINDS>` | | 語句パターン系ルールをリスト・表・引用にも当てる。`lists` / `tables` / `quotes` / `all`（カンマ区切り） |
+| `--line-breaks <MODE>` | | 段落内の改行の扱い。`space`（既定）/ `sentence` |
+| `--dict <PATH>` | | 同梱の辞書の代わりに、この形態素解析の辞書（hasami の `.hsd`）を使う |
+| `--no-dict` | | 形態素解析の辞書を使わず、辞書なしの近似で判定する |
+| `--color <WHEN>` | | 色付けの有無。`auto`（既定）/ `always` / `never`。`NO_COLOR` も尊重する |
+| `--quiet` | `-q` | 指摘のないファイルとサマリを表示しない |
+| `--brief-limit <N>` | | `brief` 形式で、1 ルールあたりに並べる箇所の上限（既定 5） |
+| `--help` | `-h` | ヘルプを表示する |
+| `--version` | `-V` | バージョンを表示する |
 
-### `diff` Options
+### `diff` のオプション
 
-`noslop diff <BEFORE> <AFTER>` accepts the same rule-selection and parsing options as `check` (`--genre`, `--ignore-rules`, `--enable-rules`, `--only-rules`, `--experimental`, `--no-readability`, `--include`, `--line-breaks`, `--dict`, `--no-dict`, `--config`, `--no-config`). Either side can be `-` to read from stdin.
+`noslop diff <BEFORE> <AFTER>` は、`check` のルールの選び方と文書の読み方のオプション（`--genre`・`--ignore-rules`・`--enable-rules`・`--only-rules`・`--experimental`・`--no-readability`・`--include`・`--line-breaks`・`--dict`・`--no-dict`・`--config`・`--no-config`）をそのまま受け付けます。どちらか一方は `-` で標準入力から読めます。
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--format <FORMAT>` | `-f` | Output format: `text` (default) / `json` / `toon` |
-| `--stdin-filename <NAME>` | | Display name when reading stdin (`-`); its extension selects the format |
-| `--color <WHEN>` | | Coloring: `auto` (default) / `always` / `never` |
+| オプション | 短縮形 | 説明 |
+|-----------|-------|------|
+| `--format <FORMAT>` | `-f` | 出力形式。`text`（既定）/ `json` / `toon` |
+| `--stdin-filename <NAME>` | | 標準入力（`-`）を読むときの表示名。拡張子で形式を決める |
+| `--color <WHEN>` | | 色付けの有無。`auto`（既定）/ `always` / `never` |
 
 ### `rules` / `explain` / `init`
 
-| Command | Option | Description |
-|---------|--------|-------------|
-| `noslop rules` | `-f, --format <text\|json\|markdown>` | Output format; `markdown` includes each rule's explanation (used to generate `docs/rules.md`) |
-| | `--genre <GENRE>` / `--experimental` | Used to decide whether each rule is enabled by default |
-| | `--config <PATH>` / `--no-config` | Whether the enabled column reflects a configuration file |
-| `noslop explain <RULE>` | | Show a rule's metadata, the current values of its thresholds and its explanation, by ID or name |
-| `noslop init` | `--force` | Create a `noslop.toml` template in the current directory (`--force` overwrites an existing one) |
-| `noslop mcp` | `--config <PATH>` / `--no-config` | Configuration file to use. Tools and registration are described in [docs/integrations.md](docs/integrations.md) |
-| `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | Spots returned per rule (default 3), whether to include readability findings, and whether to look at the whole file instead of the changed lines. See [docs/integrations.md](docs/integrations.md) |
-| `noslop skill-install <claude\|codex>` | `--dir <DIR>` | Where to put the skill (default `~/.claude/skills` or `~/.codex/skills`; use `.claude/skills` or similar for a project). Writes `noslop/SKILL.md`, overwriting an existing one |
-| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--force` | NAME is `ipadic`, `ipadic-neologd` or `ipadic-neologd-sudachi` (default). Where to save it (default: the hasami share directory, `$XDG_DATA_HOME/hasami` or `~/.local/share/hasami`), the source URL (for a mirror), and whether to download again even when a correct file is present (also needed to replace a file with different contents). See [Using another dictionary](#using-another-dictionary) |
-| `noslop dict list` | `--dir <DIR>` | Where to look for downloaded dictionaries (default: the share directory) |
-| `noslop calibrate` | `--human <PATH>` / `--ai <PATH>` (required, repeatable), `--genre`, `--target-fp`, `--holdout`, `--min-detection`, `--no-experimental`, `-f, --format <text\|json\|markdown>` | How the corpus is measured. The procedure is in [docs/calibration.md](docs/calibration.md) |
+| コマンド | オプション | 説明 |
+|---------|-----------|------|
+| `noslop rules` | `-f, --format <text\|json\|markdown>` | 一覧の形式。`markdown` は各ルールの説明文も含む（`docs/rules.md` の生成用） |
+| | `--genre <GENRE>` / `--experimental` | そのジャンル・設定で既定で有効かの判定に使う |
+| | `--config <PATH>` / `--no-config` | 有効・無効の列に設定ファイルを反映するか |
+| `noslop explain <RULE>` | | ID か名前で、メタ情報・設定できる閾値の現在値・説明文を表示する |
+| `noslop init` | `--force` | `noslop.toml` のひな形をカレントディレクトリに作る（既にあれば `--force` で上書き） |
+| `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](docs/integrations.md) |
+| `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](docs/integrations.md) |
+| `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
+| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](#別の辞書を使う) |
+| `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
+| `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`--min-detection`、`--no-experimental`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](docs/calibration.md) |
 
-### Exit Codes
+### 終了コード
 
-| Code | Meaning |
-|------|---------|
-| `0` | Finished (with or without findings; `diff` exits 0 even when it lists concerns) |
-| `1` | A finding at or above the `--fail-on` severity exists (`check` only) |
-| `2` | Argument, configuration or I/O error (if some files cannot be read, results for the readable files are still printed and the exit code is 2) |
+| コード | 意味 |
+|-------|------|
+| `0` | 検査が終わった（指摘の有無は問わない。`diff` は確認事項があっても 0） |
+| `1` | `--fail-on` で指定した重大度以上の指摘があった（`check` のみ） |
+| `2` | 引数・設定・入出力のエラー（読めないファイルがあった場合も、読めたファイルの結果を出したうえで 2） |
 
-With the default `--fail-on never`, the exit code stays 0 even when there are findings. noslop points at suspicions; it is not designed to stop builds by counting them.
+既定の `--fail-on never` では、指摘があっても終了コードは 0 です。noslop は疑いを示す道具で、件数でビルドを止める設計にはしていません。
 
-## Rules
+## ルール
 
-Rules come in three families.
+ルールは 3 系統に分かれます。
 
-| Family | ID | What it looks at |
-|--------|----|------------------|
-| Phrase patterns | `P` | Stock phrases and wording inside a sentence |
-| Rhythm & statistics | `R` | Aggregates across sentences and paragraphs: sentence-length variance, repeated endings and openings, paragraph layout |
-| Structure | `S` | Markdown layout: bold text, bullet lists, headings |
+| 系統 | ID | 見るもの |
+|------|----|---------|
+| 語句パターン | `P` | 文の中の定型句・言い回し |
+| リズム・統計 | `R` | 文長のばらつき、文末・文頭の反復、段落の構成など、文や段落をまたいだ集計 |
+| 構造 | `S` | 太字・箇条書き・見出しなど Markdown の体裁 |
 
-Each rule has a lane and a status.
+各ルールはレーンとステータスを持ちます。
 
-- **Lane** — `slop` detects AI habits. `readability` flags spots that are hard to read (overlong sentences, double negatives, ...). It is unrelated to AI-likeness, so it is reported separately from AI slop. Custom rules from the configuration go to the `custom` lane by default. The output labels the lanes 「AI 臭さ」, 「読みやすさ」 and 「独自ルール」.
-- **Status** — `stable` rules had their false-positive rates measured on a corpus and are enabled by default. `experimental` rules are uncalibrated, or rely on dictionary-free approximations that fall outside the calibration conditions; they run only when enabled with `--experimental` or in the configuration. Phrase rules also carry a status per phrase.
+- **レーン** — `slop` は AI 臭さの検出です。`readability` は読みやすさの指摘（長すぎる一文、二重否定など）で、AI らしさとは無関係なので、AI 臭さとは分けて出します。設定ファイルの独自ルールは、既定で `custom` のレーンに入ります。出力では、それぞれを「AI 臭さ」「読みやすさ」「独自ルール」と表示します。
+- **ステータス** — `stable` はコーパスで誤検知率を確かめたもので、既定で有効です。`experimental` は未校正か、辞書なしの近似で校正条件から外れるもので、`--experimental` か設定で有効にしたときだけ動きます。語句ルールは語句ごとにもステータスを持ちます。
 
-| ID | Name | Checks | Lane | Status |
-|----|------|--------|------|--------|
-| P01 | `AI_CONCLUSION` | Pushy conclusions and wrap-up phrases | slop | stable |
-| P02 | `AI_PREFACE` | Stock prefaces and announcements | slop | stable |
-| P03 | `AI_CONJUNCTION` | Empty connectives | slop | stable |
-| P04 | `REDUNDANT_VERB` | Wordy verb phrases | readability | experimental |
-| P05 | `REDUNDANT_MODIFIER` | Vague modifiers | slop | experimental |
-| P06 | `OVER_EMPHASIS` | Excessive emphasis | slop | stable |
-| P07 | `HEDGING` | Hedges and disclaimers | slop | stable |
-| P08 | `EMPTY_ADJECTIVE` | Empty adjectives | slop | stable |
-| P09 | `EMPTY_VERB` | Verbs that only announce the work | slop | stable |
-| P10 | `DRAMATIC_CLOSER` | Theatrical closing lines | slop | experimental |
-| P11 | `COUNT_DECLARATION` | Presentation-style "there are three reasons" | slop | experimental |
-| P12 | `TRANSLATIONESE` | Translationese | slop | stable |
-| P13 | `INANIMATE_SUBJECT` | Inanimate subject with a transitive verb | slop | stable |
-| P14 | `EM_DASH` | Em-dash parentheticals | slop | experimental |
-| P15 | `KANJI_RUN` | Long runs of kanji | readability | stable |
-| P16 | `NO_CHAIN` | Chains of 「の」 | readability | stable |
-| P17 | `DOUBLE_NEGATIVE` | Double negatives | readability | stable |
-| P18 | `CHAT_RESIDUE` | Leftovers of a chat reply, such as 「ご質問ありがとうございます」 | slop | experimental |
-| P19 | `HYPE` | Hype without evidence | slop | experimental |
-| P20 | `COLON_CONTINUATION` | A predicate followed by a colon to introduce a list (「以下の通りです：」) | slop | experimental |
-| R01 | `LOW_BURSTINESS` | Monotonous sentence lengths | slop | stable |
-| R02 | `REPETITIVE_ENDING` | Repeated sentence endings | readability | experimental |
-| R03 | `LONG_SENTENCE` | Overlong sentences | readability | stable |
-| R04 | `BURIED_LIST` | Enumerations buried in one sentence | readability | experimental |
-| R05 | `ANTITHESIS_REPETITION` | Repeated "not X but Y" contrasts | slop | stable |
-| R06 | `NO_NOMINAL_ENDING` | No noun-ending sentences in a long document | slop | stable |
-| R07 | `UNIFORM_PARAGRAPHS` | Paragraphs with near-identical sentence counts | slop | stable |
-| R08 | `REPEATED_SENTENCE_LEAD` | Repeated sentence openings | slop | experimental |
-| R09 | `PARAGRAPH_LEAD_CONJUNCTION` | Conjunctions at paragraph starts | slop | experimental |
-| R10 | `CLEFT_BECAUSE` | "It is X. Because Y." constructions | slop | experimental |
-| R11 | `SELF_ANSWER` | Asking a question and answering it yourself | slop | experimental |
-| R12 | `OVERCORRECTION` | Over-corrected uniformity (mechanical long/short alternation, too many noun endings) | slop | experimental |
-| R13 | `COMMA_PROFILE` | A habit of heavy comma use (commas per sentence) | slop | experimental |
-| S01 | `BOLD_DENSITY` | Heavy use of bold | slop | experimental |
-| S02 | `BULLET_RATIO` | Over-reliance on bullet lists | slop | experimental |
-| S03 | `BOILERPLATE_HEADING` | Boilerplate headings such as 「まとめ」「おわりに」 | slop | experimental |
-| S04 | `NUMBERED_PHASES` | Numbered stages such as 「フェーズ1」 | slop | experimental |
-| S05 | `EMOJI_DENSITY` | Heavy use of emoji and decorative symbols | slop | experimental |
-| S06 | `BOLD_LABEL_LIST` | The `**Label**: description` pattern | slop | experimental |
-| S07 | `HEADING_TEMPLATE` | Headings poured into one template (`X: Y`, questions or numbers) | slop | experimental |
-| S08 | `HEADING_EMPHASIS` | Bold or emoji inside headings | slop | experimental |
-| S09 | `STRUCTURE_DENSITY` | Too many headings and bullet items for the amount of text | slop | experimental |
-| S10 | `LABEL_STYLE` | Paragraphs or items that open with an emoji or a `Label:` | slop | experimental |
+| ID | 名前 | 内容 | レーン | ステータス |
+|----|------|------|-------|-----------|
+| P01 | `AI_CONCLUSION` | 結論の押し付け・まとめ口調 | slop | stable |
+| P02 | `AI_PREFACE` | 定型の前置き・予告 | slop | stable |
+| P03 | `AI_CONJUNCTION` | 空疎な接続 | slop | stable |
+| P04 | `REDUNDANT_VERB` | 冗長な動詞表現 | readability | experimental |
+| P05 | `REDUNDANT_MODIFIER` | ぼやけた修飾語 | slop | experimental |
+| P06 | `OVER_EMPHASIS` | 過剰な強調 | slop | stable |
+| P07 | `HEDGING` | 予防線・免責 | slop | stable |
+| P08 | `EMPTY_ADJECTIVE` | 空虚な形容 | slop | stable |
+| P09 | `EMPTY_VERB` | 作業を宣言するだけの動詞 | slop | stable |
+| P10 | `DRAMATIC_CLOSER` | 演出的な決め文 | slop | experimental |
+| P11 | `COUNT_DECLARATION` | プレゼン的な数の予告 | slop | experimental |
+| P12 | `TRANSLATIONESE` | 翻訳調 | slop | stable |
+| P13 | `INANIMATE_SUBJECT` | 無生物主語と他動詞 | slop | stable |
+| P14 | `EM_DASH` | ダッシュの挿入句 | slop | experimental |
+| P15 | `KANJI_RUN` | 連続漢字 | readability | stable |
+| P16 | `NO_CHAIN` | 「の」の連鎖 | readability | stable |
+| P17 | `DOUBLE_NEGATIVE` | 二重否定 | readability | stable |
+| P18 | `CHAT_RESIDUE` | 「ご質問ありがとうございます」などチャット応答の名残 | slop | experimental |
+| P19 | `HYPE` | 根拠のない誇張表現 | slop | experimental |
+| P20 | `COLON_CONTINUATION` | 「以下の通りです：」のような述語とコロンでの列挙の導入 | slop | experimental |
+| R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
+| R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
+| R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |
+| R04 | `BURIED_LIST` | 一文に埋もれた列挙 | readability | experimental |
+| R05 | `ANTITHESIS_REPETITION` | 否定→肯定の対比の反復 | slop | stable |
+| R06 | `NO_NOMINAL_ENDING` | 長い文書での体言止めの欠如 | slop | stable |
+| R07 | `UNIFORM_PARAGRAPHS` | 段落の文数がそろいすぎている | slop | stable |
+| R08 | `REPEATED_SENTENCE_LEAD` | 文頭の型の反復 | slop | experimental |
+| R09 | `PARAGRAPH_LEAD_CONJUNCTION` | 段落頭の接続詞 | slop | experimental |
+| R10 | `CLEFT_BECAUSE` | 「それは〜。なぜなら〜」構文 | slop | experimental |
+| R11 | `SELF_ANSWER` | 自分で立てた問いに自分で答える | slop | experimental |
+| R12 | `OVERCORRECTION` | 直しすぎの均一さ（長短の機械的な交互・体言止めの過多） | slop | experimental |
+| R13 | `COMMA_PROFILE` | 読点を打つ癖（1 文あたりの読点の多さ） | slop | experimental |
+| S01 | `BOLD_DENSITY` | 太字の多用 | slop | experimental |
+| S02 | `BULLET_RATIO` | 箇条書きへの偏り | slop | experimental |
+| S03 | `BOILERPLATE_HEADING` | 「まとめ」「おわりに」などの定型見出し | slop | experimental |
+| S04 | `NUMBERED_PHASES` | 「フェーズ1」などの番号付きの段階 | slop | experimental |
+| S05 | `EMOJI_DENSITY` | 絵文字・装飾記号の多用 | slop | experimental |
+| S06 | `BOLD_LABEL_LIST` | 「**項目**: 説明」の定型 | slop | experimental |
+| S07 | `HEADING_TEMPLATE` | 見出しの型（「X: Y」・問い・番号）の反復 | slop | experimental |
+| S08 | `HEADING_EMPHASIS` | 見出しの中の太字・絵文字 | slop | experimental |
+| S09 | `STRUCTURE_DENSITY` | 見出しと箇条書きの密度 | slop | experimental |
+| S10 | `LABEL_STYLE` | 段落や項目を絵文字・「ラベル：」で書き出す | slop | experimental |
 
-Run `noslop rules` for the current list and `noslop explain <ID>` for details. Every rule's explanation (what it looks at, why it matters, how to fix it, examples and evidence; in Japanese) is collected in [docs/rules.md](docs/rules.md). Rule IDs never change meaning once published.
+最新の一覧は `noslop rules`、各ルールの詳細は `noslop explain <ID>` で確認できます。全ルールの説明 (何を見るか・なぜ問題か・直し方・例・根拠) は [docs/rules.md](docs/rules.md) にまとめてあります。ルールの ID は公開後に意味を変えません。
 
-By default, phrase rules look only at prose paragraphs, because calibration was done on prose. To include lists, tables and quotes, change `[scope]` in the configuration. Rhythm and statistics rules always aggregate prose paragraphs only.
+語句パターン系ルールが既定で見るのは地の文（段落）だけです。校正を地の文で行ったためで、リスト・表・引用も見るには設定の `[scope]` を変えます。リズム・統計系ルールは常に地の文だけで集計します。
 
-## Configuration
+## 設定
 
-The configuration file is `noslop.toml` (or `.noslop.toml`). noslop searches from the current directory upwards and uses the first one it finds. `--config` selects a file directly, and `--no-config` disables configuration files. Command-line options take precedence over the file.
+設定ファイルは `noslop.toml`（または `.noslop.toml`）です。カレントディレクトリから親へ向かって探し、最初に見つかった 1 つを使います。`--config` で直接指定でき、`--no-config` で読まないようにできます。コマンドラインのオプションは設定ファイルより優先されます。
 
 ```toml
 genre = "tech"
@@ -285,19 +281,19 @@ fail_on = "never"
 exclude = ["CHANGELOG.md", "vendor/**"]
 
 [scope]
-lists = true            # also apply phrase rules to bullet items
+lists = true            # 箇条書きの項目にも語句パターン系ルールを当てる
 
 [morphology]
-mode = "off"            # do not use the morphological-analysis dictionary (auto / required / off)
+mode = "off"            # 形態素解析の辞書を使わない (auto / required / off)
 
 [rules.P04]
-enabled = true          # enable a single experimental rule
+enabled = true          # 実験的ルールを個別に有効にする
 
 [rules.R03]
-severity = "warning"    # change the severity
-max_chars = 100         # change the threshold
+severity = "warning"    # 重大度を変える
+max_chars = 100         # 閾値を変える
 
-[[custom]]              # team-specific banned phrases
+[[custom]]              # チーム独自の禁止語
 id = "X01"
 name = "BANNED_HONORIFIC"
 pattern = "ユーザー様"
@@ -305,34 +301,34 @@ message = "「ユーザー様」ではなく「利用者」と書く"
 severity = "warning"
 ```
 
-Every option is described in [examples/noslop.toml](examples/noslop.toml). Changing a threshold breaks the calibration assumptions, so leave a note explaining why.
+すべての項目とその説明は [examples/noslop.toml](examples/noslop.toml) にあります。閾値は校正の前提を崩すので、変えるときは理由を残してください。
 
-## Suppression Comments
+## 抑制コメント
 
-When you have read a finding and decided not to change the text in that context, record the decision in the document. The comments work in both Markdown and plain text.
+指摘を読んだうえで「この文脈では直さない」と決めたら、その判断を文書に書き残します。Markdown とテキストのどちらでも HTML コメントとして書けます。
 
-| Comment | Scope |
-|---------|-------|
-| `<!-- noslop-disable-next-line P01 -- reason -->` | The line after the comment |
-| `<!-- noslop-disable-line R03 -- reason -->` | The line containing the comment |
-| `<!-- noslop-disable P05 -- reason -->` … `<!-- noslop-enable P05 -->` | Between the two comments (to the end of the document without `enable`) |
-| `<!-- noslop-disable-file R01 -- reason -->` | The whole document |
+| 書き方 | 効く範囲 |
+|-------|---------|
+| `<!-- noslop-disable-next-line P01 -- 理由 -->` | コメントの次の行 |
+| `<!-- noslop-disable-line R03 -- 理由 -->` | コメントのある行 |
+| `<!-- noslop-disable P05 -- 理由 -->` 〜 `<!-- noslop-enable P05 -->` | 2 つのコメントの間（`enable` がなければ文書末まで） |
+| `<!-- noslop-disable-file R01 -- 理由 -->` | 文書全体 |
 
-- List rules by ID or name, separated by commas or spaces. Omit them to target every rule.
-- Write the reason after `--`. It is kept in the JSON output as `suppressed.reason`.
-- Unknown rules produce a warning.
-- Comments inside code blocks are not treated as suppressions, so you can document the syntax itself.
+- ルールは ID か名前で、カンマか空白で区切って複数書けます。省略すると全ルールが対象です。
+- `--` のあとに理由を書きます。理由は JSON 出力の `suppressed.reason` に残ります。
+- 存在しないルールを書くと警告を出します。
+- コードブロックの中のコメントは抑制として扱いません（記法の説明を書けるように）。
 
 ```markdown
-<!-- noslop-disable-next-line P01 -- quoted remark, keep verbatim -->
+<!-- noslop-disable-next-line P01 -- 引用した発言なので原文のまま残す -->
 > 「結論として、この方式が最適と言えるでしょう」と担当者は述べた。
 ```
 
-A suppression without a reason abandons the decision. Even a short reason such as "part of a proper noun", "quotation" or "natural for this genre" is enough.
+理由のない抑制は判断を放棄したのと同じです。「固有名詞の一部」「引用」「ジャンル上自然」のように、短くても理由を書いてください。
 
-## Output Formats
+## 出力形式
 
-### text (default)
+### text（既定）
 
 ```text
 📄 docs/meeting.md
@@ -351,15 +347,15 @@ A suppression without a reason abandons the decision. Even a short reason such a
 ✖ AI 臭さの指摘 2 件 (警告 1・情報 1) — 1 ファイルを検査、辞書あり (同梱の ipadic)
 ```
 
-Messages are in Japanese. Lines and columns are 1-based, and columns count characters.
+行・列はどちらも 1 始まりで、列は文字数で数えます。
 
-- Findings are grouped per file into lane sections, in the order AI smell (`AI 臭さ`) → custom rules (`独自ルール`) → readability (`読みやすさ`). Within a section they follow the document order. Lanes without findings get no section
-- Every finding shows its lane (`[AI 臭さ]`, `[独自ルール]`, `[読みやすさ]`) next to its severity. Findings from experimental entries are also marked `[実験的]` at the end
-- The summary at the bottom counts each lane with the same names as the section headings, followed by a severity breakdown. AI smell is always shown, even at 0; custom rules and readability appear only when they have findings
-- The leading ✖ means there are AI-smell or custom-rule findings, or `--fail-on` was tripped. Readability findings alone get ✔
-- There is no document-level score (see [Why there is no document-level score](#why-there-is-no-document-level-score))
+- 指摘はファイルごとに、レーンの節（AI 臭さ → 独自ルール → 読みやすさ）に分けて並びます。節の中は文書の順です。指摘のないレーンの節は出しません
+- 各指摘の重大度の隣に、レーン名（`[AI 臭さ]`・`[独自ルール]`・`[読みやすさ]`）が付きます。実験的な項目の指摘には、末尾に `[実験的]` が付きます
+- 最後の要約は、節の見出しと同じ呼び名で、レーンごとに件数と重大度の内訳を数えます。AI 臭さは 0 件でも出し、独自ルールと読みやすさは指摘があるときだけ出します
+- 要約の先頭の ✖ は、AI 臭さか独自ルールの指摘があること、または `--fail-on` に当たったことを示します。読みやすさの指摘だけなら ✔ です
+- 文書全体の点数は出しません（[文書全体の点数を出さない理由](#文書全体の点数を出さない理由)）
 
-When there are readability findings, the readability section follows the AI-smell section. In the example below the readability finding (line 3) comes first in the document, but the AI-smell section is still listed first.
+読みやすさの指摘があると、AI 臭さの節のあとに読みやすさの節が続きます。次の例では、読みやすさの指摘（3 行目）のほうが文書の中では先にありますが、節は AI 臭さを先に並べます。
 
 ```text
 📄 docs/plan.md
@@ -382,19 +378,19 @@ When there are readability findings, the readability section follows the AI-smel
 
 ### json
 
-A stable schema for machines. The essentials (the example below is the P01 finding extracted from the JSON of the same document as the text example above):
+機械処理向けの安定したスキーマで出力します。要点は次のとおりです（下の例は、上の text 出力と同じ文書の JSON から P01 の指摘だけを抜き出したものです）。
 
-- Top level: `schemaVersion`, `tool` (`name`, `version`), `columnUnit`, `settings` (`genre`, `experimental`, `failOn`, `morphology`), `files`, `summary`, `errors`
-- `settings.morphology` is the judging method: `requested` (`auto` / `required` / `off`), `method` (`dictionary` / `surface`), `dictionary` (the `name`, `source` — `bundled` or `file` — and `path`, which is `null` for the bundled one; `null` without a dictionary) and `reason` (why no dictionary was used: `disabled` / `not-found` / `not-needed`)
-- Per file: `path`, `format` (`markdown` / `text`), `characters`, `sentences`, `counts` (unsuppressed findings counted per lane — `slop`, `readability`, `custom` — and per severity — `error`, `warning`, `info`; zeros are always present), `diagnostics`, `warnings`
-- The schema version (`schemaVersion`) is 2. Version 2 removed the document-level `score` of version 1 and replaced it with `counts` (see [Why there is no document-level score](#why-there-is-no-document-level-score))
-- Per finding: `ruleId`, `ruleName`, `severity`, `lane`, `status`, `message`, `hint`, `range`, `context`, `excerpt`, `related`, `metrics`, `fingerprint`, `suppressed`
-- `range` and `context` have `start` and `end`, each with `line`, `column` (1-based, counted in Unicode scalar values as `columnUnit` says) and `offset` (UTF-8 byte offset)
-- `metrics` holds rule-specific values. Phrase rules put the matched dictionary entry in `item` (a regular-expression entry is written as `/pattern/`) and the matched text in `matched`
-- `fingerprint` is a 16-digit identifier that does not depend on line numbers, so results can be matched against a previous run. A repeated sentence yields the same value, so match as a multiset
-- Suppressed findings are kept; `suppressed` records `reason` and `line` (the line of the suppression comment)
-- Files that could not be read go to `errors` with `path` and `message`
-- Arrays are ordered by path, position and rule ID
+- トップレベルに `schemaVersion`・`tool`（`name`・`version`）・`columnUnit`・`settings`（`genre`・`experimental`・`failOn`・`morphology`）・`files`・`summary`・`errors`
+- `settings.morphology` は判定の方式で、`requested`（`auto` / `required` / `off`）・`method`（`dictionary` / `surface`）・`dictionary`（使った辞書の `name`・`source`（`bundled`: 同梱 / `file`: 指定したファイル）・`path`（同梱なら `null`）。辞書なしなら `null`）・`reason`（辞書を使わなかった理由: `disabled` / `not-found` / `not-needed`）を持つ
+- 各ファイルに `path`・`format`（`markdown` / `text`）・`characters`・`sentences`・`counts`（抑制していない指摘を、レーン（`slop`・`readability`・`custom`）ごと・重大度（`error`・`warning`・`info`）ごとに数えたもの。0 件も常に出る）・`diagnostics`・`warnings`
+- スキーマの版（`schemaVersion`）は 2 です。版 1 にあった文書全体の点数（`score`）は、版 2 で外して `counts` に置き換えました（[文書全体の点数を出さない理由](#文書全体の点数を出さない理由)）
+- 各指摘に `ruleId`・`ruleName`・`severity`・`lane`・`status`・`message`・`hint`・`range`・`context`・`excerpt`・`related`・`metrics`・`fingerprint`・`suppressed`
+- `range` と `context` は `start` と `end` を持ち、それぞれ `line`・`column`（1 始まり。`columnUnit` のとおり Unicode のスカラー値で数える）と `offset`（UTF-8 のバイト位置）を持つ
+- `metrics` にはルールごとの値が入る。語句ルールは、一致した辞書の項目を `item` (正規表現の項目は `/パターン/` の形) に、一致した文字列を `matched` に入れる
+- `fingerprint` は行番号に依存しない 16 桁の識別子で、前回の結果との突き合わせに使える。同じ文が繰り返されると同じ値になるので、突き合わせは多重集合で行う
+- 抑制した指摘も消さずに出し、`suppressed` に `reason`（理由）と `line`（抑制コメントの行）を残す
+- 読めなかったファイルは `errors` に `path` と `message` で入る
+- 配列はパス・位置・ルール ID の順に並ぶ
 
 ```json
 {
@@ -455,7 +451,7 @@ A stable schema for machines. The essentials (the example below is the P01 findi
 
 ### github
 
-Emits GitHub Actions workflow commands, which annotate the pull request diff. Severities map as `error`→`error`, `warning`→`warning`, `info`→`notice`. Each annotation's title is the lane label (「AI 臭さ」, 「読みやすさ」 or 「独自ルール」) followed by the rule ID and name. Suppressed findings are not emitted.
+GitHub Actions のワークフローコマンドとして出力し、プルリクエストの差分に注釈を付けます。重大度は `error`→`error`、`warning`→`warning`、`info`→`notice` に対応します。注釈のタイトルには、ルールの ID と名前の前にレーン名（AI 臭さ・読みやすさ・独自ルール）が入ります。抑制した指摘は出しません。
 
 ```text
 ::warning file=docs/meeting.md,line=3,col=35,endLine=3,endColumn=42,title=[AI 臭さ] P01 AI_CONCLUSION::「と言えるだろう」は結論を定型句で押し付ける締めです%0A💡 定型句を外して言い切るか、結論を支える事実や数値を書いてください
@@ -463,7 +459,7 @@ Emits GitHub Actions workflow commands, which annotate the pull request diff. Se
 
 ### brief
 
-Emits a revision brief in Markdown (in Japanese) to hand to an AI agent or an editor. It opens with the rules of revision (keep claims, numbers and proper nouns; do not add facts that are not in the source; do not apply the same edit everywhere; findings may be kept; do not aim at a lower count; re-run only once), then groups the findings by rule with why they are suspicious, the direction of a fix and the locations. It never prescribes replacement wording.
+AI エージェントや編集者に渡す改稿指示を Markdown で出します。先頭に改稿のルール（主張・数字・固有名詞を変えない、原文にない事実を足さない、同じ直しを一律に当てない、指摘は残してよい、件数を減らすことを目的にしない、再実行は 1 回だけ）を置き、ルールごとに「なぜ疑わしいか」「直し方の方向」「該当箇所」をまとめます。語句の置き換え方は指示しません。
 
 ```markdown
 ## docs/meeting.md
@@ -481,16 +477,16 @@ Emits a revision brief in Markdown (in Japanese) to hand to an AI agent or an ed
     - 原文: このように、定例会議を減らしたことはチーム全体にとって良い変化だったと言えるだろう。
 ```
 
-The full structure of the brief is described in [docs/integrations.md](docs/integrations.md).
+出力の全体の構成は [docs/integrations.md](docs/integrations.md) にあります。
 
-### Brief as JSON / TOON (`--report brief --format json|toon`)
+### 改稿指示の JSON / TOON（`--report brief --format json|toon`）
 
-The same brief comes as JSON for programs and as [TOON](https://github.com/toon-format/spec) (Token-Oriented Object Notation) for handing it to an LLM in fewer tokens. Both carry the same data, with two tables per file:
+改稿指示と同じ内容を、プログラムで扱う JSON と、LLM に少ないトークンで渡す [TOON](https://github.com/toon-format/spec)（Token-Oriented Object Notation）で出します。どちらも同じデータで、ファイルごとに 2 つの表を持ちます。
 
-- `rules` — the rules with findings, in the order to look at them: `ruleId`, `ruleName`, `title`, `lane`, `maxSeverity`, `experimentalOnly`, `count`, `omittedCount` (findings beyond `--brief-limit`), `why` (why it looks suspicious) and `hint` (the direction of a fix)
-- `occurrences` — the locations, referring to `rules` by `ruleId`: `line`, `column` (1-based, counted in characters), `message` and `excerpt` (the sentence with the finding; `null` for findings without one)
+- `rules` — 指摘のあったルール。優先して見る順に並び、`ruleId`・`ruleName`・`title`・`lane`・`maxSeverity`・`experimentalOnly`・`count`・`omittedCount`（`--brief-limit` を超えて載せなかった件数）・`why`（なぜ疑わしいか）・`hint`（直し方の方向）を持つ
+- `occurrences` — 該当箇所。`ruleId` で `rules` を参照し、`line`・`column`（1 始まり、列は文字数）・`message`・`excerpt`（指摘を含む文の抜粋。文を持たない指摘は `null`）を持つ
 
-The top level also has `settings` (`genre`, `experimental`, `method` — the judging method, `dictionary` or `surface` — and `dictionary`, the name of the dictionary used; local paths are left out), `revisionRules`, `editorialQuestions`, `note` (a caveat when there are no findings), `cleanFiles`, `warnings` and `errors`. Metrics, fingerprints and suppressed findings are left out; use the full report to track findings. The schema version is `schemaVersion`, and `kind` is `brief`.
+ほかに `settings`（`genre`・`experimental`・`method`（判定の方式。`dictionary` / `surface`）・`dictionary`（使った辞書の名前。手元のパスは載せない））・`revisionRules`（改稿のルール）・`editorialQuestions`（編集の問い）・`note`（指摘がないときの断り書き）・`cleanFiles`・`warnings`・`errors` があります。metrics・fingerprint・抑制した指摘は入れません（指摘の追跡には全指摘のレポートを使います）。スキーマの版は `schemaVersion`、種類は `kind: brief` です。
 
 ```toon
 files[1]:
@@ -508,17 +504,17 @@ files[1]:
       P03,3,1,「このように」は前の内容を機械的に束ねる接続です…,このように、定例会議を減らしたことは…と言えるだろう。
 ```
 
-Because the rules and locations become one-row-per-item tables, TOON is the shortest encoding of the brief. For the bundled [examples/ai-smelly.md](examples/ai-smelly.md), the brief took 2,770 tokens (`o200k_base`) as TOON, 2,980 as Markdown and 3,137 / 3,802 as compact / pretty JSON.
+TOON は、ルールと該当箇所を 1 行 1 要素の表にするぶん短くなります。同梱の [examples/ai-smelly.md](examples/ai-smelly.md) の改稿指示では、トークン数（`o200k_base`）が TOON 2,770・Markdown 2,980・JSON 3,137（改行なし）/ 3,802（整形）でした。
 
 ### toon
 
-`--format toon` emits the full report (the same data as `--format json`) and the result of `noslop diff` as TOON. It is 20–30% shorter than the pretty-printed JSON, but longer than compact JSON, because much of it cannot be laid out as tables (each finding has its own `metrics` keys, for example). To hand findings to an LLM, use the TOON brief (`--report brief --format toon`).
+全指摘のレポート（`--format json` と同じデータ）と `noslop diff` の結果を TOON で出します（`--format toon`）。整形した JSON より 2〜3 割短くなりますが、指摘ごとに `metrics` の項目が違うなど表にできない部分が多いため、改行なしの JSON よりは長くなります。LLM に指摘を渡すなら、改稿指示の TOON（`--report brief --format toon`）を使ってください。
 
-TOON is encoded by the official Rust implementation [toon-format](https://github.com/toon-format/toon-rust) (spec v3.0), without a trailing newline. The output has been checked to decode, in strict mode, to the same data as the JSON with the spec v4.1 reference implementation (`@toon-format/toon` 4.1.1).
+TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust)（仕様 v3.0）で行い、末尾に改行は付けません。出力は、仕様 v4.1 のリファレンス実装（`@toon-format/toon` 4.1.1）の strict モードで JSON と同じデータに戻ることを確かめています。
 
-## Using noslop in GitHub Actions
+## GitHub Actions で使う
 
-By default noslop only adds annotations and the job succeeds. Add `--fail-on warning` (or another level) only if you want findings to fail the job.
+既定では注釈を付けるだけで、ジョブは成功します。指摘でジョブを落としたい場合だけ `--fail-on warning` などを付けてください。
 
 ```yaml
 name: noslop
@@ -536,7 +532,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install noslop
         env:
-          NOSLOP_VERSION: v26.9.100   # replace with the release tag you use
+          NOSLOP_VERSION: v26.9.100   # 使うリリースのタグに置き換える
         run: |
           base="https://github.com/owayo/noslop/releases/download/${NOSLOP_VERSION}"
           curl -fsSL -o noslop-linux-amd64 "${base}/noslop-linux-amd64"
@@ -548,32 +544,32 @@ jobs:
         run: noslop check docs --format github
 ```
 
-Pin the release tag and verify the checksum before use. Downloading from `releases/latest` changes the version under you.
+リリースのタグを固定し、チェックサムを確かめてから使ってください。`releases/latest` から取る形にすると、使う版が知らないうちに変わります。
 
-## Using noslop with AI Agents
+## AI エージェントと使う
 
-noslop can hand its findings back to the AI agent that wrote the text. Every method passes where and why to look again, together with the constraints of revision, and says explicitly not to aim at reducing the count.
+文章を書いた AI エージェントに、noslop の指摘をそのまま返せます。どの方法でも渡すのは「どこを、なぜ見直すか」と改稿の制約で、件数を減らすこと自体を目的にしないよう断っています。
 
-| Method | When to use it |
-|--------|----------------|
-| `noslop check --format brief` | Paste the result into an AI chat or send it to an editor (as JSON or TOON: `--report brief --format json\|toon`) |
-| `noslop skill-install <claude\|codex>` | Teach the agent to review Japanese text with noslop after writing or revising it (a skill) |
-| `noslop mcp` | Let agents such as Claude Code or Codex CLI call `check`, `diff` (compare a rewrite with the original), `explain` and `rules` themselves. `check` returns the brief as Markdown (default), JSON or TOON |
-| `noslop hook claude-code` | Right after Claude Code writes a file, hand back only the findings that touch the changed lines |
+| 方法 | 使いどころ |
+|------|-----------|
+| `noslop check --format brief` | 検査結果を AI や編集者に貼り付けて直してもらう（JSON・TOON なら `--report brief --format json\|toon`） |
+| `noslop skill-install <claude\|codex>` | エージェントに、日本語の文章を書いた・直した後に noslop で見直す手順（スキル）を覚えさせる |
+| `noslop mcp` | Claude Code・Codex CLI などのエージェントが、自分で検査（`check`）・改稿の前後の比較（`diff`）・ルールの説明（`explain`）・一覧（`rules`）を呼ぶ。`check` は改稿指示を Markdown（既定）・JSON・TOON で返す |
+| `noslop hook claude-code` | Claude Code がファイルを書いた直後に、変わった行に重なる指摘だけを自動で渡す |
 
 ```bash
-# Install the skill (~/.claude/skills/noslop/SKILL.md, ~/.codex/skills/noslop/SKILL.md)
+# スキルを入れる（~/.claude/skills/noslop/SKILL.md、~/.codex/skills/noslop/SKILL.md）
 noslop skill-install claude
 noslop skill-install codex
 
-# Register the MCP server
+# MCP サーバーを登録する
 claude mcp add noslop -- noslop mcp
 codex mcp add noslop -- noslop mcp
 ```
 
-With the skill installed, requests such as "polish this into natural Japanese" or "remove the AI feel" make the agent fetch what to fix with `noslop check --report brief --format toon` and check its rewrite with `noslop diff`. The skill itself is [skills/SKILL.md](skills/SKILL.md) (in Japanese).
+スキルを入れると、「この文章を自然な日本語に推敲して」「AI っぽさを抜いて」のような依頼で、エージェントが `noslop check --report brief --format toon` で直す箇所を受け取り、直した後に `noslop diff` で確かめるようになります。スキルの本文は [skills/SKILL.md](skills/SKILL.md) です。
 
-Add the hook to `.claude/settings.json` or a similar settings file ([examples/claude-code-settings.json](examples/claude-code-settings.json)).
+フックは `.claude/settings.json` などに書きます（[examples/claude-code-settings.json](examples/claude-code-settings.json)）。
 
 ```json
 {
@@ -588,150 +584,150 @@ Add the hook to `.claude/settings.json` or a similar settings file ([examples/cl
 }
 ```
 
-Supported MCP protocol versions, what the hook returns and its limits are described in [docs/integrations.md](docs/integrations.md) (in Japanese).
+対応する MCP の版、フックが返す範囲と上限などの詳細は [docs/integrations.md](docs/integrations.md) にあります。
 
-## Comparing Revisions
+## 改稿を比べる
 
-`noslop diff <BEFORE> <AFTER>` lints both revisions with the same settings and lists three kinds of concerns. It does not grade the rewrite; it is a checklist for the writer to confirm that a rewrite aimed at fewer findings did not create new problems. The counts before and after are shown per lane (「AI 臭さの指摘 3 → 1 件」).
+`noslop diff <BEFORE> <AFTER>` は、同じ設定で改稿の前後を検査し、次の 3 つを確認事項として並べます。改稿を合否で判定するものではなく、指摘の件数を減らすための書き直しが別の問題を生んでいないかを、書き手が見直すための一覧です。前後の件数は、レーンごと（「AI 臭さの指摘 3 → 1 件」）に並べます。
 
-- **Finding changes** — findings introduced by the rewrite, findings that survived a rewritten sentence with the same phrase, persisting and resolved findings, and findings kept with a suppression comment. Findings are matched by the line-independent `fingerprint`
-- **Fact changes** — numbers, dates, words that look like proper nouns, quotations and URLs that disappeared or appeared. Numbers that were not in the original carry a warning to check for unsourced figures
-- **Uniform rewrites** — large swings in commas per sentence or in the share of noun endings, headings forced into one template, lists turned into prose (or the reverse) wholesale, mechanical long/short alternation and other signs that one transformation was applied across the whole document
+- **指摘の変化** — 改稿後に新しく出た指摘、文を書き換えても同じ語句で残った指摘、継続・解消した指摘、抑制コメントを付けて残した指摘。行番号に依存しない `fingerprint` で突き合わせます
+- **事実の変化** — 数字・日付・固有名詞らしい語・引用・URL の消失と追加。改稿前になかった数値には、出典のない数字を足していないか確かめるよう注意を付けます
+- **改稿の偏り** — 読点の数や体言止めの比率の大きな変化、見出しの型の統一、箇条書きと地の文の一括の入れ替え、長短の機械的な交互など、同じ変換を文書全体に一律に当てた形跡
 
-With `--format json` or `--format toon`, `hasConcerns` tells whether there is anything to look at. The exit code stays 0 even when there are concerns.
+JSON（`--format json`）と TOON（`--format toon`）では、確認事項があるかを `hasConcerns` で返します。終了コードは確認事項があっても 0 です。
 
-## Why there is no document-level score
+## 文書全体の点数を出さない理由
 
-noslop lists findings one by one and counts them per lane and severity; it does not give a document-level score (a value such as "naturalness 80/100"). Earlier versions had a 0–100 "naturalness score" that divided the AI-slop findings by the document length. It was removed for these reasons:
+noslop は、指摘を 1 件ずつ並べ、レーンと重大度ごとの件数を数えるだけで、文書全体の点数（「自然度 80/100」のような値）は出しません。以前は、AI 臭さの指摘の件数を文字数で割り戻した 0〜100 の「自然度スコア」を出していましたが、次の理由で外しました。
 
-- Calibrating each rule (its false-positive rate on human writing) checks whether individual findings are right; it does not make the sum of findings tell where a document came from
-- Measured, it did not tell them apart. 29 human documents of known origin scored 92–100, and 20 AI-written documents scored 98–100 (17 of them 100); human books had a higher density of findings than AI reports
-- Long documents scored almost 100 even with findings, and the 「自然」 (natural) label was misread as a clean bill of health
+- ルールごとの校正（人の文書での誤検知率）は、1 件ずつの指摘が当たっているかを確かめるもので、指摘を足し合わせた値が文書の出どころを見分けることまでは保証しない
+- 実際に測ると見分けていなかった。出どころの分かる人の文書 29 本は 92〜100 点、AI が書いた文書 20 本は 98〜100 点（うち 17 本が 100 点）で、人の書籍のほうが AI のレポートより指摘の密度が高かった
+- 長い文書は指摘があってもほぼ 100 点になり、「自然」という判定の札が安心材料として誤解を招いた
 
-Decide whether to fix each finding in its context, not by the count. To compare documents, use `counts` in the JSON.
+直すかどうかは、件数ではなく、1 件ずつの指摘を文脈に照らして決めてください。文書どうしを比べたいときは、JSON の `counts` を使います。
 
-## Genres
+## ジャンル
 
-Legitimate conventions differ by genre. Setting `--genre` (or `genre` in the configuration) switches thresholds and turns off rules that conflict with those conventions.
+ジャンルによって、人間の書き手が正当に使う慣習が違います。`--genre` か設定の `genre` で指定すると、閾値が切り替わり、慣習と衝突するルールが止まります。
 
-| Genre | Alias | Main differences |
-|-------|-------|------------------|
-| `general` | | Default. Conservative thresholds that favor no genre |
-| `tech` | | Repeated contrasts become `error` at 4.5% of sentences instead of 3%. Missing noun endings are judged from 3,000 characters. Repeated openings need 7 occurrences |
-| `business` | `minutes` | Turns off the bold, bullet, boilerplate-heading, numbered-stage, heading-template, structure-density and label-style rules (S01–S04, S07, S09, S10). Missing noun endings are judged from 3,000 characters. Repeated openings need 7 occurrences |
-| `essay` | `blog` | Overlong sentences start at 110 characters instead of 90. Missing noun endings are judged from 1,500 characters. Repeated openings need 5 occurrences |
+| ジャンル | 別名 | 主な違い |
+|---------|------|---------|
+| `general` | | 既定。どのジャンルにも偏らない保守的な閾値 |
+| `tech` | | 対比の反復を `error` にする比率を 3% から 4.5% に緩める。体言止めの欠如は 3000 字以上で判定。文頭の反復は 7 回以上 |
+| `business` | `minutes` | 太字・箇条書き・定型見出し・番号付きの段階・見出しの型・構造の密度・ラベルでの書き出し（S01〜S04・S07・S09・S10）を止める。体言止めの欠如は 3000 字以上。文頭の反復は 7 回以上 |
+| `essay` | `blog` | 長すぎる一文の目安を 90 字から 110 字に緩める。体言止めの欠如は 1500 字以上で判定。文頭の反復は 5 回以上 |
 
-## Morphological-Analysis Dictionary
+## 形態素解析の辞書
 
-noslop bundles the IPAdic dictionary of the morphological analyzer [hasami](https://github.com/owayo/hasami) (`dict/ipadic.hsd`) in its binary, so rules that count parts of speech are judged under the same conditions as the original calibration without any setup.
+noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdic の辞書（`dict/ipadic.hsd`）をバイナリに同梱していて、何も指定しなくても、品詞で数えるルールを元の校正と同じ条件で判定します。
 
-| Rule | With the dictionary (default) | Without a dictionary (`--no-dict`) |
+| ルール | 辞書ありの判定（既定） | 辞書なしの判定（`--no-dict`） |
 |---|---|---|
-| P16 chains of 「の」 | Counts the adnominal 「の」 and treats particles at most two words apart as one chain. Words the dictionary splits finely (words with suffixes such as 「必要性」 and 「話し方」, numbers, katakana words) count as one word | Counts only 「の」 between words made of kanji, katakana or alphanumerics, so it misses chains through words with hiragana (「の家の大きな犬の」) and chains that end in a hiragana word (「魂の安静のため」) |
-| P15 kanji runs | Excludes runs that contain proper nouns (era names, personal names and so on) by part of speech | Excludes only runs that end with common institution suffixes (委員会, 株式会社, ...) |
+| P16「の」の連鎖 | 連体の「の」を数え、隣り合う「の」の間が 2 語以内なら続いているとみなす。辞書が細かく分ける語（「必要性」「話し方」のような接尾辞の付いた語・数・カタカナ語）は 1 語にまとめて数える | 漢字・カタカナ・英数字の語に挟まれた「の」だけを数える。ひらがなを含む語をはさむ連鎖（「の家の大きな犬の」）や、端の語がひらがなの連鎖（「魂の安静のため」）は拾えない |
+| P15 連続漢字 | 固有名詞を含む連なり（年号・人名など）を品詞で除く | 定番の接尾辞（〜委員会・株式会社など）で終わる連なりだけを除く |
 
-Compared with the original detector, which counts with morphological analysis, on 373 local documents:
+形態素解析で数える元の検出器と、手元の文書 373 本で比べた結果です。
 
-| | Without | With (ipadic) |
+| | 辞書なし | 辞書あり（ipadic） |
 |---|---:|---:|
-| P16 share of the original's findings that were caught | 38% | 93% |
-| P15 agreement of the flagged spots | 0.76 | 0.90 |
+| P16 元が指した箇所を拾えた割合 | 38% | 93% |
+| P15 指した箇所の一致率 | 0.76 | 0.90 |
 
-Judging each disagreement against the rule's definition, the precision (share of findings that are correct) and recall (share of the correct findings of both tools that were caught) with the dictionary were:
+食い違った箇所を 1 件ずつルールの定義に照らして確かめると、辞書ありの判定の精度（指摘のうち正しいものの割合）と再現率（両方の正しい指摘のうち拾えた割合）は次のとおりでした。
 
-| | noslop (with the dictionary) | Original detector |
+| | noslop（辞書あり） | 元の検出器 |
 |---|---|---|
-| P16 precision / recall | 0.99 / 1.00 | 0.95 / 0.83 |
-| P15 precision / recall | 0.88 / 0.96 | 0.86 / 0.97 |
+| P16 精度・再現率 | 0.99・1.00 | 0.95・0.83 |
+| P15 精度・再現率 | 0.88・0.96 | 0.86・0.97 |
 
-Other rules do not change with a dictionary, and sentence splitting never uses one. Noun endings (R06) keep the dictionary-free estimate because the per-document verdicts were identical with and without a dictionary.
+ほかのルールは辞書の有無で変わりません。文分割も辞書を使いません。体言止め（R06）は、文書単位の判定が辞書なし・ありで変わらなかったため、辞書なしの推定のままです。
 
-The bundled dictionary adds about 18 MB to the binary (about 23 MB in total). It is read in place from the binary without being copied, so loading it takes almost no time and only the parts the analysis touches are brought into memory. Measured locally on Apple Silicon macOS against `--no-dict`, it adds less than 1 ms and less than 1 MB of maximum RSS when checking a short document, and about 4 ms and about 11 MB for a document of about 50 KB. When no rule that uses it runs (for example with `--no-readability`, or when `--only-rules` leaves out P15 and P16), it is not loaded.
+同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を読みません。
 
-### Choosing how the dictionary is used
+### 使い方の指定
 
-| Setting | Behavior |
+| 指定 | 動き |
 |---|---|
-| Nothing (`mode = "auto"`) | Use the dictionary in `HASAMI_DICT` if set, otherwise the bundled one |
-| `mode = "off"` / `--no-dict` | Do not use a dictionary; judge with the dictionary-free approximations |
-| `dictionary = "<path>"` / `--dict <path>` | Use this dictionary (a hasami `.hsd`). `--dict` also implies `required`. A relative path in the configuration is resolved from the configuration file's directory |
-| `dictionary = "share:<name>"` / `--dict share:<name>` | Use `<name>.hsd` in the hasami share directory (`$XDG_DATA_HOME/hasami`, or `~/.local/share/hasami` when it is not set), where `noslop dict download` puts dictionaries (not accepted in `HASAMI_DICT`) |
-| `mode = "required"` | Always use a dictionary; in a build without the bundled one, a missing dictionary is a configuration error (exit code 2) |
+| なにも指定しない（`mode = "auto"`） | `HASAMI_DICT` があればその辞書、なければ同梱の辞書を使う |
+| `mode = "off"` / `--no-dict` | 辞書を使わず、辞書なしの近似で判定する |
+| `dictionary = "<パス>"` / `--dict <パス>` | この辞書（hasami の `.hsd`）を使う。`--dict` は `required` を兼ねる。設定ファイルの相対パスは設定ファイルのディレクトリが基準 |
+| `dictionary = "share:<名前>"` / `--dict share:<名前>` | hasami の share ディレクトリ（既定は `~/.local/share/hasami`）の `<名前>.hsd` を使う。`noslop dict download` で取得した辞書を指す（`HASAMI_DICT` には書けない） |
+| `mode = "required"` | 辞書を必ず使う。同梱しないビルドで辞書が見つからなければ設定の誤り（終了コード 2） |
 
-A dictionary that was named explicitly (`--dict`, `dictionary`, `HASAMI_DICT`) but cannot be read is a configuration error; noslop does not silently fall back to the bundled one. Dictionaries placed in `~/.local/share/hasami/` are not picked up automatically, so the same noslop version gives the same results regardless of what is installed locally. Name one with `share:<name>` to use it.
+指定した辞書（`--dict`・`dictionary`・`HASAMI_DICT`）が読めないときは、同梱の辞書に切り替えず、設定の誤りにします。share ディレクトリに置いた辞書は自動では使いません（同じ版の noslop なら、手元に入れた辞書によらず同じ結果になるように）。使うときは `share:<名前>` で指定します。
 
 ```toml
 [morphology]
 mode = "auto"
-# A dictionary to use instead of the bundled one (share:<name> is one downloaded with noslop dict download)
+# 同梱の辞書の代わりに使う辞書（share:<名前> は noslop dict download で取得した辞書）
 # dictionary = "share:ipadic-neologd-sudachi"
 ```
 
-The method used appears on the text summary line (for example 「辞書あり (同梱の ipadic)」), in `settings.morphology` of the JSON report and in `settings.method` and `settings.dictionary` of the revision brief.
+使った方式は、text の集計の行（「辞書あり (同梱の ipadic)」など）、JSON の `settings.morphology`、改稿指示の `settings.method` と `settings.dictionary` に出ます。
 
-### Using another dictionary
+### 別の辞書を使う
 
-hasami distributes other prebuilt dictionaries as well. `ipadic-neologd` and `ipadic-neologd-sudachi` include NEologd and know more words, but that makes them large (over 220 MB each), so they are not bundled. `noslop dict download` fetches them into the hasami share directory (`$XDG_DATA_HOME/hasami`, or `~/.local/share/hasami` when it is not set).
+hasami は、ほかにもビルド済みの辞書を配布しています。NEologd の語彙を含む `ipadic-neologd` と `ipadic-neologd-sudachi` は、収録語が多い分だけ大きく、どちらも 220MB を超えるため同梱していません。`noslop dict download` で hasami の share ディレクトリに取得できます。share ディレクトリは hasami と同じ規則で決まり、`HASAMI_DATA_DIR` が設定されていればそこ、次に `$XDG_DATA_HOME/hasami`、Windows では `%LOCALAPPDATA%\hasami`、どれもなければ `~/.local/share/hasami` です。
 
-| Name | Size | Contents |
+| 名前 | 大きさ | 中身 |
 |---|---:|---|
-| `ipadic` | about 18 MB | IPAdic (the same as the one bundled with noslop) |
-| `ipadic-neologd` | about 222 MB | IPAdic + NEologd |
-| `ipadic-neologd-sudachi` | about 238 MB | IPAdic + NEologd + SudachiDict (recommended by hasami; the largest vocabulary) |
+| `ipadic` | 約 18MB | IPAdic（noslop が同梱しているものと同じ） |
+| `ipadic-neologd` | 約 222MB | IPAdic + NEologd |
+| `ipadic-neologd-sudachi` | 約 238MB | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
 
 ```bash
-# Download into the share directory (~/.local/share/hasami); without a name, ipadic-neologd-sudachi
+# share ディレクトリ（既定は ~/.local/share/hasami）に取得する（名前を省くと ipadic-neologd-sudachi）
 noslop dict download ipadic-neologd-sudachi
 
-# See which dictionaries are downloaded (no network access)
+# 取得済みかを確かめる（通信しない）
 noslop dict list
 
-# Lint with the downloaded dictionary
+# 取得した辞書で検査する
 noslop check docs/ --dict share:ipadic-neologd-sudachi
 ```
 
-In the configuration file, write `dictionary = "share:ipadic-neologd-sudachi"` under `[morphology]`. Downloading a dictionary does not make noslop use it; without an explicit setting, the bundled dictionary is used as before.
+設定ファイルなら `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます。取得しただけでは使いません。指定しないときは、これまでどおり同梱の辞書を使います。
 
-- The source is the dictionaries attached to the GitHub release of the hasami version noslop depends on (shown on the first line of `noslop dict list`). The downloaded contents are checked against the size and SHA-256 recorded in noslop (the same values as the `dictionaries.json` attached to that release), and must load as a hasami dictionary before they are put in place. A failed download never removes or damages an existing file
-- A file with different contents at the destination (for example from another hasami version) is replaced only with `--force`. `--force` also downloads again when a correct file is present
-- If a mirror is available, switch to it with `--source <URL>` (noslop fetches `<URL>/<name>.hsd` and checks the size and SHA-256 whatever the source)
-- noslop v26.9.100 tries to download from hasami's Git LFS, which no longer holds the dictionaries, and fails with `HTTP 404`. With v26.9.100, run `noslop dict download --source https://github.com/owayo/hasami/releases/download/v26.9.103` instead
-- The thresholds of the rules that count parts of speech (P15, P16) were calibrated with the bundled IPAdic. Other dictionaries segment words and assign parts of speech differently, so the number and positions of findings may change
+- 取得元は、noslop が依存する hasami の版（`noslop dict list` の 1 行目に出ます）の GitHub のリリースに添付された辞書です。取得した中身は、noslop に記録した大きさと SHA-256（そのリリースに添付された `dictionaries.json` と同じ値）で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
+- 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
+- ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
+- noslop v26.9.100 は、hasami が辞書を置かなくなった Git LFS から取得しようとして `HTTP 404` で失敗します。v26.9.100 では `noslop dict download --source https://github.com/owayo/hasami/releases/download/v26.9.103` で取得できます
+- 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります
 
-A dictionary outside the share directory is named by its file path (`--dict path/to/ipadic-neologd.hsd`).
+share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
 
-`cargo build --release --no-default-features` builds a binary without the bundled dictionary. It then looks at `--dict`, `dictionary`, `HASAMI_DICT` and the `*.hsd` files in the share directory (in hasami's order of preference, so dictionaries downloaded with `noslop dict download` are used automatically), and falls back to the dictionary-free approximations when none is found.
+辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときは、`--dict`・`dictionary`・`HASAMI_DICT` に加えて share ディレクトリの `*.hsd` を探し（hasami の推奨順。`noslop dict download` で取得した辞書も自動で使います）、見つからなければ辞書なしの近似で判定します。
 
-## How the Rules Were Calibrated
+## 校正の考え方
 
-The rules and thresholds enabled by default had their false-positive rates checked on human documents and documents generated by 7 models (71–103 human and 81–381 AI documents). The main decisions:
+既定で有効にしているルールと閾値は、人間の文書と 7 種のモデルが生成した文書（人間 71〜103 本、AI 81〜381 本）で誤検知率を確かめたものです。主な判断は次のとおりです。
 
-- **Monotonous sentence lengths (R01)** — burstiness `(σ−μ)/(σ+μ)` is a monotone transform of the coefficient of variation, and measuring length in characters or in morae discriminates about equally well. At the document level, `-0.38` flags 1.4% of human documents and about 58% of AI documents; `-0.24` flagged 32% of human documents, so it is not used. Paragraphs contain too few sentences for stable statistics, so the whole document is judged (20 or more prose sentences). Documents with 10–19 sentences are reported as info only below a stricter `-0.45`.
-- **Comma counts** — flagging sentences with four or more commas fired on 62% of real documents, and almost all of them were plain enumerations. noslop does not count commas and flags buried enumerations instead (R04).
-- **Long sentences (R03)** — length is not evidence of AI (about 1% of AI documents are caught), but long sentences are worth flagging for readability, so the readability lane uses 90 characters (roughly the 91st percentile of the corpus).
-- **Redundancy dictionaries (P04, P05)** — broad dictionaries of wordy expressions fired on 25.5% of well-written human documents. They stay experimental.
-- **Stock phrases** — words humans used more than models (「最後に」「まさに」) were removed, and words with a steady human baseline (「重要なのは」「このように」 and a few others) were lowered to info.
-- **Repeated contrasts (R05)** — deciding severity by the raw count fires strongly even at a thin rate in long documents. Severity follows the ratio to the total number of sentences: below 2% info, 2–3% warning, 3% or more error.
-- **Noun endings (R06)** — the premise that "many noun endings look like AI" turned out to be backwards; humans use them more. noslop flags a long document that contains none at all, as info.
-- **Structural habits (S01–S10)** — not quantitatively calibrated yet, so all are experimental.
-- **Rules added later (P18–P20, R11–R13)** — chat-reply leftovers, hype, self-answered questions, over-corrected uniformity and comma habits have provisional thresholds, so they are experimental.
+- **文長の単調さ（R01）** — burstiness `(σ−μ)/(σ+μ)` は変動係数の単調変換で、文字数で測ってもモーラで測っても判定力はほぼ同じでした。文書単位で `-0.38` 未満なら、人間の文書の誤検知は 1.4%、AI の文書の検出は約 58% です。`-0.24` では人間の文書の 32% に発火したため採りません。段落単位では文が少なく統計が安定しないため、文書全体（地の文が 20 文以上）で判定します。10〜19 文の文書は、より厳しい `-0.45` 未満のときだけ情報として出します。
+- **読点の数** — 1 文に読点 4 つ以上を指す方式は、実文書の 62% に発火し、中身のほとんどが同格の列挙でした。そこで読点の数は数えず、埋もれた列挙を指摘するルール（R04）に置き換えています。
+- **長い一文（R03）** — 長文は AI の証拠になりません（AI の文書の検出は約 1%）。ただし読みにくい箇所の指摘としては役に立つので、読みやすさのレーンで 90 字（コーパスの約 91 パーセンタイル）を目安にしています。
+- **冗長表現の辞書（P04・P05）** — 冗長表現を網羅的に拾う辞書は、人間の良文の 25.5% に発火しました。実験的ルールに留めています。
+- **定型句** — 人間のほうが多く使っていた語（「最後に」「まさに」）は外し、人間にも一定数ある語（「重要なのは」「このように」など）は重大度を情報に下げています。
+- **対比の反復（R05）** — 回数だけで重大度を決めると、長い文書で薄い頻度でも強く出ます。総文数に対する比率で、2% 未満は情報、2〜3% は警告、3% 以上は重大にしています。
+- **体言止め（R06）** — 「体言止めが多いと AI 臭い」という前提はデータと逆でした（人間のほうが使う）。長い文書に体言止めが 1 つもないことを、情報として指します。
+- **構造の癖（S01〜S10）** — 定量校正が済んでいないため、すべて実験的ルールです。
+- **後から足したルール（P18〜P20・R11〜R13）** — チャット応答の名残・誇張・問いと自答・直しすぎの均一さ・読点の癖は、閾値が暫定のため実験的ルールです。
 
-Dictionary-free approximations (estimating noun endings, detecting enumerations, ...) do not reproduce the original calibration conditions. Rules that rely on them stay experimental or info-level until they are recalibrated. Chains of 「の」 (P16) and kanji runs (P15) are counted by part of speech with the bundled dictionary, as in the original calibration.
+辞書を使わない近似（体言止めの推定、列挙の判定など）は、元の校正条件と同じではありません。近似で判定するルールは、再校正が済むまで実験的か情報の扱いにしています。「の」の連鎖（P16）と連続漢字（P15）は、同梱の形態素解析の辞書で、元の校正と同じ品詞の条件で数えます。
 
-To measure the rules on your own documents, run `noslop calibrate --human <human documents> --ai <generated documents>`. It reports each rule's false-positive and detection rates, the rates when a threshold moves, experimental rules that qualify for promotion and calibrated rules that need review (it never rewrites thresholds or statuses). How to collect a corpus, how to generate documents ([tools/corpus](tools/corpus)) and the promotion criteria are described in [docs/calibration.md](docs/calibration.md) (in Japanese).
+手元の文書で測り直すには `noslop calibrate --human <人の文書> --ai <生成文書>` を使います。ルールごとの誤検知率・検出率、閾値を動かしたときの率、校正済みに上げる候補と見直しが必要な校正済みルールを出します（閾値や状態は書き換えません）。コーパスの集め方・生成文書の作り方（[tools/corpus](tools/corpus)）・昇格の条件は [docs/calibration.md](docs/calibration.md) にまとめてあります。
 
-## Development
+## 開発
 
-Requires [mise](https://mise.jdx.dev/). Toolchain versions are pinned in `mise.toml`. The Makefile runs the tools through `mise exec`, so they use the versions in `mise.toml` even in a shell without `mise activate`.
+[mise](https://mise.jdx.dev/) が必要です。ツールチェーンの版は `mise.toml` で固定しています。Makefile はツールを `mise exec` 経由で呼ぶので、シェルで `mise activate` を済ませていなくても `mise.toml` の版で動きます。
 
 ```bash
-make setup   # install the toolchain from mise.toml (mise install) and fetch dependencies
-make ci      # the same checks as CI
+make setup   # mise.toml のツールチェーンを入れ（mise install）、依存を取得する
+make ci      # CI と同じ検査
 ```
 
-Running `make` with no target prints the same list; the descriptions below are its output.
+ターゲットの一覧は `make`（引数なし）でも表示できます。下の表の説明は、その出力と同じです。
 
-| Command | Description |
+| コマンド | 説明 |
 |---|---|
 | `make setup` | Install the toolchain (mise.toml) and fetch dependencies |
 | `make build` | Build debug version |
@@ -752,29 +748,29 @@ Running `make` with no target prints the same list; the descriptions below are i
 | `make clean` | Clean build artifacts |
 | `make help` | Show this help message |
 
-`make ci` runs the format check, clippy with warnings as errors, the tests, the check that `docs/rules.md` is up to date and the tests without the bundled dictionary. CI runs `make setup` and `make ci` on Linux and macOS; on Windows it skips make and runs the same checks except the `docs/rules.md` check as direct cargo commands. When you change a rule's definition or explanation, regenerate `docs/rules.md` with `make docs`; otherwise `make ci` fails.
+`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
 
-Cargo commands run with `--locked`, so dependencies resolve exactly as in `Cargo.lock`. To update `Cargo.lock` (for example right after adding a dependency), pass `CARGO_FLAGS=`. Without mise, add `SYSTEM_TOOLS=1` to use the tools on your `PATH` (the toolchain versions are then not pinned).
+cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに依存を解決します。依存を足した直後など、`Cargo.lock` を更新したいときは `CARGO_FLAGS=` を付けます。mise を使わない場合は `SYSTEM_TOOLS=1` を付けると、`PATH` 上のツールで動きます（ツールの版はそろいません）。
 
-## Release
+## リリース
 
-Releases are made by the Release workflow: open the Actions tab on GitHub, select Release and click Run workflow. Versions take the form `YY.M.COUNTER` (such as `26.9.100`); the first release of a month starts the counter at 100, and each later release in the same month adds 1. With `dry_run` enabled, the workflow only computes the next version and shows the change to `Cargo.toml`, without committing, tagging, building or publishing. Each release attaches the binaries for Linux x86_64, macOS x86_64 / arm64 and Windows x86_64, along with `SHA256SUMS`, `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64、macOS x86_64 / arm64、Windows x86_64 のバイナリと、`SHA256SUMS`・`LICENSE`・`THIRD_PARTY_NOTICES.md` が付きます。
 
-## Roadmap
+## ロードマップ
 
-- LSP support (live diagnostics in editors)
-- Extending the dictionary-based judgment to buried enumerations (R04) and repeated sentence openings (R08)
-- Recalibrating the dictionary-free approximations on corpora measured with `noslop calibrate` and promoting experimental rules to stable
-- Comparing against a previous JSON result in CI and reporting only new findings (baseline)
+- LSP（エディタ上でのリアルタイム表示）
+- 形態素解析の辞書を使う判定を、埋もれた列挙（R04）と文頭の反復（R08）にも広げる
+- `noslop calibrate` で集めたコーパスで辞書なしの近似を再校正し、実験的ルールを stable に上げる
+- CI で前回の JSON 結果と比べ、新しく出た指摘だけを出す（ベースライン）
 
-## License
+## ライセンス
 
 [MIT](LICENSE)
 
-Part of noslop's rule system, phrase catalog and thresholds is derived from an MIT-licensed project on Japanese writing practice. The copyright notice and full license text are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+noslop のルール体系・語句カタログ・閾値の一部は、MIT ライセンスで公開されている日本語の文章作法プロジェクトに由来します。著作権表示とライセンス全文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
 
-Sentences are split with the dictionary-free splitter of [hasami](https://github.com/owayo/hasami) (MIT), a Japanese morphological analyzer. hasami embeds an exception table (a list of words that contain sentence-ending marks) extracted from dictionary data (SudachiDict and others); its sources and copyright notices are also in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+文分割には、日本語の形態素解析器 [hasami](https://github.com/owayo/hasami)（MIT）の辞書を使わない文分割を使っています。hasami が組み込む例外表（文末記号を含む語の一覧）は辞書データ（SudachiDict ほか）から抽出したもので、その出典と著作権表示も [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
 
-The default binary (feature `bundled-dict`) bundles a morphological-analysis dictionary that hasami built from mecab-ipadic. The license text of mecab-ipadic (NAIST-2003) is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the dictionary's origin is in [dict/README.md](dict/README.md).
+既定のバイナリ（feature `bundled-dict`）には、hasami が mecab-ipadic から作った形態素解析の辞書を同梱しています。mecab-ipadic のライセンス（NAIST-2003）の条文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に、辞書の出所は [dict/README.md](dict/README.md) にあります。
 
-Some of the aspects noslop looks at were also informed by [textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing) (MIT). No code or phrase lists from it are included.
+見る観点の一部は、[textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)（MIT）も参考にしています。コードと語句の一覧は含みません。
