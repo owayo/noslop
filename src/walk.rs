@@ -26,12 +26,19 @@ pub const IGNORE_FILE_NAME: &str = ".noslopignore";
 /// ファイルを集める条件。
 #[derive(Clone)]
 pub struct WalkOptions {
-    /// 小文字の拡張子 (ドットなし)。
+    /// 文書の拡張子 (小文字、ドットなし)。
     pub extensions: Vec<String>,
+    /// コメントを検査するコードの拡張子 (小文字、ドットなし。設定の `[code] extensions`)。
+    pub code_extensions: Vec<String>,
     pub exclude: Option<ExcludeRule>,
 }
 
 impl WalkOptions {
+    /// 拡張子が、集める文書かコードの拡張子か (設定の `exclude` は見ない)。
+    pub fn selects(&self, path: &Path) -> bool {
+        has_extension(path, &self.extensions) || has_extension(path, &self.code_extensions)
+    }
+
     /// `root` を起点に検査するとき、`path` を除外するか (設定の `exclude`。ディレクトリをたどらずに
     /// 1 つのファイルだけを見るフック向け)。
     pub fn is_excluded(&self, root: &Path, path: &Path, is_dir: bool) -> bool {
@@ -66,6 +73,7 @@ impl Default for WalkOptions {
     fn default() -> Self {
         Self {
             extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
+            code_extensions: Vec::new(),
             exclude: None,
         }
     }
@@ -179,7 +187,7 @@ pub fn collect(paths: &[PathBuf], options: &WalkOptions) -> Collected {
             match entry {
                 Ok(entry) => {
                     let p = entry.path();
-                    if p.is_file() && has_extension(p, &options.extensions) {
+                    if p.is_file() && options.selects(p) {
                         files.insert(clean(p));
                         found += 1;
                     }

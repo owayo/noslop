@@ -107,6 +107,15 @@ pub struct FilesSection {
     pub exclude: Option<Vec<String>>,
 }
 
+/// `[code]` セクション。コードのファイルのコメントを検査する。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeSection {
+    /// コメントを検査するコードの拡張子 (ドットなし)。ディレクトリをたどるときとフックで集める。
+    /// 直接指定したファイルは、ここに書かなくても拡張子から言語が分かればコメントを検査する。
+    pub extensions: Option<Vec<String>>,
+}
+
 /// `[scope]` セクション。語句ルールの対象を段落以外にも広げる。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -283,6 +292,8 @@ pub struct ConfigFile {
     #[serde(default)]
     pub files: FilesSection,
     #[serde(default)]
+    pub code: CodeSection,
+    #[serde(default)]
     pub scope: ScopeSection,
     #[serde(default)]
     pub rules: RulesSection,
@@ -412,6 +423,12 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # 除外するパス (.gitignore と同じ書式。このファイルのあるディレクトリ基準)
 # exclude = ["CHANGELOG.md", "vendor/"]
 
+[code]
+# コメントを検査するコードの拡張子 (既定は空で、ディレクトリをたどるときにコードは集めない)。
+# noslop check に直接渡したコードのファイルは、ここに書かなくてもコメントを検査します。
+# コメントは短い断片なので、1 文ずつ判定するルールだけを当てます
+# extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
+
 [scope]
 # 語句ルールをリスト・表・引用にも当てるか (既定は地の文の段落だけ)
 # lists = false
@@ -483,6 +500,11 @@ pub const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/
 # 除外するパス (.gitignore と同じ書式)。ユーザーの設定では、noslop check に渡したディレクトリが基準です。
 # プロジェクトの設定に exclude があれば、こちらは使いません
 # exclude = ["drafts/"]
+
+[code]
+# コメントを検査するコードの拡張子 (フックと、ディレクトリをたどるときに集める。既定は空)。
+# プロジェクトの設定に extensions があれば、こちらは使いません
+# extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
 
 # 手元で使う独自ルール (プロジェクトの設定に同じ ID があれば、そちらで置き換わります)
 # [[custom]]

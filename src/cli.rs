@@ -17,6 +17,7 @@ use clap::builder::{PossibleValue, PossibleValuesParser};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use unicode_width::UnicodeWidthStr;
 
+use crate::code::CodeLanguage;
 use crate::config::{self, ConfigError, ConfigLayers, CustomRuleConfig, FailOn, LoadedConfig};
 use crate::diagnostic::{RuleStatus, Severity};
 use crate::dictionaries::{self, Check, Distributed, Outcome};
@@ -268,10 +269,11 @@ pub struct McpArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum HookCommand {
-    /// Claude Code の PostToolUse フック (Write / Edit / MultiEdit の後に検査して、指摘を Claude に渡す)
+    /// Claude Code のフック (編集したファイル、gws で書き込む値、Stop のときのリポジトリの差分を検査して、指摘を Claude に渡す)
     ///
-    /// 標準入力でフックの入力 (JSON) を受け取り、指摘があれば additionalContext を標準出力に書く。
-    /// 対象外のツール・ファイルや指摘がないときは何も書かない。設定ファイルは入力の cwd から親へ探す。
+    /// 標準入力でフックの入力 (JSON) を受け取り、イベントごとに検査する。
+    /// PostToolUse (Write / Edit / MultiEdit) は書き換えたファイルの変わった行を、PreToolUse (Bash) は gws で Google ドキュメント・スプレッドシートに書き込む値を、Stop はリポジトリの差分 (HEAD との差分と追跡していないファイル) の変わった行を見る。
+    /// 対象外のイベント・ツール・ファイルや指摘がないときは何も書かない。設定ファイルは入力の cwd から親へ探す。
     ClaudeCode(HookArgs),
     /// 編集したファイルのパスだけを渡すフックから呼ぶ (claw-hooks の extension_hooks のように、フックの入力を渡せない仕組み向け)
     ///
@@ -280,6 +282,22 @@ pub enum HookCommand {
     /// 変わった行は git の差分 (HEAD との比較) から求め、git で追跡していないファイルや git の外ではファイル全体を見る。
     /// 設定ファイルはカレントディレクトリから親へ探す。
     File(FileHookArgs),
+    /// リポジトリの差分を検査する (claw-hooks の stop_hooks のように、フックの入力を渡せない仕組みの Stop 向け)
+    ///
+    /// HEAD との差分と追跡していないファイルのうち、検査するファイルの変わった行に重なる指摘を、claude-code と同じ短い改稿指示でテキストに書く。
+    /// 指摘があれば終了コード 1 で終わり、なければ何も書かずに 0 で終わる (git の外でも 0)。
+    /// 設定ファイルはカレントディレクトリから親へ探す。
+    GitDiff(GitDiffHookArgs),
+}
+
+/// `hook git-diff` の引数。
+#[derive(Debug, Clone, Args)]
+pub struct GitDiffHookArgs {
+    /// 出力の文字数の上限。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
+    #[arg(long, default_value_t = 9_000, value_parser = parse_limit, value_name = "N")]
+    pub max_chars: usize,
+    #[command(flatten)]
+    pub hook: HookArgs,
 }
 
 /// `hook file` の引数。
@@ -570,6 +588,7 @@ pub fn run() -> ExitCode {
         Command::Mcp(args) => mcp(args),
         Command::Hook(HookCommand::ClaudeCode(args)) => crate::hook::claude_code(&args),
         Command::Hook(HookCommand::File(args)) => crate::hook::file(&args),
+        Command::Hook(HookCommand::GitDiff(args)) => crate::hook::git_diff(&args),
         Command::SkillInstall(args) => skill_install(args),
         Command::Dict(DictCommand::Download(args)) => dict_download(args),
         Command::Dict(DictCommand::List(args)) => dict_list(args),
@@ -761,13 +780,38 @@ fn engine_options(args: &EngineArgs, cfg: &ConfigLayers, env: &Environment) -> E
 /// 設定ファイルのディレクトリ基準で使う。なければユーザーの設定の `exclude` を、検査の起点 (渡した
 /// ディレクトリ) 基準で使う。
 pub(crate) fn walk_options(cfg: &ConfigLayers) -> Result<WalkOptions, ConfigError> {
-    let mut options = WalkOptions::default();
-    if let Some(ext) = cfg.pick(|f| f.files.extensions.clone()) {
-        options.extensions = ext
+    fn normalize(extensions: &[String]) -> Vec<String> {
+        extensions
             .iter()
             .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
             .filter(|e| !e.is_empty())
-            .collect();
+            .collect()
+    }
+    let mut options = WalkOptions::default();
+    if let Some(ext) = cfg.pick(|f| f.files.extensions.clone()) {
+        options.extensions = normalize(&ext);
+    }
+    if let Some(ext) = cfg.pick(|f| f.code.extensions.clone()) {
+        options.code_extensions = normalize(&ext);
+        for ext in &options.code_extensions {
+            match CodeLanguage::from_extension(ext) {
+                Some(lang) if lang.is_available() => {}
+                Some(lang) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "[code] extensions の `{ext}` ({}) は、このビルドでは読めません (feature `{}` を付けてビルドしてください)",
+                        lang.name(),
+                        lang.feature()
+                    )));
+                }
+                None => {
+                    let known: Vec<&str> = CodeLanguage::available_extensions().collect();
+                    return Err(ConfigError::Invalid(format!(
+                        "[code] extensions の `{ext}` はコードの拡張子として読めません (読めるのは {})",
+                        known.join("・")
+                    )));
+                }
+            }
+        }
     }
     fn exclude_of(c: Option<&LoadedConfig>) -> Option<(&[String], &LoadedConfig)> {
         c.and_then(|c| c.file.files.exclude.as_deref().map(|p| (p, c)))

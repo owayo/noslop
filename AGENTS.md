@@ -8,6 +8,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 - 文字種・語句パターン・文長の統計で判定する。品詞で数えるルール (P15・P16) は hasami の辞書で判定する (`morph.rs`)。既定 (`dictionary = "auto"`) では、share ディレクトリに取得した配布辞書を hasami の推奨順で選び、なければバイナリに同梱した IPAdic の辞書 (`dict/ipadic.hsd`) を使う。元の校正は同梱の IPAdic で行ったので、その条件で判定するなら `dictionary = "bundled"`。`--no-dict` や、同梱しないビルドで辞書が見つからないときは辞書なしの近似で動く
 - 設定はユーザーの設定 (`~/.config/noslop/config.toml`) とプロジェクトの設定 (`noslop.toml`) の 2 層で、既定値 < ユーザー < プロジェクト < CLI の順に項目ごとに重ねる (`config.rs`)
+- 文書 (Markdown・テキスト) のほかに、コードのファイルのコメント (tree-sitter で取り出す。`code/`) を検査できる。コメントや表計算のセルのような互いに独立した短い断片の集まり (`DocumentKind::Fragments`) には、1 文ずつ判定するルール (`RuleUnit::Sentence`) だけを当てる。文書・段落をまたいで数えるルールは、ひと続きの地の文で校正したため
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
 - AI 臭さ (`slop`) と読みやすさ (`readability`) の 2 つのレーンを混ぜない
 - 文書全体の点数は出さない。指摘を 1 件ずつ並べ、レーンと重大度ごとの件数を数えるだけにする (以前の「自然度スコア」は校正しておらず、人の文書と AI の文書を見分けていなかったので外した。README の「文書全体の点数を出さない理由」)
@@ -18,6 +19,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 - Markdown: `pulldown-cmark`
 - 文分割と形態素解析: [hasami](https://github.com/owayo/hasami)。文分割は `hasami::sentence` (辞書を使わない)、形態素解析は `analyzer` feature (辞書があるときだけ)。crates.io の同名クレートは別物なので、git の依存でリリースのタグ (`Cargo.toml` の `tag`) を指定して入れる。テストは `build` feature (dev-dependency) で小さな辞書を組み立てる。既定の feature `bundled-dict` で `dict/ipadic.hsd` (約 18MB) を `hasami::include_hsd!` でバイナリに埋め込み、`Dictionary::from_static` で複製せずに読む。辞書を指定しないとき (`auto`) は、share ディレクトリに取得した配布辞書を同梱の辞書より先に使う (選ぶ順は依存の hasami の推奨順で、目録の自動更新では変わらない)。辞書を差し替える手順は `dict/README.md`。上げるときはタグを書き換えて `cargo update -p hasami` を実行し (hasami の `rust-version` が上がっていれば、`Cargo.toml` の `rust-version` もそろえる。上げると clippy が MSRV で抑えていた指摘を出すことがある)、例外表の版を固定したテスト (`segment.rs`) が落ちたら分割の差分と THIRD_PARTY_NOTICES.md の NOTICE の写しを確かめる。依存を上げても配布辞書の目録 (`dict/catalog.json`) は書き換えなくてよい。目録の辞書の形式 (`format_version`) が依存の `hasami::hsd::FORMAT_VERSION` と同じことはテスト (`the_catalog_is_readable_by_the_linked_hasami`) が確かめる。同梱の辞書を上げる手順は `dict/README.md` にある (テスト `the_bundled_dictionary_matches_dict_readme` が `dict/ipadic.hsd` を `dict/README.md` の表の大きさと SHA-256 と照らす)
 - 配布辞書の目録: `dict/catalog.json` (hasami のリリースに添付された `dictionaries.json` をそのまま置く) が正本。`build.rs` が serde・serde_json (build-dependencies) で読んで検証し、`HASAMI_TAG`・`DEFAULT_SOURCE`・`CATALOG_FORMAT_VERSION`・`RECOMMENDED`・`DICTIONARIES` を作る。`src/dictionaries.rs` はそれを `include!` で取り込む (壊れた目録ではビルドが止まる)。目録は Release のワークフローが hasami の最新のリリースに合わせて自動で更新する。手で更新するなら `make dict-catalog` (`TAG=...` で版を指定、省くと最新。`tools/dict-catalog.sh` が gh で取得し、古い版には戻さない)、目録の辞書を実際に取得できるかは `make dict-check` (通信が要る) で確かめる。依存の hasami (`Cargo.toml` のタグ) と同梱の辞書は判定の結果を左右するので、目録とは別に人が上げる
+- コードのコメントの取り出しと、gws のコマンドの解析: `tree-sitter` (0.27) と言語ごとの文法の crate。文法は言語ごとの feature (`lang-rust` など) で入れ、既定の `code` は軽い文法 (Rust・JavaScript・TypeScript/TSX・Python・Go・Java・C・YAML・TOML・HTML・CSS・Lua) をまとめたもの。重い文法 (C++・C#・Ruby・PHP・Swift・Kotlin) は `code-all` か言語ごとの feature で足す。Bash の文法は gws のコマンドの解析にも使うので常に入る。Ruby の文法は astro-sight と同じく owayo のフォーク (git の依存) を使う。SQL の文法 (tree-sitter-sequel) は `cc` を `~1.2` に固定させ、`ring` が引く新しい `cc` とぶつかるので入れない。文法の crate は tree-sitter 0.27 で読める版に固定している (上げるときは文法ごとに ABI の対応を確かめる。0.27 の API の変更は tree-sitter-guide スキル)
 - 語句の照合: `aho-corasick` / `regex`
 - ファイル探索: `ignore` (.gitignore を尊重)、並列化: `rayon`
 - CLI: `clap`、設定: `toml` + `serde`、出力の色: `anstream` / `anstyle`
@@ -32,6 +34,7 @@ flowchart TD
     WALK --> DOC[document.rs<br/>Document / Block / Sentence]
     DOC --> MD[markdown.rs<br/>Markdown → ブロック]
     DOC --> TXT[plaintext.rs<br/>テキスト → ブロック]
+    DOC --> CODE[code/<br/>コードのコメント → ブロック]
     MD --> DIR[directive.rs<br/>抑制コメントの読み取り]
     TXT --> DIR
     DOC --> SEG[segment.rs<br/>文分割]
@@ -45,7 +48,7 @@ flowchart TD
     CLI --> DIFF[diff/<br/>改稿の前後の比較]
     CLI --> CAL[calibrate.rs<br/>コーパスでの校正]
     CLI --> MCP[mcp.rs<br/>MCP サーバー]
-    CLI --> HOOK[hook.rs<br/>Claude Code のフック]
+    CLI --> HOOK[hook/<br/>Claude Code・claw-hooks のフック]
     CLI --> DICTS[dictionaries.rs<br/>配布辞書の取得]
     MORPH --> DICTS
     DIFF --> ENG
@@ -63,20 +66,21 @@ flowchart TD
 | `src/main.rs` | エントリポイント。終了コードを返す |
 | `src/cli.rs` | clap の定義と、`check` / `diff` / `calibrate` / `rules` / `explain` / `init` / `mcp` / `hook` / `skill-install` / `dict` の実行。`check` と `diff` はルールの選び方の引数 (`EngineArgs`) を共有する。`check` は出す内容 (`--report full\|brief`) と形式 (`--format`) の組み合わせを最初に確かめる。設定はユーザーの設定とプロジェクトの設定の 2 層で読み (`load_config_from`。`--config` はプロジェクトの層だけを差し替え、`--no-config` はどちらも読まない)、項目ごとに重ねてエンジンの設定 (`config_engine_options`) と対象の列挙の設定 (`walk_options`) に組み立てる (CLI が優先)。書いた項目だけを上書きし、配列 (`[files] extensions`・`exclude`) は丸ごと置き換える。`[morphology] dictionary` の相対パスは、書いたファイルのディレクトリ基準で直してから重ねる。`[[custom]]` は ID (大文字小文字を区別しない) でまとめ、同じ ID はプロジェクトの定義で丸ごと置き換える。手元の環境 (ホームディレクトリ、`HASAMI_DICT`、share ディレクトリ) は `Environment` にまとめ、入口 (`check`・`diff`・`calibrate`・`rules`・MCP・フック) で 1 度だけ作って渡す (テストでは空の `Environment` を渡す) |
 | `src/config.rs` | 設定ファイルの書式 (`ConfigFile`) と読み込み。ユーザーの設定の置き場所 (`user_config_path`。`~/.config/noslop/config.toml`。ホームは `std::env::home_dir()` で、Windows は `USERPROFILE`。`XDG_CONFIG_HOME` は見ず、自動では作らない。ひな形は `noslop init --user` が `USER_TEMPLATE` を書く) と、プロジェクトの設定の探索 (`discover`。`noslop.toml` / `.noslop.toml` をカレントから親へ探し、最初の 1 つ)。読んだ 2 層は `ConfigLayers` にまとめ、項目の値はプロジェクト、なければユーザーの順に取る (`pick`)。書式の誤りはどちらの層でも終了コード 2 |
-| `src/walk.rs` | 対象ファイルの列挙 (.gitignore・.ignore・.noslopignore・拡張子・設定の除外。除外は .gitignore と同じ書式で、プロジェクトの設定の除外は設定ファイルのディレクトリが基準、ユーザーの設定の除外は検査の起点 (`check` に渡したディレクトリ) が基準。直接指定したファイルは拡張子と除外を問わない) |
-| `src/engine.rs` | ルールの選択 (stable / experimental / ジャンル / 明示の有効化・無効化)、設定値の適用、実行、重大度の上書き、fingerprint、並べ替え。`[rules] enable` / `disable` と `[rules.X]` は、ユーザーとプロジェクトの層ごとに ID に直してから、ルールごとに CLI > プロジェクト > ユーザー > 既定で決める (同じ層では無効が優先。同じ層で ID と名前の両方から同じルールを指せばエラー)。`[rules.X]` の severity と閾値はキーごとにプロジェクトが上書きする。辞書を使う有効なルール (`Rule::uses_morphology`) があるときだけ辞書を読み、文書ごとに `DocMorphology` を作ってルールに渡す |
+| `src/walk.rs` | 対象ファイルの列挙 (.gitignore・.ignore・.noslopignore・拡張子・設定の除外。拡張子は文書の `[files] extensions` とコードの `[code] extensions` のどちらかに当たれば集める (`WalkOptions::selects`。コードの拡張子は既定で空で、このビルドで読めない言語は `cli::walk_options` が誤りにする)。除外は .gitignore と同じ書式で、プロジェクトの設定の除外は設定ファイルのディレクトリが基準、ユーザーの設定の除外は検査の起点 (`check` に渡したディレクトリ) が基準。直接指定したファイルは拡張子と除外を問わない) |
+| `src/engine.rs` | ルールの選択 (stable / experimental / ジャンル / 明示の有効化・無効化)、設定値の適用、実行、重大度の上書き、fingerprint、並べ替え。`[rules] enable` / `disable` と `[rules.X]` は、ユーザーとプロジェクトの層ごとに ID に直してから、ルールごとに CLI > プロジェクト > ユーザー > 既定で決める (同じ層では無効が優先。同じ層で ID と名前の両方から同じルールを指せばエラー)。`[rules.X]` の severity と閾値はキーごとにプロジェクトが上書きする。辞書を使う有効なルール (`Rule::uses_morphology`) があるときだけ辞書を読み、文書ごとに `DocMorphology` を作ってルールに渡す。断片の集まり (`DocumentKind::Fragments`) には、`Rule::unit` が `RuleUnit::Sentence` のルールだけを当てる |
 | `src/morph.rs` | 形態素解析。`[morphology]`・`--dict`・`--no-dict` から辞書を決めて読み込む (`resolve`)。辞書の指定は `auto` (既定)・`bundled` (同梱の辞書)・`share:<名前>`・ファイルのパスで、`auto`・`bundled` は文字列が正確に一致したときだけキーワードとみなす (その名前のファイルは `./auto` と書く)。`auto` の探す順は、`HASAMI_DICT` → share ディレクトリの配布辞書 (`dictionaries::preferred_in`。依存の hasami の推奨順 `hasami::analyzer::DISTRIBUTED_DICTS` で、ない候補だけを飛ばす。配布辞書でない `*.hsd` は選ばない) → 同梱の辞書 (同梱しないビルドでは share ディレクトリのほかの `*.hsd` を名前順に探し、`auto` で見つからなければ辞書なし、`required` ならエラー)。`share:<名前>` は share ディレクトリの辞書に直す (`HASAMI_DICT` には当てない)。見つかった辞書・指定した辞書が読めなければエラーにし、次の候補や同梱の辞書に切り替えない。`auto` の選び方は読み込みと分けてある (`auto_pick`。`dict list` と `dict download` が、指定しないときに使う辞書を示すのにも使う)。share ディレクトリと `HASAMI_DICT` の値は呼び出し側から渡し (`MorphologyOptions::search`。既定は空で手元を探さない)、in-process のテストで環境変数を触らずに済むようにしている。同梱の辞書は埋め込んだバイト列を複製せずに読み (`Dictionary::from_static`)、組み立てはプロセスで 1 度だけにして共有する (`Morphology::bundled`)。文書ごとの解析器で、ルールが求めた文だけを解析して覚えておく。使った方式 (`MorphologyStatus`) は出力の `settings` に載る |
 | `src/suppress.rs` | 抑制コメントを診断に当てる。未知のルール名は警告にする |
 | `src/output/` | text (色付き。ファイルの中をレーンごとの節に分け、要約もレーンごとに数える)・json (安定スキーマ)・toon (JSON と同じデータを TOON で。符号化は `toon-format` クレート)・github (ワークフローコマンド、エスケープは出力器の責務)・brief (AI や編集者に渡す改稿指示。`Brief` のデータを組み立て、Markdown・JSON・TOON に描き分ける。データはルールの表と該当箇所の表に分け、TOON の表形式が効くようにしている) |
 | `src/diff/` | `noslop diff`。指摘の突き合わせ (`mod.rs`、fingerprint を多重集合で)、事実の消失と追加 (`facts.rs`)、改稿の偏り (`shifts.rs`)、出力 (`render.rs`) |
 | `src/calibrate.rs` | `noslop calibrate`。人の文書と生成文書で、ルールごとの誤検知率・検出率、`Rule::measure` による閾値の掃引、昇格候補と見直しを出す (手順は `docs/calibration.md`) |
 | `src/mcp.rs` | `noslop mcp`。標準入出力の JSON-RPC で `check` / `diff` / `explain` / `rules` を提供する。`check` は `report` (既定 `brief`) と `format` (`markdown`・`json`・`toon`) で返すものを選ぶ (版の扱いは `docs/integrations.md`) |
-| `src/hook.rs` | `noslop hook claude-code` と `noslop hook file`。claude-code は PostToolUse の入力から変わった行を求め、重なる指摘だけを短い brief で返す。file は、パスだけを渡すフックの仕組み (claw-hooks の extension_hooks など) 向けで、変わった行を git の差分 (HEAD との比較。追跡していないファイルと git の外はファイル全体) から求め、同じ brief をテキストで返す (`--max-chars` で行単位に切る)。検査の本体 (`review`) は 2 つで共有する |
+| `src/hook/` | エージェントのフック。`claude_code.rs` は `noslop hook claude-code` で、フックの入力 (JSON) をイベントで振り分ける (PostToolUse の Write / Edit / MultiEdit はこのファイル、PreToolUse の Bash は `gws.rs`、Stop は `stop.rs`。`hook_event_name` がなければ PostToolUse とみなす)。PostToolUse は入力から変わった行を求め、重なる指摘だけを短い brief で返す。`file.rs` は `noslop hook file` で、パスだけを渡すフックの仕組み (claw-hooks の extension_hooks など) 向け。変わった行を git の差分 (HEAD との比較。追跡していないファイルと git の外はファイル全体。`git.rs`) から求め、同じ brief をテキストで返す (`--max-chars` で行単位に切る)。`stop.rs` は Stop と、フックの入力を渡せない Stop の仕組み (claw-hooks の stop_hooks など) 向けの `noslop hook git-diff`。`mod.rs` は共通の部品で、設定を 1 度だけ読んで対象の選び方とエンジンを持つ `Reviewer` (`selects`・`lint_file`・`brief`) と、1 ファイルの検査 (`review`)・変わった行との重なり (`touches`)・行単位の切り詰め (`truncate_lines`) を置く |
+| `src/code/` | コードのファイルのコメントを、文章として検査するブロックにする (tree-sitter)。言語 (`CodeLanguage`。拡張子・feature・このビルドで読めるか) と、コメントの取り出し (`parse`) |
 | `src/skill.rs`・`skills/SKILL.md` | `noslop skill-install`。`skills/SKILL.md` をバイナリに埋め込み、`~/.claude/skills/noslop/` か `~/.codex/skills/noslop/` に書く。`make install` もバイナリを入れたあとに両方へ入れる (`SKILL_TARGETS` で選ぶ)。CLI の使い方を変えたら SKILL.md も直す (本文に `$` の直後の数字や `$ARGUMENTS` を書かない。スキルの引数に置き換わる) |
 | `src/dictionaries.rs` | `noslop dict download` / `list`。hasami の配布辞書の表 (`DICTIONARIES`。名前・大きさ・SHA-256) と取得元 (`HASAMI_TAG`・`DEFAULT_SOURCE`。目録の版の GitHub のリリースの添付ファイル) は、`build.rs` が `dict/catalog.json` から作ったものを `include!` で取り込む。表示の日本語の説明は `Distributed::description` (名前ごと。知らない名前は目録の説明)。share ディレクトリ (`share_dir`。hasami の `hasami::analyzer::data_dir` をそのまま使う。`HASAMI_DATA_DIR` → `$XDG_DATA_HOME/hasami` → Windows は `%LOCALAPPDATA%\hasami` → `~/.local/share/hasami`) と、`share:<名前>` の解決 (`resolve_share`。名前にパスの区切り・`:`・`..` を書かせない)。取得は `hasami::download::download` に任せる (`download`。表の項目を `DistributedDict` に直し、取得元は目録の版の `DEFAULT_SOURCE` を必ず渡す。目録は依存の hasami より新しいことがあるため)。既定では圧縮版 (`<名前>.hsd.zst`) を受け取りながら展開し、圧縮版と展開後の両方の大きさ・SHA-256 と、辞書として読めることを確かめてから rename で置く (失敗しても既存のファイルは消さず、壊さない。24 時間より古い一時ファイルは次の取得で消す)。圧縮版を置いていないミラーには `--uncompressed` (圧縮版の 404 の誤りでこれを案内する。hasami に自動の切り替えを頼んでいる: owayo/hasami#26)。hasami の誤り (`DownloadError`。non_exhaustive) はバリアントごとに日本語に言い換え (`DownloadError::from_hasami`)、展開したものの誤り (出所が `<URL> (decompressed)`) は「展開した中身」と書く。置き場所の検証 (`check_file`) も `hasami::download::verify`。取得した辞書は、辞書を指定しないとき (`auto`) に次の実行から使われる (`preferred_in` が依存の hasami の推奨順で選ぶので、目録の自動更新では選ぶ順が変わらない)。`dict list` は、指定しないときに使う辞書を示す |
 | `build.rs` | 配布辞書の目録 (`dict/catalog.json`) を検証し (版・形式の版・名前・ファイル名・大きさ・SHA-256 の書式・推奨の辞書・圧縮版 (`compressed`) のファイル名 `<名前>.hsd.zst`・大きさ・SHA-256)、`src/dictionaries.rs` が取り込む定数を `OUT_DIR/catalog.rs` に作る。辞書は小さい順に並べる。目録の形式の版が依存の hasami で読めるかは、build.rs から依存を参照できないので `src/dictionaries.rs` のテストで確かめる |
 | `src/heading.rs` | 見出しの形 (コロン型・問い型・番号型) の分類。S07 と `noslop diff` で共有する |
-| `src/document.rs` | 文書モデル。解析用テキストと原文の対応 (`TextMap`)、行・列 (`LineIndex`) |
+| `src/document.rs` | 文書モデル。解析用テキストと原文の対応 (`TextMap`)、行・列 (`LineIndex`)。形式 (`SourceFormat`。拡張子から Markdown・テキスト・コード (`Code(CodeLanguage)`) を決める) と、文書の組み立て (`DocumentKind`。ひと続きの文章 `Prose` か、コメントやセルのような断片の集まり `Fragments` か。コードは `Fragments`) |
 | `src/markdown.rs` | Markdown をブロック (段落・リスト項目・見出し・表セル) に分け、コード・URL・装飾を解析用テキストから外す。front matter は文書の先頭のものだけを自前で見つけて解析から外す (pulldown-cmark のメタデータブロックの記法は文書の途中の `---` にも当たって本文を捨てるので、有効にしない)。段落の中の改行のうち、書式から文の区切りと分かるものは `Block::sentence_breaks` として記録する (`breaks_sentence`。1 行 1 項目の箇条書きやラベルの行を 1 文につながないため)。次の行が Markdown の記法にない箇条書きの記号・番号 (「・」「◯」「①」「(1)」) か「短い見出し＋全角コロン」で始まる、直前の行がコロンで終わる・【】で囲んだ見出し風の行・太字だけの行である、直前の行が日本語を含まない英文の文末で次の行が日本語で始まる、ハード改行の直前が文末記号・読点・ひらがなで終わらない、直前の行が丁寧体の文末 (「です」「ます」「ください」など) で終わり次の行が括弧で始まらない、のどれか。ひらがなや読点で終わる行の改行は本文の折り返しとみなしてつなぐ |
 | `src/plaintext.rs` | テキストをブロックに分ける (空行・字下げ・箇条書き記号。空行がほとんどない文書は 1 行 1 段落とみなし、文末記号のない短い 1 行は見出しと推定する。コメントだけの行は段落を切らない) |
 | `src/segment.rs` | 文分割。`hasami::sentence` への橋渡し (括弧の対応を取ってから、対応の取れた括弧の内側と例外表の語の内側では分割しない)。改行を文の区切りにするモードでは、`line_breaks` の位置を改行とみなして分割する (`split_with_breaks`)。書式から文の区切りと分かる改行 (`sentence_breaks`) は、改行の扱いの設定によらず切る。組み込みの例外表の版 (`BUILTIN_EXCEPTIONS_VERSION`) をテストで固定し、表が変わったら気付けるようにしている |
@@ -84,7 +88,7 @@ flowchart TD
 | `src/text.rs` | 文字種の判定と文長の数え方。文末記号・括弧の判定は、文分割と字の集合がずれないよう `hasami::sentence` のものを再公開する。文末の記号を除いた本体と、名詞らしい終止 (体言止め) の推定もここに置き、R06・R12 と `noslop diff` で共有する |
 | `src/genre.rs` | ジャンルと別名 |
 | `src/diagnostic.rs` | 診断・重大度・レーン・ステータス・原文上の範囲 |
-| `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |
+| `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、判定の単位 (`RuleUnit`。1 文ずつか、文書・段落をまたぐか)、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |
 | `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/attribution.rs` が出典をぼかした権威付け (P21)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
 | `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas・duplicates・future_closer・triads) |
 | `src/rules/structure.rs` | 構造系 (`S01`〜`S10`) |
@@ -103,7 +107,8 @@ flowchart TD
 6. 閾値を持つルールは `Rule::measure` を実装し、`noslop calibrate` で閾値を掃引できるようにする。実装したら `rhythm.rs` / `structure.rs` のテストにある `MEASURED` に ID を足す。`testing::assert_measures_agree` が、測定値が閾値を越えることと `check` が指摘することの一致を、閾値を測定値の前後に動かして確かめる (指摘する例と、値は測れるが指摘しない例を 1 つ以上用意する)。重大度を切り替えるだけの閾値 (R05 の `error_above` など) は `Measure::at` で切り替え先の重大度を示す
 7. 特定の重大度の率で校正したルールは、`Rule::calibration_basis` でその重大度を返す (既定は、既定の重大度が警告以上なら警告、情報なら情報。R05 は重大)。`noslop calibrate` は、見直しの判定をこの重大度以上の指摘で数える
 8. 品詞で判定したほうが元の校正条件に近いルールは、`Rule::uses_morphology` を真にし、`ctx.morph` (辞書があるときだけ `Some`) の形態素で判定する。辞書がない・文を解析できないときは辞書なしの近似に戻す。テストは `morph::testing::morphology` で小さな辞書を組み立て、`testing::run_with_morphology` で当てる (辞書なしと辞書ありの結果が違う例を並べる)
-9. README のルール一覧を更新し、`make docs` で `docs/rules.md` を作り直す
+9. 1 文の中だけで判定が決まるルールは、`Rule::unit` で `RuleUnit::Sentence` を返す (コードのコメントや表計算のセルのような断片の集まりにも当たる)。文をまたぐ・数を数える・文書の構造を見るルールは既定 (`RuleUnit::Document`) のままにする (断片をまとめた母数で数えることになるため)
+10. README のルール一覧を更新し、`make docs` で `docs/rules.md` を作り直す
 
 ### `explanation` の書式
 
