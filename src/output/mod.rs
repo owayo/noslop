@@ -7,12 +7,45 @@ pub mod text;
 pub mod toon;
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 
 use crate::config::FailOn;
 use crate::document::Document;
-use crate::engine::Engine;
+use crate::engine::{Engine, RunReport};
 use crate::genre::Genre;
 use crate::rules::RuleMeta;
+
+/// 検査結果の内容と形式。引数の既定値や組み合わせの検証は CLI・MCP それぞれで行う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckOutput {
+    Text,
+    Json,
+    Toon,
+    Github,
+    BriefMarkdown,
+    BriefJson,
+    BriefToon,
+}
+
+impl CheckOutput {
+    /// 選んだ形式で書き出す。端末の色・バッファリング・標準エラーへの出力は呼び出し元が扱う。
+    pub(crate) fn render(
+        self,
+        report: &RunReport,
+        opts: &RenderOptions,
+        out: &mut dyn Write,
+    ) -> io::Result<()> {
+        match self {
+            Self::Text => text::render(report, opts, out),
+            Self::Json => json::render(report, opts, out),
+            Self::Toon => json::render_toon(report, opts, out),
+            Self::Github => github::render(report, out),
+            Self::BriefMarkdown => brief::render(report, opts, out),
+            Self::BriefJson => brief::render_json(report, opts, out),
+            Self::BriefToon => brief::render_toon(report, opts, out),
+        }
+    }
+}
 
 /// 出力の設定。
 #[derive(Debug, Clone, Default)]

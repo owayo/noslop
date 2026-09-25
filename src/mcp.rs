@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::document::SourceFormat;
 use crate::engine::{Engine, EngineOptions, RunReport};
 use crate::genre::Genre;
-use crate::output::{self, RenderOptions, RuleCatalog};
+use crate::output::{CheckOutput, RenderOptions, RuleCatalog};
 
 /// 対応する版 (新しい順)。
 pub const SUPPORTED_VERSIONS: [&str; 5] = [
@@ -295,14 +295,9 @@ impl Server {
             ..Default::default()
         };
         let mut buf = Vec::new();
-        let rendered = match output {
-            CheckOutput::BriefMarkdown => output::brief::render(&report, &opts, &mut buf),
-            CheckOutput::BriefJson => output::brief::render_json(&report, &opts, &mut buf),
-            CheckOutput::BriefToon => output::brief::render_toon(&report, &opts, &mut buf),
-            CheckOutput::FullJson => output::json::render(&report, &opts, &mut buf),
-            CheckOutput::FullToon => output::json::render_toon(&report, &opts, &mut buf),
-        };
-        rendered.map_err(|e| format!("結果を書き出せません: {e}"))?;
+        output
+            .render(&report, &opts, &mut buf)
+            .map_err(|e| format!("結果を書き出せません: {e}"))?;
         String::from_utf8(buf).map_err(|e| format!("結果を書き出せません: {e}"))
     }
 
@@ -658,16 +653,6 @@ fn invalid_request(id: Value, detail: &str) -> Value {
     )
 }
 
-/// `check` が返すもの (内容と形式の組)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckOutput {
-    BriefMarkdown,
-    BriefJson,
-    BriefToon,
-    FullJson,
-    FullToon,
-}
-
 /// `check` の `report` と `format` から返すものを決める。
 ///
 /// エージェントに渡す既定は改稿指示 (`report: brief`) の Markdown。全指摘のレポート
@@ -678,8 +663,8 @@ fn check_output(report: Option<&str>, format: Option<&str>) -> Result<CheckOutpu
         ("brief", None | Some("markdown")) => Ok(O::BriefMarkdown),
         ("brief", Some("json")) => Ok(O::BriefJson),
         ("brief", Some("toon")) => Ok(O::BriefToon),
-        ("full", None | Some("json")) => Ok(O::FullJson),
-        ("full", Some("toon")) => Ok(O::FullToon),
+        ("full", None | Some("json")) => Ok(O::Json),
+        ("full", Some("toon")) => Ok(O::Toon),
         ("full", Some("markdown")) => Err(
             "Markdown で返せるのは改稿指示 (report: brief) だけです。全指摘のレポートは json か toon を指定してください"
                 .to_string(),
