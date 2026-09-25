@@ -27,3 +27,7 @@ target
 
 # Claude Code のサブエージェントが作る作業用の worktree (リポジトリに入れない)
 .claude/worktrees/
+
+# mise の個人用の上書き (ツールの版の正は mise.toml)
+mise.local.toml
+.mise.local.toml
