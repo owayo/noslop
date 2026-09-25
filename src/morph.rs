@@ -62,9 +62,9 @@ pub struct MorphologyOptions {
 }
 
 /// 辞書の指定のキーワード: 自動で選ぶ (既定)。
-pub const AUTO_DICTIONARY: &str = "auto";
+const AUTO_DICTIONARY: &str = "auto";
 /// 辞書の指定のキーワード: 同梱の辞書。
-pub const BUNDLED_DICTIONARY: &str = "bundled";
+const BUNDLED_DICTIONARY: &str = "bundled";
 
 /// 使う辞書の指定 (`[morphology] dictionary`・`--dict`)。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
