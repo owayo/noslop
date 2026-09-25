@@ -3,7 +3,21 @@
 //! 言語ごとの文法でコメント (と Python の docstring) を取り出し、コメントの記号を外した本文を
 //! ブロックにする。位置は原文 (コードのファイル) のバイト位置に戻す。コードのファイルの文書は
 //! 互いに独立した断片の集まり ([`DocumentKind::Fragments`](crate::document::DocumentKind)) として
-//! 扱い、文ごとに判定するルールだけを当てる。
+//! 扱い、文ごとに判定するルールだけを当てる。文字列のリテラルは読まない。
+//!
+//! 流れは次のとおり。
+//!
+//! 1. 文法でコメントのノードを取り出し、言語ごとの記号 (`//`・`#`・`/* */`・`<!-- -->` など) と、
+//!    文書のコメント (`///`・`/** */`・docstring) かを決める ([`extract`])
+//! 2. 記号・飾りを外した本文の行にし、shebang・ツールへの指示 (`eslint-disable` など)・抑制
+//!    コメント (中身全体が `noslop-disable-next-line P01` の形のもの) を外す。同じ記号の行の
+//!    コメントが隣り合う行に続けば 1 つにまとめ、著作権・ライセンスの表記を外す ([`body`])
+//! 3. 日本語を含むまとまりをブロックにする。普通のコメントは段落に、文書のコメントと docstring は
+//!    Markdown として、C# の XML ドキュメントコメントと Javadoc はタグを外して読む ([`build`])
+
+mod body;
+mod build;
+mod extract;
 
 use crate::document::{Block, Directive};
 
@@ -184,36 +198,20 @@ impl CodeLanguage {
 ///
 /// ブロックの解析用テキストはコメントの記号を外した本文で、[`Block::to_source`] で原文
 /// (`source`) のバイト位置に戻る。このビルドで読めない言語は何も返さない。
-pub fn parse(_source: &str, _language: CodeLanguage) -> (Vec<Block>, Vec<Directive>) {
-    (Vec::new(), Vec::new())
+pub fn parse(source: &str, language: CodeLanguage) -> (Vec<Block>, Vec<Directive>) {
+    let Some(raws) = extract::comments(source, language) else {
+        return (Vec::new(), Vec::new());
+    };
+    let (comments, mut directives) = body::prepare(source, raws);
+    let mut blocks = Vec::new();
+    for group in body::group(source, comments) {
+        build::build(source, &group, &mut blocks, &mut directives);
+    }
+    blocks.sort_by_key(|b| b.span.start);
+    directives.sort_by_key(|d| d.span.start);
+    directives.dedup_by_key(|d| d.span.start);
+    (blocks, directives)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extensions_map_to_one_language() {
-        let mut seen = std::collections::BTreeMap::new();
-        for lang in CodeLanguage::ALL {
-            for ext in lang.extensions() {
-                assert_eq!(ext.to_ascii_lowercase(), *ext, "{ext} は小文字で書く");
-                if let Some(other) = seen.insert(*ext, lang) {
-                    panic!("{ext} が {other:?} と {lang:?} の両方にある");
-                }
-                assert_eq!(CodeLanguage::from_extension(ext), Some(lang));
-            }
-        }
-        assert_eq!(CodeLanguage::from_extension("RS"), Some(CodeLanguage::Rust));
-        // 文書の拡張子はコードにしない
-        for ext in ["md", "markdown", "txt", "mdx"] {
-            assert_eq!(CodeLanguage::from_extension(ext), None);
-        }
-    }
-
-    #[test]
-    fn bash_is_always_available() {
-        assert!(CodeLanguage::Bash.is_available());
-        assert!(CodeLanguage::available_extensions().any(|e| e == "sh"));
-    }
-}
+mod tests;
