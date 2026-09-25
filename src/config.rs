@@ -450,6 +450,49 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # severity = "warning"
 "#;
 
+/// `noslop init --user` が書き出す、ユーザーの設定 (`~/.config/noslop/config.toml`) のひな形。
+/// 書き方はプロジェクトの設定と同じだが、手元のマシンでだけ使う設定に絞って案内する。
+pub const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/noslop/config.toml)
+#
+# このマシンでは、どのディレクトリで実行してもこのファイルを読みます。
+# プロジェクトの設定 (noslop.toml) に書いた項目はそちらが優先され、CLI で指定した値はさらに優先されます。
+# 書き方はプロジェクトの設定と同じです。どの項目も、書かなければ既定値が使われます。
+# 手元のマシンでだけ使う設定 (辞書の選び方や、手元で止めたいルールなど) を書いてください。
+
+# 文書のジャンル: general / tech / business / essay (別名 blog / minutes)
+# genre = "general"
+
+# 実験的な (未校正の) ルールと語句も動かすか
+# experimental = false
+
+[morphology]
+# 形態素解析の辞書 (P15・P16 を品詞で判定する)
+#   auto (既定): HASAMI_DICT → hasami の share ディレクトリ (既定は ~/.local/share/hasami) の辞書を
+#                推奨順 (ipadic-neologd-sudachi → ipadic-neologd → ipadic) → 同梱の IPAdic
+#   bundled: 同梱の IPAdic (P15・P16 を校正した辞書)
+#   share:<名前>: noslop dict download <名前> で取得した辞書
+#   ファイルのパス (相対パスはこのファイルのあるディレクトリ基準、~/ はホームディレクトリ)
+# dictionary = "auto"
+
+[rules]
+# 手元で止めるルール・動かすルール (プロジェクトの設定で触れたルールは、そちらに従います)
+# disable = ["R03"]
+# enable = ["P04"]
+
+[files]
+# 除外するパス (.gitignore と同じ書式)。ユーザーの設定では、noslop check に渡したディレクトリが基準です。
+# プロジェクトの設定に exclude があれば、こちらは使いません
+# exclude = ["drafts/"]
+
+# 手元で使う独自ルール (プロジェクトの設定に同じ ID があれば、そちらで置き換わります)
+# [[custom]]
+# id = "X01"
+# name = "BANNED_TERM"
+# pattern = "ユーザー様"
+# message = "「ユーザー様」ではなく「利用者」と書きます"
+# severity = "warning"
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,9 +579,16 @@ message = "表記を統一します"
 
     #[test]
     fn template_is_valid() {
-        let cfg = parse(TEMPLATE).unwrap();
-        assert!(cfg.genre.is_none());
-        assert!(cfg.custom.is_empty());
+        // どちらのひな形も、そのまま読めて、既定値から何も変えない
+        for template in [TEMPLATE, USER_TEMPLATE] {
+            let cfg = parse(template).unwrap();
+            assert!(cfg.genre.is_none());
+            assert!(cfg.experimental.is_none());
+            assert!(cfg.custom.is_empty());
+            assert!(cfg.rules.enable.is_empty() && cfg.rules.disable.is_empty());
+            assert!(cfg.morphology.dictionary.is_none());
+            assert!(cfg.files.exclude.is_none());
+        }
     }
 
     #[test]

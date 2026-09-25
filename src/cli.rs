@@ -62,7 +62,7 @@ pub enum Command {
     Rules(RulesArgs),
     /// ルールの詳細 (何を見るか・直し方・根拠) を表示する
     Explain(ExplainArgs),
-    /// プロジェクトの設定ファイル noslop.toml のひな形を作る
+    /// 設定ファイルのひな形を作る (カレントディレクトリの noslop.toml。--user ならユーザーの設定 ~/.config/noslop/config.toml)
     Init(InitArgs),
     /// MCP サーバーとして標準入出力で待ち受ける (AI エージェントから検査を呼ぶ)
     ///
@@ -252,7 +252,10 @@ pub struct ExplainArgs {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    /// すでにある noslop.toml を上書きする
+    /// ユーザーの設定 (~/.config/noslop/config.toml) のひな形を作る (ディレクトリがなければ作る)
+    #[arg(long)]
+    pub user: bool,
+    /// すでにある設定ファイルを上書きする
     #[arg(long)]
     pub force: bool,
 }
@@ -1305,18 +1308,36 @@ pub(crate) fn explain_text(engine: &Engine, entry: &RuleEntry) -> String {
 }
 
 fn init(args: InitArgs) -> u8 {
-    let path = Path::new(config::CONFIG_FILE_NAMES[0]);
+    let (path, template) = if args.user {
+        let Some(home) = Environment::from_process().home else {
+            return error(
+                "ホームディレクトリが分かりません。ユーザーの設定の置き場所 (~/.config/noslop/config.toml) を決められません",
+            );
+        };
+        (config::user_config_path(&home), config::USER_TEMPLATE)
+    } else {
+        (
+            PathBuf::from(config::CONFIG_FILE_NAMES[0]),
+            config::TEMPLATE,
+        )
+    };
+    let shown = display_path(&path);
     if path.exists() && !args.force {
         return error(format!(
-            "{} はすでにあります。上書きするには --force を付けてください",
-            path.display()
+            "{shown} はすでにあります。上書きするには --force を付けてください"
         ));
     }
-    if let Err(e) = std::fs::write(path, config::TEMPLATE) {
-        return error(format!("{} を書き込めません: {e}", path.display()));
+    // ユーザーの設定は ~/.config/noslop を作ってから書く
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        return error(format!("{} を作れません: {e}", display_path(dir)));
+    }
+    if let Err(e) = std::fs::write(&path, template) {
+        return error(format!("{shown} を書き込めません: {e}"));
     }
     let mut out = io::stdout();
-    let _ = writeln!(out, "{} を作成しました", path.display());
+    let _ = writeln!(out, "{shown} を作成しました");
     if out.is_terminal() {
         let _ = writeln!(out, "各項目の説明はファイル内のコメントを見てください");
     }

@@ -599,6 +599,56 @@ fn init_writes_a_template_once() {
         .code(0);
 }
 
+/// `init --user` は、ホームディレクトリの `.config/noslop/config.toml` にユーザーの設定のひな形を
+/// 書く (ディレクトリも作る)。プロジェクトの `noslop.toml` は作らない。
+#[test]
+fn init_user_writes_the_user_config_template() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let init = |extra: &[&str]| {
+        let mut cmd = noslop();
+        cmd.env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .current_dir(work.path())
+            .args(["init", "--user"])
+            .args(extra);
+        cmd
+    };
+    init(&[])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config.toml を作成しました"));
+    let path = home
+        .path()
+        .join(".config")
+        .join("noslop")
+        .join("config.toml");
+    let written = fs::read_to_string(&path).unwrap();
+    assert!(written.contains("ユーザーの設定"), "{written}");
+    assert!(written.contains("# dictionary = \"auto\""), "{written}");
+    assert!(!work.path().join("noslop.toml").exists());
+
+    // すでにあれば止まり、--force で上書きする
+    fs::write(&path, "genre = \"tech\"\n").unwrap();
+    init(&[])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--force"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "genre = \"tech\"\n");
+    init(&["--force"]).assert().success();
+    assert_eq!(fs::read_to_string(&path).unwrap(), written);
+
+    // 作ったひな形はそのまま読める (ユーザーの設定として読み込んでも、既定値から何も変えない)
+    fs::write(work.path().join("doc.md"), DOC_CLEAN).unwrap();
+    noslop()
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .current_dir(work.path())
+        .args(["check", "--color", "never", "doc.md"])
+        .assert()
+        .code(0);
+}
+
 #[test]
 fn unreadable_files_are_reported_with_exit_code_two() {
     let dir = workspace();

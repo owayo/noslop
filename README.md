@@ -104,7 +104,7 @@ Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使いま
 | `noslop diff <BEFORE> <AFTER>` | 改稿の前後を比べる（新しく出た指摘・消えた事実・改稿の偏り） |
 | `noslop rules` | ルールの一覧を表示する |
 | `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
-| `noslop init` | プロジェクトの設定ファイル `noslop.toml` の雛形を作る |
+| `noslop init` | プロジェクトの設定ファイル `noslop.toml` の雛形を作る。`--user` ならユーザーの設定 `~/.config/noslop/config.toml` の雛形を作る |
 | `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
 | `noslop hook claude-code` | Claude Code の PostToolUse フックとして、書き換えたファイルの指摘を返す |
 | `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み（claw-hooks など）から呼び、コミットしていない変更に重なる指摘をテキストで返す |
@@ -191,7 +191,7 @@ noslop explain R01
 | | `--genre <GENRE>` / `--experimental` | そのジャンル・設定で既定で有効かの判定に使う |
 | | `--config <PATH>` / `--no-config` | 有効・無効の列に設定ファイルを反映するか |
 | `noslop explain <RULE>` | | ID か名前で、メタ情報・設定できる閾値の現在値・説明文を表示する |
-| `noslop init` | `--force` | `noslop.toml` のひな形をカレントディレクトリに作る（既にあれば `--force` で上書き） |
+| `noslop init` | `--user` / `--force` | `noslop.toml` のひな形をカレントディレクトリに作る。`--user` ならユーザーの設定のひな形を `~/.config/noslop/config.toml` に作る（ディレクトリがなければ作る）。既にあれば `--force` で上書き |
 | `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](docs/integrations.md) |
@@ -304,7 +304,7 @@ noslop explain R01
 - `[files] exclude` の基準は、プロジェクトの設定なら設定ファイルのあるディレクトリ、ユーザーの設定なら `noslop check` に渡したディレクトリ（フック（`noslop hook`）ではエージェントの作業ディレクトリ）です。プロジェクトの設定に `exclude` があれば、ユーザーの設定の `exclude` は使いません（`exclude = []` で打ち消せます）
 - `[morphology] dictionary` の相対パスは、書いたファイルのあるディレクトリが基準です（`~/` はホームディレクトリ）
 
-`--config <PATH>` はプロジェクトの設定だけを差し替え、ユーザーの設定は重ねたまま読みます。`--no-config` はどちらも読みません。どちらかのファイルの書式が正しくなければ、設定の誤りとして終了コード 2 で止まります。ユーザーの設定は自動では作りません。`noslop init` が作るのはプロジェクトの `noslop.toml` です。
+`--config <PATH>` はプロジェクトの設定だけを差し替え、ユーザーの設定は重ねたまま読みます。`--no-config` はどちらも読みません。どちらかのファイルの書式が正しくなければ、設定の誤りとして終了コード 2 で止まります。ユーザーの設定は自動では作りません。`noslop init --user` でひな形を作れます（`--user` を付けない `noslop init` は、プロジェクトの `noslop.toml` を作ります）。
 
 ユーザーの設定の例です。
 
