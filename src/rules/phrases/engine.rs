@@ -93,7 +93,22 @@ impl Entry {
             note: None,
         }
     }
+
+    /// メッセージに注記を添える (実験的な項目に弱い手掛かりの断り書きを付けるときなど)。
+    pub const fn with_note(self, note: &'static str) -> Self {
+        Self {
+            note: Some(note),
+            ..self
+        }
+    }
 }
+
+/// 正規表現の項目で、指す範囲を表す名前付きグループの名前。
+///
+/// このグループを持つ正規表現は、グループの範囲だけを一致として扱う。前後の文字を
+/// 条件にだけ使い、指す範囲に含めないため (Rust の regex は前後の読みを使えない)。
+/// 例: `(?:^|[^が])(?P<m>大事なのは、)` は「〜が大事なのは、」を拾わず、「大事なのは、」だけを指す。
+const MATCH_GROUP: &str = "m";
 
 /// 語句辞書で動くルールの定義。
 pub(super) struct PhraseSpec {
@@ -111,12 +126,21 @@ pub(super) struct Hit {
     pub entry: usize,
 }
 
+/// 正規表現の項目 1 つ。
+struct RegexEntry {
+    /// 項目の添字。
+    entry: usize,
+    re: Regex,
+    /// 名前付きグループ [`MATCH_GROUP`] を持つか。
+    grouped: bool,
+}
+
 /// 項目の並びから作った照合器。
 pub(super) struct Matcher {
     literals: Option<AhoCorasick>,
     /// Aho-Corasick のパターン番号 → 項目の添字。
     literal_entries: Vec<usize>,
-    regexes: Vec<(usize, Regex)>,
+    regexes: Vec<RegexEntry>,
 }
 
 impl Matcher {
@@ -137,7 +161,12 @@ impl Matcher {
                 Pattern::Regex(s) => {
                     let re = Regex::new(s)
                         .unwrap_or_else(|e| panic!("組み込みの正規表現が不正です ({s}): {e}"));
-                    regexes.push((idx, re));
+                    let grouped = re.capture_names().any(|n| n == Some(MATCH_GROUP));
+                    regexes.push(RegexEntry {
+                        entry: idx,
+                        re,
+                        grouped,
+                    });
                 }
             }
         }
@@ -165,13 +194,27 @@ impl Matcher {
                 });
             }
         }
-        for (entry, re) in &self.regexes {
-            for m in re.find_iter(text) {
-                if m.start() < m.end() {
-                    hits.push(Hit {
-                        range: m.start()..m.end(),
-                        entry: *entry,
-                    });
+        for r in &self.regexes {
+            if r.grouped {
+                // グループを取り出すのは遅いので、グループを持つ正規表現だけにする
+                for caps in r.re.captures_iter(text) {
+                    if let Some(m) = caps.name(MATCH_GROUP)
+                        && m.start() < m.end()
+                    {
+                        hits.push(Hit {
+                            range: m.start()..m.end(),
+                            entry: r.entry,
+                        });
+                    }
+                }
+            } else {
+                for m in r.re.find_iter(text) {
+                    if m.start() < m.end() {
+                        hits.push(Hit {
+                            range: m.start()..m.end(),
+                            entry: r.entry,
+                        });
+                    }
                 }
             }
         }
@@ -387,5 +430,34 @@ mod tests {
         );
         assert_eq!(text_metric(&d, "item"), Some("…を 示す"));
         assert_eq!(text_metric(&d, "matched"), Some("…を 示す"));
+    }
+
+    #[test]
+    fn a_named_group_narrows_the_match_to_the_group() {
+        // 前の文字は条件にだけ使い、指す範囲はグループ m に限る
+        const GROUPED: &[Entry] = &[Entry::re(r"(?:^|[^が])(?P<m>大事なのは、)", Severity::Info)];
+        let m = Matcher::new(GROUPED, false);
+        let text = "ここで大事なのは、頻度だ。";
+        let hits = m.find(text);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(&text[hits[0].range.clone()], "大事なのは、");
+        // 文頭でも条件を満たす
+        let text = "大事なのは、頻度だ。";
+        assert_eq!(&text[m.find(text)[0].range.clone()], "大事なのは、");
+        // 条件を満たさない位置は拾わない
+        assert!(m.find("確認が大事なのは、夜に変わるからだ。").is_empty());
+        // グループを持たない正規表現は一致の全体を指す (既存の動き)
+        let plain = Matcher::new(ENTRIES, false);
+        let text = "読むことができる。";
+        assert_eq!(&text[plain.find(text)[0].range.clone()], "ことができる");
+    }
+
+    #[test]
+    fn notes_can_be_attached_to_experimental_entries() {
+        const NOTED: &[Entry] =
+            &[Entry::exp_lit("大切です", Severity::Info).with_note(WEAK_SIGNAL_NOTE)];
+        assert_eq!(NOTED[0].note, Some(WEAK_SIGNAL_NOTE));
+        assert_eq!(NOTED[0].status, RuleStatus::Experimental);
+        assert_eq!(NOTED[0].severity, Severity::Info);
     }
 }
