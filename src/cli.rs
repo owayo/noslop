@@ -24,7 +24,7 @@ use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
 use crate::genre::Genre;
 use crate::morph::{MorphologyMode, MorphologyOptions};
-use crate::output::{self, RenderOptions, RuleCatalog};
+use crate::output::{CheckOutput, RenderOptions, RuleCatalog};
 use crate::rules::Scope;
 use crate::segment::LineBreakMode;
 use crate::walk::{self, Exclude, WalkOptions};
@@ -391,18 +391,6 @@ pub enum ReportArg {
     Brief,
 }
 
-/// `check` が出すもの (内容と形式の組)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckOutput {
-    Text,
-    Json,
-    Toon,
-    Github,
-    BriefMarkdown,
-    BriefJson,
-    BriefToon,
-}
-
 /// `--report` と `--format` から出すものを決める。組み合わせられないものはエラーにする。
 fn check_output(
     report: Option<ReportArg>,
@@ -763,29 +751,16 @@ fn check(args: CheckArgs) -> u8 {
 
     // 標準出力のロックは改行のたびにフラッシュするので、直接書くと整形済み JSON や
     // 大量の指摘では行数ぶんの write システムコールになる。バッファに溜めてから書く。
-    let result = match output {
-        CheckOutput::Text => {
-            for e in &report.errors {
-                eprintln!("エラー: {}: {}", e.path, e.message);
-            }
-            let mut rendered = Vec::with_capacity(OUTPUT_BUFFER_BYTES);
-            output::text::render(&report, &render_opts, &mut rendered)
-                .and_then(|()| write_styled(&rendered, args.color))
+    let result = if output == CheckOutput::Text {
+        for e in &report.errors {
+            eprintln!("エラー: {}: {}", e.path, e.message);
         }
-        CheckOutput::Json => write_buffered(|out| output::json::render(&report, &render_opts, out)),
-        CheckOutput::Toon => {
-            write_buffered(|out| output::json::render_toon(&report, &render_opts, out))
-        }
-        CheckOutput::Github => write_buffered(|out| output::github::render(&report, out)),
-        CheckOutput::BriefMarkdown => {
-            write_buffered(|out| output::brief::render(&report, &render_opts, out))
-        }
-        CheckOutput::BriefJson => {
-            write_buffered(|out| output::brief::render_json(&report, &render_opts, out))
-        }
-        CheckOutput::BriefToon => {
-            write_buffered(|out| output::brief::render_toon(&report, &render_opts, out))
-        }
+        let mut rendered = Vec::with_capacity(OUTPUT_BUFFER_BYTES);
+        output
+            .render(&report, &render_opts, &mut rendered)
+            .and_then(|()| write_styled(&rendered, args.color))
+    } else {
+        write_buffered(|out| output.render(&report, &render_opts, out))
     };
     if let Err(code) = output_result(result) {
         return code;
