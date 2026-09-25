@@ -119,6 +119,36 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// `path` が `.noslopignore` で除外されているか (ディレクトリをたどらずに 1 つのファイルだけを見る
+/// フック向け。`check` がディレクトリをたどるときと同じく、親のディレクトリの `.noslopignore` も
+/// 当てる)。
+///
+/// ファイルのディレクトリから親へ `.noslopignore` を探し、深いほうの指定を優先する (.gitignore と
+/// 同じ。深いほうで `!` で戻したファイルは、浅いほうで除外していても検査する)。読めない・書式の
+/// 誤った `.noslopignore` は飛ばす。
+pub fn is_noslopignored(path: &Path) -> bool {
+    let path = absolute(path);
+    for dir in path.ancestors().skip(1) {
+        let file = dir.join(IGNORE_FILE_NAME);
+        if !file.is_file() {
+            continue;
+        }
+        let mut builder = GitignoreBuilder::new(dir);
+        if builder.add(&file).is_some() {
+            continue;
+        }
+        let Ok(matcher) = builder.build() else {
+            continue;
+        };
+        match matcher.matched_path_or_any_parents(&path, false) {
+            ignore::Match::Ignore(_) => return true,
+            ignore::Match::Whitelist(_) => return false,
+            ignore::Match::None => {}
+        }
+    }
+    false
+}
+
 /// 集められなかったパス。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkError {
@@ -374,5 +404,25 @@ mod tests {
     fn invalid_exclude_pattern_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         assert!(Exclude::new(dir.path(), &["docs/{a".into()]).is_err());
+    }
+
+    /// 1 つのファイルだけを見るフックも、親のディレクトリの .noslopignore を当てる。深いほうの
+    /// 指定が優先する。
+    #[test]
+    fn noslopignore_applies_to_a_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs/drafts")).unwrap();
+        std::fs::write(root.join(IGNORE_FILE_NAME), "drafts/\n*.tmp.md\n").unwrap();
+        std::fs::write(root.join("docs").join(IGNORE_FILE_NAME), "!keep.tmp.md\n").unwrap();
+
+        assert!(is_noslopignored(&root.join("docs/drafts/a.md")));
+        assert!(is_noslopignored(&root.join("docs/x.tmp.md")));
+        assert!(
+            !is_noslopignored(&root.join("docs/keep.tmp.md")),
+            "深いほうの ! で戻したファイルは検査する"
+        );
+        assert!(!is_noslopignored(&root.join("docs/guide.md")));
+        assert!(!is_noslopignored(&root.join("guide.md")));
     }
 }
