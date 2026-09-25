@@ -1,11 +1,11 @@
 //! hasami の配布辞書の取得 (`noslop dict download` / `noslop dict list`)。
 //!
-//! hasami のリポジトリに Git LFS で置かれたビルド済みの辞書 (`.hsd`) を、hasami の share
+//! hasami のリリースに添付されたビルド済みの辞書 (`.hsd`) を、hasami の share
 //! ディレクトリ (`$XDG_DATA_HOME/hasami`、未設定なら `~/.local/share/hasami`) に取得する。
 //!
-//! - 取得元は hasami のタグ ([`HASAMI_TAG`]) に固定し、取得した中身を、そのタグの LFS ポインタに
-//!   記録された大きさと SHA-256 ([`DICTIONARIES`]) で確かめる。hasami を上げるときは、`Cargo.toml` の
-//!   hasami のタグと一緒に、[`HASAMI_TAG`]・[`DEFAULT_SOURCE`]・[`DICTIONARIES`] を書き換える
+//! - 取得元は hasami のタグ ([`HASAMI_TAG`]) のリリースに固定し、取得した中身を、そのリリースの
+//!   `dictionaries.json` と同じ大きさと SHA-256 ([`DICTIONARIES`]) で確かめる。hasami を上げるときは、
+//!   `Cargo.toml` の hasami のタグと一緒に、[`HASAMI_TAG`]・[`DEFAULT_SOURCE`]・[`DICTIONARIES`] を書き換える
 //! - 取得しただけでは使わない。辞書を指定しないときは、同じ版の noslop なら手元に入れた辞書によらず
 //!   同じ結果になるよう、同梱の辞書を使う ([`crate::morph::resolve`]。同梱しないビルドだけは、hasami と
 //!   同じく share ディレクトリの辞書を推奨順に探す)
@@ -30,12 +30,11 @@ pub const HASAMI_TAG: &str = "v26.9.103";
 
 /// 配布辞書の取得元 (URL の接頭辞。この後に `/<名前>.hsd` を付けて取得する)。
 ///
-/// GitHub の Git LFS のメディアを、[`HASAMI_TAG`] のタグで固定して指す。LFS のダウンロードは
-/// リポジトリの持ち主の帯域の枠 (GitHub Free・Pro は月 10 GiB) に数えられるので、ミラーがあれば
-/// `noslop dict download --source` で切り替えられる。どの取得元でも、取得した中身は大きさと SHA-256 で
-/// 確かめる。
-pub const DEFAULT_SOURCE: &str =
-    "https://media.githubusercontent.com/media/owayo/hasami/v26.9.103/dict";
+/// [`HASAMI_TAG`] のタグの GitHub のリリースの添付ファイルを指す。hasami は辞書をリポジトリ
+/// (Git LFS) から外し、既存のタグからも消したので、リポジトリの中のパスは指さない (noslop v26.9.100 は
+/// LFS のパスを指していて、404 になる)。ミラーがあれば `noslop dict download --source` で切り替えられる。
+/// どの取得元でも、取得した中身は大きさと SHA-256 で確かめる。
+pub const DEFAULT_SOURCE: &str = "https://github.com/owayo/hasami/releases/download/v26.9.103";
 
 /// 辞書の指定 (`--dict`・設定の `dictionary`) で、share ディレクトリの辞書を指す接頭辞。
 pub const SHARE_PREFIX: &str = "share:";
@@ -63,8 +62,8 @@ impl Distributed {
     }
 }
 
-/// [`HASAMI_TAG`] の配布辞書。大きさと SHA-256 は、タグの LFS ポインタ
-/// (`git show <タグ>:dict/<名前>.hsd` の `size` と `oid`) の値。
+/// [`HASAMI_TAG`] の配布辞書。大きさと SHA-256 は、そのタグのリリースに添付された
+/// `dictionaries.json` の `size` と `sha256` の値。
 pub const DICTIONARIES: [Distributed; 3] = [
     Distributed {
         name: "ipadic",
@@ -752,11 +751,11 @@ mod tests {
         for tag in &tags {
             assert_eq!(tag, HASAMI_TAG, "Cargo.toml の hasami のタグと HASAMI_TAG");
         }
-        assert!(
-            DEFAULT_SOURCE.contains(&format!("/{HASAMI_TAG}/")),
-            "{DEFAULT_SOURCE}"
+        assert_eq!(
+            DEFAULT_SOURCE,
+            format!("https://github.com/owayo/hasami/releases/download/{HASAMI_TAG}"),
+            "取得元は HASAMI_TAG のリリースの添付ファイル"
         );
-        assert!(!DEFAULT_SOURCE.ends_with('/'));
 
         for (i, dict) in DICTIONARIES.iter().enumerate() {
             assert!(

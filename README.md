@@ -692,9 +692,10 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 
 In the configuration file, write `dictionary = "share:ipadic-neologd-sudachi"` under `[morphology]`. Downloading a dictionary does not make noslop use it; without an explicit setting, the bundled dictionary is used as before.
 
-- The source is hasami's Git LFS, pinned to the tag of the hasami version noslop depends on (shown on the first line of `noslop dict list`). The downloaded contents are checked against the size and SHA-256 recorded for that tag, and must load as a hasami dictionary before they are put in place. A failed download never removes or damages an existing file
+- The source is the dictionaries attached to the GitHub release of the hasami version noslop depends on (shown on the first line of `noslop dict list`). The downloaded contents are checked against the size and SHA-256 recorded in noslop (the same values as the `dictionaries.json` attached to that release), and must load as a hasami dictionary before they are put in place. A failed download never removes or damages an existing file
 - A file with different contents at the destination (for example from another hasami version) is replaced only with `--force`. `--force` also downloads again when a correct file is present
-- LFS downloads count against the bandwidth quota of the hasami repository's owner. If a mirror is available, switch to it with `--source <URL>` (noslop fetches `<URL>/<name>.hsd` and checks the size and SHA-256 whatever the source)
+- If a mirror is available, switch to it with `--source <URL>` (noslop fetches `<URL>/<name>.hsd` and checks the size and SHA-256 whatever the source)
+- noslop v26.9.100 tries to download from hasami's Git LFS, which no longer holds the dictionaries, and fails with `HTTP 404`. With v26.9.100, run `noslop dict download --source https://github.com/owayo/hasami/releases/download/v26.9.103` instead
 - The thresholds of the rules that count parts of speech (P15, P16) were calibrated with the bundled IPAdic. Other dictionaries segment words and assign parts of speech differently, so the number and positions of findings may change
 
 A dictionary outside the share directory is named by its file path (`--dict path/to/ipadic-neologd.hsd`).
