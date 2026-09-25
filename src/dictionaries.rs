@@ -8,24 +8,27 @@
 //!   SHA-256 で確かめる。目録は Release のワークフロー (`make dict-catalog`) が hasami の新しいリリースに
 //!   合わせて更新する。依存の hasami (`Cargo.toml` のタグ) と同梱の辞書 (`dict/ipadic.hsd`) は目録とは
 //!   別で、判定の結果を左右するので人が上げる。目録の辞書の形式が依存の hasami で読めることはテストで確かめる
+//! - 取得そのもの (HTTP・zstd の展開・大きさと SHA-256 の照合・辞書として読めることの確認・一時ファイル
+//!   からの置き換え) は hasami の `download` (feature `download`) に任せる。noslop は目録の値と取得元を
+//!   固定して渡し、誤りを日本語に言い換える ([`download`])。既定では zstd で圧縮した版 (`<名前>.hsd.zst`。
+//!   3 分の 1 ほどの大きさ) を取って展開し、圧縮版と展開後の両方を確かめる。圧縮版を置いていない取得元
+//!   (ミラー) では、展開前の辞書を取る指定 (`--uncompressed`) を使う
 //! - 取得した辞書は、辞書を指定しないとき (`auto`) に使う。share ディレクトリの配布辞書のうち、依存の
 //!   hasami の推奨順 ([`preferred_in`]) で最初に見つかったものを、同梱の辞書より先に選ぶ
 //!   ([`crate::morph::resolve`])。選ぶ順は目録ではなく依存の hasami で決まるので、目録の自動更新では
 //!   変わらない
 //! - 決まった辞書を使うときは `--dict share:<名前>` か、設定の `[morphology] dictionary = "share:<名前>"`
 //!   で指定する ([`resolve_share`])
-//! - 取得は保存先と同じディレクトリの一時ファイルに書き、大きさ・SHA-256・辞書として読めることを
-//!   確かめてから rename で置く。途中で失敗しても、置き場所にある既存のファイルは消さず、壊さない
+//! - 取得は保存先と同じディレクトリの一時ファイルに書き、確かめてから rename で置く。途中で失敗しても、
+//!   置き場所にある既存のファイルは消さず、壊さない (hasami の `download` の動き)
 
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
-use sha2::{Digest, Sha256};
-use ureq::config::ConfigBuilder;
-use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
-use ureq::typestate::AgentScope;
+use hasami::download::{
+    CompressedFile, DistributedDict, DownloadError as HasamiError, DownloadOptions,
+    Outcome as HasamiOutcome, Verification,
+};
 
 /// 辞書の指定 (`--dict`・設定の `dictionary`) で、share ディレクトリの辞書を指す接頭辞。
 pub const SHARE_PREFIX: &str = "share:";
@@ -41,12 +44,45 @@ pub struct Distributed {
     pub size: u64,
     /// SHA-256 (小文字の 16 進)。
     pub sha256: &'static str,
+    /// zstd で圧縮した同じ辞書 (目録の `compressed`)。
+    pub compressed: Option<Compressed>,
+}
+
+/// zstd で圧縮した配布辞書 (`<名前>.hsd.zst`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compressed {
+    /// ファイル名。
+    pub file: &'static str,
+    /// 大きさ (バイト)。
+    pub size: u64,
+    /// SHA-256 (小文字の 16 進)。
+    pub sha256: &'static str,
 }
 
 impl Distributed {
     /// ファイル名 (`<名前>.hsd`)。
     pub fn file_name(&self) -> String {
         format!("{}.hsd", self.name)
+    }
+
+    /// 取得で受け取る大きさ (圧縮版を取るなら、その大きさ)。
+    pub fn transfer_size(&self, compressed: bool) -> u64 {
+        match self.compressed {
+            Some(c) if compressed => c.size,
+            _ => self.size,
+        }
+    }
+
+    /// hasami の取得の API に渡す形。
+    fn to_hasami(self) -> DistributedDict {
+        let mut dict = DistributedDict::new(self.name, self.size, self.sha256);
+        dict.summary = self.summary.to_string();
+        dict.compressed = self.compressed.map(|c| CompressedFile {
+            file: c.file.to_string(),
+            size: c.size,
+            sha256: c.sha256.to_string(),
+        });
+        dict
     }
 
     /// 一覧やヘルプに出す説明。知っている辞書は日本語で、知らない辞書は目録の説明のまま。
@@ -73,20 +109,6 @@ pub fn find(name: &str) -> Option<&'static Distributed> {
     let all: &'static [Distributed] = &DICTIONARIES;
     all.iter().find(|d| d.name == name)
 }
-
-/// 読み書きのバッファの大きさ。
-const BUFFER_BYTES: usize = 256 * 1024;
-/// 接続 (TLS のハンドシェイクを含む) の上限。
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// 要求を送ってから応答のヘッダーを受け取るまでの上限。
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
-/// 取得全体の上限。237MB を遅い回線で受け取る時間を見込む (1 時間で受け取るには約 0.53 Mbps 要る)。
-const GLOBAL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
-/// これより古い一時ファイルは、前回の強制終了で残ったものとみなして消す。取得の上限
-/// ([`GLOBAL_TIMEOUT`]) より十分長くして、ほかのプロセスが書いている途中のものは消さない。
-const STALE_PART_AGE: Duration = Duration::from_secs(24 * 60 * 60);
-/// 一時ファイルの名前の末尾 (名前は `.<名前>.hsd.<乱数>.part`)。
-const PART_SUFFIX: &str = ".part";
 
 // ---------------------------------------------------------------------------
 // share ディレクトリ
@@ -204,47 +226,14 @@ pub enum Check {
     Differs,
 }
 
-/// 置き場所のファイルを、配布辞書の大きさと SHA-256 で確かめる。大きさが違えばハッシュを計算しない。
+/// 置き場所のファイルを、配布辞書の大きさと SHA-256 で確かめる。大きさが違えばハッシュを計算しない
+/// (`hasami::download::verify`)。
 pub fn check_file(path: &Path, dict: &Distributed) -> io::Result<Check> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Check::Missing),
-        Err(e) => return Err(e),
-    };
-    if !metadata.is_file() || metadata.len() != dict.size {
-        return Ok(Check::Differs);
-    }
-    Ok(if sha256_file(path)? == dict.sha256 {
-        Check::Verified
-    } else {
-        Check::Differs
+    Ok(match hasami::download::verify(path, &dict.to_hasami())? {
+        Verification::Missing => Check::Missing,
+        Verification::Verified => Check::Verified,
+        Verification::Differs => Check::Differs,
     })
-}
-
-/// ファイルの SHA-256 (小文字の 16 進)。流し読みで計算する。
-fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; BUFFER_BYTES];
-    loop {
-        match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => hasher.update(&buffer[..n]),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(to_hex(&hasher.finalize()))
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        hex.push(char::from(DIGITS[usize::from(b >> 4)]));
-        hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
-    }
-    hex
 }
 
 /// 配布辞書の一覧の 1 行 ([`list`])。
@@ -286,352 +275,157 @@ pub enum Outcome {
     Downloaded(PathBuf),
 }
 
-/// 取得の失敗。
+/// hasami が、圧縮版を展開したものの誤りの出所 (`<URL>`) の後ろに付ける印。
+const DECOMPRESSED: &str = " (decompressed)";
+
+/// 取得の失敗 (hasami の取得の誤りを、利用者向けの日本語に言い換えたもの)。
 #[derive(Debug, thiserror::Error)]
-pub enum DownloadError {
-    #[error("保存先のディレクトリを作れません: {path}: {source}", path = .path.display())]
-    CreateDir {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("{path} を確かめられません: {source}", path = .path.display())]
-    Inspect {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error(
-        "{path} は hasami {HASAMI_TAG} の {name} と中身が違います (hasami の別の版か、壊れています)。置き換えるには --force を付けてください",
-        path = .path.display()
-    )]
-    Differs { path: PathBuf, name: &'static str },
-    #[error("一時ファイルを作れません: {dir}: {source}", dir = .dir.display())]
-    TempFile {
-        dir: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("{url} を取得できません: {source}")]
-    Request {
-        url: String,
-        #[source]
-        source: Box<ureq::Error>,
-    },
-    #[error("{url} を取得できません (HTTP {status})")]
-    Status { url: String, status: u16 },
-    #[error(
-        "{url} の大きさが違います (Content-Length が {actual} バイト、hasami {HASAMI_TAG} の {name} は {expected} バイト)"
-    )]
-    ContentLength {
-        url: String,
-        name: &'static str,
-        expected: u64,
-        actual: u64,
-    },
-    #[error("{url} の受信に失敗しました: {source}")]
-    Receive {
-        url: String,
-        #[source]
-        source: io::Error,
-    },
-    #[error(
-        "{url} の大きさが違います (hasami {HASAMI_TAG} の {name} の {expected} バイトを超えて受信しました)"
-    )]
-    Oversized {
-        url: String,
-        name: &'static str,
-        expected: u64,
-    },
-    #[error("{url} の受信が途中で切れました ({received} / {expected} バイト)")]
-    Truncated {
-        url: String,
-        expected: u64,
-        received: u64,
-    },
-    #[error("{url} の SHA-256 が違います (期待 {expected}、実際 {actual})")]
-    Checksum {
-        url: String,
-        expected: &'static str,
-        actual: String,
-    },
-    #[error("一時ファイルに書き込めません: {path}: {source}", path = .path.display())]
-    Write {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("取得したファイルを辞書として読めません ({url}): {message}")]
-    NotDictionary { url: String, message: String },
-    #[error("{path} に置けません: {source}", path = .path.display())]
-    Persist {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
+#[error("{message}")]
+pub struct DownloadError {
+    message: String,
+}
+
+impl DownloadError {
+    /// hasami の誤りを言い換える。`dict` は取ろうとした辞書、`compressed` は圧縮版を取ろうとしたか。
+    fn from_hasami(e: HasamiError, dict: &Distributed, compressed: bool) -> Self {
+        let name = dict.name;
+        // 誤りの出所の「〜の」。圧縮版を展開したものの検査の誤りは、hasami が `<URL> (decompressed)` を
+        // 出所にするので、「<URL> を展開した中身の」と書く
+        let of = |from: &str| match from.strip_suffix(DECOMPRESSED) {
+            Some(url) => format!("{url} を展開した中身の"),
+            None => format!("{from} の"),
+        };
+        let decoded = |from: &str| from.ends_with(DECOMPRESSED);
+        let message = match e {
+            HasamiError::CreateDir { path, source } => {
+                format!(
+                    "保存先のディレクトリを作れません: {}: {source}",
+                    path.display()
+                )
+            }
+            HasamiError::Inspect { path, source } => {
+                format!("{} を確かめられません: {source}", path.display())
+            }
+            HasamiError::Differs { path, .. } => format!(
+                "{} は hasami {HASAMI_TAG} の {name} と中身が違います (hasami の別の版か、壊れています)。置き換えるには --force を付けてください",
+                path.display()
+            ),
+            HasamiError::TempFile { dir, source } => {
+                format!("一時ファイルを作れません: {}: {source}", dir.display())
+            }
+            HasamiError::Request { url, source } => format!("{url} を取得できません: {source}"),
+            HasamiError::Status { url, status } => {
+                let hint = if status == 404 && compressed && url.ends_with(".zst") {
+                    "。取得元に圧縮版 (.hsd.zst) がなければ、--uncompressed を付けると展開前の辞書 (.hsd) を取得します"
+                } else {
+                    ""
+                };
+                format!("{url} を取得できません (HTTP {status}){hint}")
+            }
+            HasamiError::ContentLength {
+                url,
+                expected,
+                actual,
+            } => {
+                let what = if url.ends_with(".zst") {
+                    format!("{name} の圧縮版")
+                } else {
+                    format!("{name} ")
+                };
+                format!(
+                    "{url} の大きさが違います (Content-Length が {actual} バイト、hasami {HASAMI_TAG} の {what}は {expected} バイト)"
+                )
+            }
+            HasamiError::Receive { from, source } if decoded(&from) => {
+                format!("{}書き込みに失敗しました: {source}", of(&from))
+            }
+            HasamiError::Receive { from, source } => {
+                format!("{}受信に失敗しました: {source}", of(&from))
+            }
+            HasamiError::Oversized { from, expected } => format!(
+                "{}大きさが違います ({expected} バイトを超えました)",
+                of(&from)
+            ),
+            HasamiError::Truncated {
+                from,
+                expected,
+                received,
+            } if decoded(&from) => format!(
+                "{}大きさが足りません ({received} / {expected} バイト)",
+                of(&from)
+            ),
+            HasamiError::Truncated {
+                from,
+                expected,
+                received,
+            } => format!(
+                "{}受信が途中で切れました ({received} / {expected} バイト)",
+                of(&from)
+            ),
+            HasamiError::Checksum {
+                from,
+                expected,
+                actual,
+            } => format!(
+                "{} SHA-256 が違います (期待 {expected}、実際 {actual})",
+                of(&from)
+            ),
+            HasamiError::Decompress { from, reason } => {
+                format!("{from} を展開できません (zstd): {reason}")
+            }
+            HasamiError::Write { path, source } => {
+                format!("一時ファイルに書き込めません: {}: {source}", path.display())
+            }
+            HasamiError::NotDictionary { from, reason } => {
+                format!("取得したファイルを辞書として読めません ({from}): {reason}")
+            }
+            HasamiError::Persist { path, source } => {
+                format!("{} に置けません: {source}", path.display())
+            }
+            // 目録の取得の誤りなど、ここでは起きないものと、hasami に後から足された誤り
+            other => format!("{name} を取得できません: {other}"),
+        };
+        Self { message }
+    }
 }
 
 /// 配布辞書を `dir` に取得する (置き場所は `<dir>/<名前>.hsd`)。
 ///
-/// `source` は取得元の URL の接頭辞 (既定は [`DEFAULT_SOURCE`])。`<source>/<名前>.hsd` を取得する。
+/// `source` は取得元の URL の接頭辞 (既定は [`DEFAULT_SOURCE`])。`compressed` が真で目録に圧縮版が
+/// あれば `<source>/<名前>.hsd.zst` を取って展開し、なければ `<source>/<名前>.hsd` を取る。
 /// 正しいファイルがすでにあれば、`force` でなければ通信せずに [`Outcome::Present`] を返す。中身の
 /// 違うファイルがあれば、`force` でなければエラーにする。
 ///
-/// `progress(受信したバイト数, 全体のバイト数)` は、通信を始める前に 1 度 (受信 0 で)、その後は
-/// 受け取るたびに呼ぶ。通信しないときは呼ばない。
+/// `progress(受信したバイト数, 受信する全体のバイト数)` は、通信を始める前に 1 度 (受信 0 で)、その後は
+/// 受け取るたびに呼ぶ。圧縮版を取るときの全体は圧縮版の大きさ ([`Distributed::transfer_size`])。
+/// 通信しないときは呼ばない。
 pub fn download(
     dict: &Distributed,
     dir: &Path,
     source: &str,
     force: bool,
+    compressed: bool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<Outcome, DownloadError> {
-    download_with(&agent(), dict, dir, source, force, progress)
-}
-
-/// 取得に使う HTTP の設定。プロキシは ureq の既定 (環境変数 `HTTPS_PROXY`・`NO_PROXY` など) のまま。
-fn agent_config() -> ConfigBuilder<AgentScope> {
-    ureq::Agent::config_builder()
-        .user_agent(concat!("noslop/", env!("CARGO_PKG_VERSION")))
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_recv_response(Some(RESPONSE_TIMEOUT))
-        .timeout_global(Some(GLOBAL_TIMEOUT))
-        // 2xx 以外はすべて自分で確かめる (既定では 3xx が成功として返る)
-        .http_status_as_error(false)
-        // provider と root_certs は明示する。root_certs の既定 (WebPki) は同梱のルート証明書だけを
-        // 信頼するので、社内の CA を OS に入れた環境 (TLS を検査するプロキシの下など) で通らない
-        .tls_config(
-            TlsConfig::builder()
-                .provider(TlsProvider::Rustls)
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
-}
-
-fn agent() -> ureq::Agent {
-    agent_config().build().new_agent()
-}
-
-fn download_with(
-    agent: &ureq::Agent,
-    dict: &Distributed,
-    dir: &Path,
-    source: &str,
-    force: bool,
-    progress: &mut dyn FnMut(u64, u64),
-) -> Result<Outcome, DownloadError> {
-    fs::create_dir_all(dir).map_err(|source| DownloadError::CreateDir {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let path = dir.join(dict.file_name());
-    // force なら中身を問わず取り直すので、既存のファイルのハッシュは計算しない
-    if !force {
-        let check = check_file(&path, dict).map_err(|source| DownloadError::Inspect {
-            path: path.clone(),
-            source,
-        })?;
-        match check {
-            Check::Verified => return Ok(Outcome::Present(path)),
-            Check::Differs => {
-                return Err(DownloadError::Differs {
-                    path,
-                    name: dict.name,
-                });
-            }
-            Check::Missing => {}
-        }
-    }
-    remove_stale_parts(dir, dict, SystemTime::now());
-
-    // 置き場所と同じディレクトリに書き、確かめてから rename で置き換える。失敗したら (エラーでも
-    // パニックでも) 一時ファイルは drop で消え、置き場所にある既存のファイルには触れない
-    let prefix = part_prefix(dict);
-    let mut builder = tempfile::Builder::new();
-    builder.prefix(&prefix).suffix(PART_SUFFIX);
-    // 置いた辞書は、普通に作ったファイルと同じく umask に従わせる (tempfile の既定は所有者だけが
-    // 読み書きできる 0600 で、共有の場所に置くとほかの利用者が読めない)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        builder.permissions(fs::Permissions::from_mode(0o666));
-    }
-    let mut part = builder
-        .tempfile_in(dir)
-        .map_err(|source| DownloadError::TempFile {
-            dir: dir.to_path_buf(),
-            source,
-        })?;
-    let url = format!("{}/{}", source.trim_end_matches('/'), dict.file_name());
-    progress(0, dict.size);
-    receive(agent, &url, dict, part.as_file_mut(), progress).map_err(|e| match e {
-        Received::Http(e) => e,
-        Received::Write(source) => DownloadError::Write {
-            path: part.path().to_path_buf(),
-            source,
-        },
-    })?;
-    let written = part
-        .as_file_mut()
-        .flush()
-        .and_then(|()| part.as_file().sync_all());
-    written.map_err(|source| DownloadError::Write {
-        path: part.path().to_path_buf(),
-        source,
-    })?;
-
-    // 辞書として読めることを確かめる。読んだ辞書 (ファイルの mmap) は置き換えの前に捨てる
-    // (Windows では開いたままのファイルを rename できない)
-    if let Err(e) = hasami::Dictionary::load(part.path()) {
-        return Err(DownloadError::NotDictionary {
-            url,
-            message: e.to_string(),
-        });
-    }
-
-    part.persist(&path).map_err(|e| DownloadError::Persist {
-        path: path.clone(),
-        source: e.error,
-    })?;
-    Ok(Outcome::Downloaded(path))
-}
-
-/// 受信の失敗 (書き込みの失敗は、一時ファイルのパスを添えて呼び出し側でエラーにする)。
-enum Received {
-    Http(DownloadError),
-    Write(io::Error),
-}
-
-/// `url` を GET して `out` に書く。大きさと SHA-256 を、受け取りながら確かめる。
-fn receive(
-    agent: &ureq::Agent,
-    url: &str,
-    dict: &Distributed,
-    out: &mut File,
-    progress: &mut dyn FnMut(u64, u64),
-) -> Result<(), Received> {
-    let http = Received::Http;
-    let mut response = agent.get(url).call().map_err(|source| {
-        http(DownloadError::Request {
-            url: url.to_string(),
-            source: Box::new(source),
-        })
-    })?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(http(DownloadError::Status {
-            url: url.to_string(),
-            status: status.as_u16(),
-        }));
-    }
-    // 大きさが違うと分かっていれば、本体を読まずにやめる。ヘッダーを直に読む (ureq は
-    // `Content-Length: 0` を本体なしとみなし、Body::content_length では None を返すため)
-    let declared = response
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok());
-    if let Some(actual) = declared
-        && actual != dict.size
-    {
-        return Err(http(DownloadError::ContentLength {
-            url: url.to_string(),
-            name: dict.name,
-            expected: dict.size,
-            actual,
-        }));
-    }
-
-    let mut reader = response.body_mut().as_reader();
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; BUFFER_BYTES];
-    let mut received: u64 = 0;
-    loop {
-        let n = match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(source) => {
-                return Err(http(DownloadError::Receive {
-                    url: url.to_string(),
-                    source,
-                }));
-            }
-        };
-        received += n as u64;
-        if received > dict.size {
-            return Err(http(DownloadError::Oversized {
-                url: url.to_string(),
-                name: dict.name,
-                expected: dict.size,
-            }));
-        }
-        let chunk = &buffer[..n];
-        hasher.update(chunk);
-        out.write_all(chunk).map_err(Received::Write)?;
-        progress(received, dict.size);
-    }
-    if received != dict.size {
-        return Err(http(DownloadError::Truncated {
-            url: url.to_string(),
-            expected: dict.size,
-            received,
-        }));
-    }
-    let actual = to_hex(&hasher.finalize());
-    if actual != dict.sha256 {
-        return Err(http(DownloadError::Checksum {
-            url: url.to_string(),
-            expected: dict.sha256,
-            actual,
-        }));
-    }
-    Ok(())
-}
-
-/// 一時ファイルの名前の先頭 (`.<名前>.hsd.`)。
-fn part_prefix(dict: &Distributed) -> String {
-    format!(".{}.", dict.file_name())
-}
-
-/// 前回の強制終了で残った、同じ辞書の一時ファイル ([`STALE_PART_AGE`] より古いもの) を消す。
-/// 消せなくても取得は続ける。
-fn remove_stale_parts(dir: &Path, dict: &Distributed, now: SystemTime) {
-    let prefix = part_prefix(dict);
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+    let options = DownloadOptions {
+        // 目録は依存の hasami より新しいことがあるので、取得元は目録の版 (DEFAULT_SOURCE) を渡す
+        base_url: Some(source),
+        compressed,
+        force,
+        progress: Some(progress),
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !(name.starts_with(&prefix) && name.ends_with(PART_SUFFIX)) {
-            continue;
-        }
-        // symlink はたどらずに確かめる (ファイルそのものだけを消す)
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let stale = metadata.is_file()
-            && metadata
-                .modified()
-                .ok()
-                .and_then(|modified| now.duration_since(modified).ok())
-                .is_some_and(|age| age > STALE_PART_AGE);
-        if stale {
-            let _ = fs::remove_file(entry.path());
-        }
+    match hasami::download::download(&dict.to_hasami(), dir, options) {
+        Ok(HasamiOutcome::Present(path)) => Ok(Outcome::Present(path)),
+        Ok(HasamiOutcome::Downloaded(path)) => Ok(Outcome::Downloaded(path)),
+        Err(e) => Err(DownloadError::from_hasami(e, dict, compressed)),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader};
-    use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::thread;
+    use std::fs;
+
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -787,31 +581,26 @@ mod tests {
         let sha256 = row("SHA-256").trim_matches('`').to_string();
         let bundled = dict_dir.join("ipadic.hsd");
         assert_eq!(fs::metadata(&bundled).unwrap().len(), size);
-        assert_eq!(sha256_file(&bundled).unwrap(), sha256);
+        assert_eq!(hasami::download::sha256_file(&bundled).unwrap(), sha256);
     }
 
     // -----------------------------------------------------------------------
     // 検証
     // -----------------------------------------------------------------------
 
-    /// 中身 `bytes` の大きさと SHA-256 を持つ、テスト用の配布辞書。
+    /// 中身 `bytes` の大きさと SHA-256 を持つ、テスト用の配布辞書 (圧縮版なし)。
     fn distributed(name: &'static str, bytes: &[u8]) -> Distributed {
+        let sha256: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         Distributed {
             name,
             summary: "テスト用",
             size: bytes.len() as u64,
-            sha256: to_hex(&Sha256::digest(bytes)).leak(),
+            sha256: sha256.leak(),
+            compressed: None,
         }
-    }
-
-    #[test]
-    fn to_hex_is_lowercase() {
-        assert_eq!(to_hex(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
-        // 空の入力の SHA-256 (よく知られた値)
-        assert_eq!(
-            to_hex(&Sha256::digest(b"")),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
     }
 
     #[test]
@@ -849,387 +638,226 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 取得 (127.0.0.1 の小さな HTTP サーバーを相手にする。外には出ない)
+    // 取得 (取得そのものは hasami の download。ここでは目録の渡し方と言い換えを確かめる)
     // -----------------------------------------------------------------------
 
-    /// テスト用の小さな辞書 (hasami の .hsd) のバイト列。
-    fn dictionary_bytes() -> Vec<u8> {
-        use hasami::DictEntry;
-        use hasami::dict::DictBuilder;
+    /// 目録の圧縮版の情報を落とさずに hasami に渡し、hasami の検証にも通る。受け取る大きさは圧縮版を
+    /// 取るかで変わる。
+    #[test]
+    fn catalog_entries_are_passed_to_hasami_with_the_compressed_file() {
+        for dict in &DICTIONARIES {
+            let converted = dict.to_hasami();
+            converted
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e}", dict.name));
+            assert_eq!(converted.name, dict.name);
+            assert_eq!(converted.file, dict.file_name());
+            assert_eq!(converted.size, dict.size);
+            assert_eq!(converted.sha256, dict.sha256);
+            let c = dict
+                .compressed
+                .unwrap_or_else(|| panic!("{} に圧縮版がない", dict.name));
+            assert_eq!(c.file, format!("{}.zst", dict.file_name()));
+            assert!(c.size < dict.size, "{}", dict.name);
+            let hc = converted.compressed.unwrap();
+            assert_eq!(
+                (hc.file.as_str(), hc.size, hc.sha256.as_str()),
+                (c.file, c.size, c.sha256)
+            );
+            assert_eq!(dict.transfer_size(true), c.size);
+            assert_eq!(dict.transfer_size(false), dict.size);
+        }
+        let plain = distributed("t", b"x");
+        assert_eq!(
+            plain.transfer_size(true),
+            1,
+            "圧縮版がなければ展開前の大きさ"
+        );
+        assert!(plain.to_hasami().compressed.is_none());
+    }
 
+    /// 正しいファイルがあれば通信せずに取得済みとし、中身の違うファイルは --force を促して止める
+    /// (どちらも取得元に接続する前に決まる)。
+    #[test]
+    fn existing_files_are_checked_before_connecting() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.hsd");
-        let mut builder = DictBuilder::new();
-        for (surface, pos) in [("猫", "名詞,一般,*,*"), ("です", "助動詞,*,*,*")] {
-            builder.add_entry(DictEntry {
-                surface: surface.into(),
-                left_id: 1,
-                right_id: 1,
-                cost: 1000,
-                pos: pos.into(),
-                base_form: surface.into(),
-                ..Default::default()
-            });
-        }
-        builder
-            .write_hsd(&path, &builder.write_options(), |_, _| {})
-            .unwrap();
-        fs::read(&path).unwrap()
+        let dict = distributed("t", b"abcdef");
+        let path = dir.path().join("t.hsd");
+        // 接続できない取得元。接続しようとしたら誤りになる
+        let unreachable = "http://127.0.0.1:9";
+        let mut calls = 0;
+        let mut progress = |_: u64, _: u64| calls += 1;
+
+        fs::write(&path, b"abcdef").unwrap();
+        let outcome = download(&dict, dir.path(), unreachable, false, true, &mut progress);
+        assert_eq!(outcome.unwrap(), Outcome::Present(path.clone()));
+
+        fs::write(&path, b"abcdeg").unwrap();
+        let err = download(&dict, dir.path(), unreachable, false, true, &mut progress)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("と中身が違います"), "{err}");
+        assert!(err.contains("--force"), "{err}");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"abcdeg",
+            "既存のファイルに触れない"
+        );
+        assert_eq!(calls, 0, "通信していない");
     }
 
-    /// サーバーの応答。
-    #[derive(Clone)]
-    enum Reply {
-        /// 200 と Content-Length 付きで本体を返す。
-        Body(Vec<u8>),
-        /// 200 で、Content-Length を付けずに本体を返してから接続を閉じる。
-        CloseDelimited(Vec<u8>),
-        /// 200 で、Content-Length に本体と違う値を書く。
-        WrongLength(Vec<u8>, u64),
-        /// 本体を返さずにステータスだけ返す。
-        Status(u16, &'static str),
-    }
-
-    struct Server {
-        url: String,
-        requests: Arc<AtomicUsize>,
-    }
-
-    impl Server {
-        fn requests(&self) -> usize {
-            self.requests.load(Ordering::SeqCst)
-        }
-    }
-
-    /// `path` への GET に `reply` を返すサーバーを立てる (ほかのパスには 404)。
-    fn serve(path: &'static str, reply: Reply) -> Server {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let requests = Arc::new(AtomicUsize::new(0));
-        let count = Arc::clone(&requests);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                count.fetch_add(1, Ordering::SeqCst);
-                // 読み手が途中でやめたときの書き込みの失敗は気にしない
-                let _ = respond(stream, path, &reply);
-            }
-        });
-        Server { url, requests }
-    }
-
-    fn respond(mut stream: TcpStream, path: &str, reply: &Reply) -> io::Result<()> {
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line)?;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-                break;
-            }
-        }
-        let requested = request_line.split_whitespace().nth(1).unwrap_or_default();
-        let reply = if request_line.starts_with("GET ") && requested == path {
-            reply.clone()
-        } else {
-            Reply::Status(404, "Not Found")
+    /// hasami の取得の誤りを、どこで何が起きたかが分かる日本語に言い換える。
+    #[test]
+    fn download_errors_are_explained_in_japanese() {
+        let dict = find(RECOMMENDED).unwrap();
+        let zst = format!("{DEFAULT_SOURCE}/{}.zst", dict.file_name());
+        let hsd = format!("{DEFAULT_SOURCE}/{}", dict.file_name());
+        let say = |e: HasamiError, compressed: bool| {
+            DownloadError::from_hasami(e, dict, compressed).to_string()
         };
-        let (head, body) = match reply {
-            Reply::Body(body) => (format!("200 OK\r\nContent-Length: {}", body.len()), body),
-            Reply::CloseDelimited(body) => ("200 OK".to_string(), body),
-            Reply::WrongLength(body, length) => {
-                (format!("200 OK\r\nContent-Length: {length}"), body)
-            }
-            Reply::Status(code, reason) => {
-                (format!("{code} {reason}\r\nContent-Length: 0"), Vec::new())
-            }
-        };
-        stream.write_all(format!("HTTP/1.1 {head}\r\nConnection: close\r\n\r\n").as_bytes())?;
-        stream.write_all(&body)?;
-        stream.flush()?;
-        close_after_peer(&stream, &mut reader)
-    }
 
-    /// 送信側だけを閉じ、相手が読み終えて閉じるまで待つ (待つのは 10 秒まで)。書き終えてすぐに
-    /// 閉じると、Windows では相手が本文を受け取っている途中で接続が切られることがある
-    /// (統合テストで `Peer disconnected` になった)。
-    fn close_after_peer(stream: &TcpStream, reader: &mut BufReader<TcpStream>) -> io::Result<()> {
-        stream.shutdown(Shutdown::Write)?;
-        reader
-            .get_ref()
-            .set_read_timeout(Some(Duration::from_secs(10)))?;
-        io::copy(reader, &mut io::sink()).map(drop)
-    }
-
-    /// プロキシの環境変数に左右されない HTTP の設定 (ほかは本番と同じ)。
-    fn test_agent() -> ureq::Agent {
-        agent_config().proxy(None).build().new_agent()
-    }
-
-    fn fetch(
-        dict: &Distributed,
-        dir: &Path,
-        server: &Server,
-        force: bool,
-    ) -> Result<Outcome, DownloadError> {
-        download_with(&test_agent(), dict, dir, &server.url, force, &mut |_, _| {})
-    }
-
-    /// ディレクトリに残った一時ファイル。
-    fn parts(dir: &Path) -> Vec<String> {
-        fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|name| name.ends_with(PART_SUFFIX))
-            .collect()
-    }
-
-    #[test]
-    fn a_dictionary_is_downloaded_verified_and_placed() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let server = serve("/dict/test.hsd", Reply::Body(bytes.clone()));
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("share").join("hasami");
-        let mut calls = Vec::new();
-        // 取得元の末尾の / は重ねない。保存先のディレクトリは作る
-        let source = format!("{}/dict/", server.url);
-        let outcome = download_with(&test_agent(), &dict, &dir, &source, false, &mut |r, t| {
-            calls.push((r, t))
-        })
-        .unwrap();
-        let path = dir.join("test.hsd");
-        assert_eq!(outcome, Outcome::Downloaded(path.clone()));
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(parts(&dir).is_empty(), "{:?}", parts(&dir));
-        assert_eq!(server.requests(), 1);
-        assert_eq!(calls.first(), Some(&(0, dict.size)));
-        assert_eq!(calls.last(), Some(&(dict.size, dict.size)));
-        assert!(hasami::Dictionary::load(&path).is_ok());
-        // 権限は普通に作ったファイルと同じ (一時ファイルの 0600 のままにしない)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let reference = dir.join("reference");
-            File::create(&reference).unwrap();
-            let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&path), mode(&reference));
-        }
-
-        // 取得済みなら通信しない
-        let again = download_with(&test_agent(), &dict, &dir, &source, false, &mut |r, t| {
-            calls.push((r, t))
-        })
-        .unwrap();
-        assert_eq!(again, Outcome::Present(path));
-        assert_eq!(server.requests(), 1);
-        assert_eq!(calls.last(), Some(&(dict.size, dict.size)));
-    }
-
-    #[test]
-    fn a_different_file_is_not_replaced_without_force() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let server = serve("/test.hsd", Reply::Body(bytes.clone()));
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.hsd");
-        fs::write(&path, b"another version").unwrap();
-
-        let err = fetch(&dict, dir.path(), &server, false).unwrap_err();
-        assert!(matches!(err, DownloadError::Differs { .. }), "{err}");
-        let message = err.to_string();
-        assert!(message.contains("中身が違います"), "{message}");
-        assert!(message.contains("--force"), "{message}");
-        assert!(message.contains(HASAMI_TAG), "{message}");
-        assert_eq!(fs::read(&path).unwrap(), b"another version");
-        assert_eq!(server.requests(), 0);
-
-        // force なら置き換える
-        let outcome = fetch(&dict, dir.path(), &server, true).unwrap();
-        assert_eq!(outcome, Outcome::Downloaded(path.clone()));
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(parts(dir.path()).is_empty());
-    }
-
-    /// 取得に失敗したら、置き場所には何も置かず、一時ファイルも残さない。
-    fn assert_fails_and_leaves_nothing(
-        dict: &Distributed,
-        reply: Reply,
-        expected: impl Fn(&DownloadError) -> bool,
-    ) -> String {
-        let server = serve("/test.hsd", reply);
-        let dir = tempfile::tempdir().unwrap();
-        let err = fetch(dict, dir.path(), &server, false).unwrap_err();
-        assert!(expected(&err), "{err:?}");
-        assert!(!dir.path().join("test.hsd").exists());
-        assert!(parts(dir.path()).is_empty(), "{:?}", parts(dir.path()));
-        err.to_string()
-    }
-
-    #[test]
-    fn a_different_hash_is_rejected() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let mut other = bytes.clone();
-        *other.last_mut().unwrap() ^= 0xff;
-        let message = assert_fails_and_leaves_nothing(&dict, Reply::Body(other.clone()), |e| {
-            matches!(e, DownloadError::Checksum { .. })
-        });
-        assert!(message.contains(dict.sha256), "{message}");
+        // 圧縮版が取得元にないときは、展開前の辞書を取る指定を案内する
+        let missing = say(
+            HasamiError::Status {
+                url: zst.clone(),
+                status: 404,
+            },
+            true,
+        );
         assert!(
-            message.contains(&to_hex(&Sha256::digest(&other))),
-            "{message}"
+            missing.starts_with(&format!("{zst} を取得できません (HTTP 404)")),
+            "{missing}"
+        );
+        assert!(missing.contains("--uncompressed"), "{missing}");
+        let missing = say(
+            HasamiError::Status {
+                url: hsd.clone(),
+                status: 404,
+            },
+            false,
+        );
+        assert_eq!(missing, format!("{hsd} を取得できません (HTTP 404)"));
+
+        // 圧縮版の大きさの違いは、圧縮版と分かるように書く
+        let length = say(
+            HasamiError::ContentLength {
+                url: zst.clone(),
+                expected: 10,
+                actual: 11,
+            },
+            true,
+        );
+        assert!(length.contains("大きさが違います"), "{length}");
+        assert!(
+            length.contains(&format!("{} の圧縮版は 10 バイト", dict.name)),
+            "{length}"
+        );
+
+        // 展開したものの誤りは「展開した中身」と書き、受信の誤りと分ける
+        let decoded = format!("{zst}{DECOMPRESSED}");
+        let checksum = say(
+            HasamiError::Checksum {
+                from: decoded.clone(),
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+            true,
+        );
+        assert_eq!(
+            checksum,
+            format!("{zst} を展開した中身の SHA-256 が違います (期待 a、実際 b)")
+        );
+        let short = say(
+            HasamiError::Truncated {
+                from: decoded,
+                expected: 10,
+                received: 3,
+            },
+            true,
+        );
+        assert!(
+            short.contains("を展開した中身の大きさが足りません (3 / 10 バイト)"),
+            "{short}"
+        );
+        let cut = say(
+            HasamiError::Truncated {
+                from: zst.clone(),
+                expected: 10,
+                received: 3,
+            },
+            true,
+        );
+        assert_eq!(
+            cut,
+            format!("{zst} の受信が途中で切れました (3 / 10 バイト)")
+        );
+        let broken = say(
+            HasamiError::Decompress {
+                from: zst.clone(),
+                reason: "bad frame".into(),
+            },
+            true,
+        );
+        assert_eq!(broken, format!("{zst} を展開できません (zstd): bad frame"));
+        // 取得では起きない誤りも、hasami の説明を添えて返す
+        let other = say(HasamiError::InvalidDict("x".into()), true);
+        assert!(
+            other.starts_with(&format!("{} を取得できません: ", dict.name)),
+            "{other}"
         );
     }
 
-    #[test]
-    fn a_truncated_body_is_rejected() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let half = bytes[..bytes.len() / 2].to_vec();
-        // Content-Length がなく、接続が閉じて終わる
-        let message =
-            assert_fails_and_leaves_nothing(&dict, Reply::CloseDelimited(half.clone()), |e| {
-                matches!(e, DownloadError::Truncated { .. })
-            });
-        assert!(message.contains("途中で切れました"), "{message}");
-        // Content-Length に届かないまま接続が閉じる
-        assert_fails_and_leaves_nothing(&dict, Reply::WrongLength(half, dict.size), |e| {
-            matches!(e, DownloadError::Receive { .. })
-        });
-    }
-
-    #[test]
-    fn an_oversized_body_is_rejected() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let mut longer = bytes.clone();
-        longer.extend_from_slice(b"extra");
-        assert_fails_and_leaves_nothing(&dict, Reply::CloseDelimited(longer), |e| {
-            matches!(e, DownloadError::Oversized { .. })
-        });
-    }
-
-    #[test]
-    fn a_different_content_length_is_rejected_before_the_body() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let message = assert_fails_and_leaves_nothing(
-            &dict,
-            Reply::WrongLength(bytes.clone(), dict.size + 10),
-            |e| matches!(e, DownloadError::ContentLength { actual, .. } if *actual == dict.size + 10),
-        );
-        assert!(message.contains("Content-Length"), "{message}");
-        // Content-Length: 0 (ureq は本体なしとみなす) も、大きさの違いとして報告する
-        assert_fails_and_leaves_nothing(&dict, Reply::Status(200, "OK"), |e| {
-            matches!(e, DownloadError::ContentLength { actual: 0, .. })
-        });
-    }
-
-    #[test]
-    fn http_errors_are_reported() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let message =
-            assert_fails_and_leaves_nothing(&dict, Reply::Status(404, "Not Found"), |e| {
-                matches!(e, DownloadError::Status { status: 404, .. })
-            });
-        assert!(message.contains("HTTP 404"), "{message}");
-        assert!(message.contains("/test.hsd"), "{message}");
-        // ureq がたどらない 3xx も失敗にする (既定では成功として返ってくる)
-        assert_fails_and_leaves_nothing(&dict, Reply::Status(304, "Not Modified"), |e| {
-            matches!(e, DownloadError::Status { status: 304, .. })
-        });
-    }
-
-    #[test]
-    fn a_body_that_is_not_a_dictionary_is_rejected() {
-        // 大きさと SHA-256 は合う (その中身で作った表) が、hasami の辞書ではない
-        let bytes = b"this is not a hasami dictionary\n".repeat(64);
-        let dict = distributed("test", &bytes);
-        let message = assert_fails_and_leaves_nothing(&dict, Reply::Body(bytes.clone()), |e| {
-            matches!(e, DownloadError::NotDictionary { .. })
-        });
-        assert!(message.contains("辞書として読めません"), "{message}");
-    }
-
-    #[test]
-    fn a_failed_forced_download_keeps_the_existing_file() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.hsd");
-        fs::write(&path, &bytes).unwrap();
-        for reply in [
-            Reply::Status(500, "Internal Server Error"),
-            Reply::Body(vec![0; bytes.len()]),
-            Reply::CloseDelimited(bytes[..10].to_vec()),
-        ] {
-            let server = serve("/test.hsd", reply);
-            assert!(fetch(&dict, dir.path(), &server, true).is_err());
-            assert_eq!(server.requests(), 1, "force なら取得済みでも取り直す");
-            assert_eq!(fs::read(&path).unwrap(), bytes);
-            assert!(parts(dir.path()).is_empty(), "{:?}", parts(dir.path()));
-        }
-    }
-
-    #[test]
-    fn stale_partial_files_are_removed() {
-        let bytes = dictionary_bytes();
-        let dict = distributed("test", &bytes);
-        let server = serve("/test.hsd", Reply::Body(bytes));
-        let dir = tempfile::tempdir().unwrap();
-        let aged = |name: &str, age: Duration| {
-            let path = dir.path().join(name);
-            let file = File::create(&path).unwrap();
-            file.set_modified(SystemTime::now() - age).unwrap();
-            path
-        };
-        let day = Duration::from_secs(24 * 60 * 60);
-        let old = aged(".test.hsd.abc123.part", day + Duration::from_secs(3600));
-        let fresh = aged(".test.hsd.def456.part", Duration::from_secs(60));
-        // ほかの辞書の一時ファイルと、名前の形が違うファイルには触れない
-        let other = aged(".test2.hsd.abc123.part", day * 2);
-        let unrelated = aged(".test.hsd.abc123.keep", day * 2);
-
-        fetch(&dict, dir.path(), &server, false).unwrap();
-        assert!(!old.exists());
-        assert!(fresh.exists());
-        assert!(other.exists());
-        assert!(unrelated.exists());
-    }
-
-    /// 本番の取得元に疎通できることを確かめる (辞書の本体は受け取らない)。TLS の設定 (provider と
-    /// root_certs) の誤りは、実際に HTTPS でハンドシェイクするまで分からない。
+    /// 取得元の添付ファイル (圧縮版) と目録に、HTTPS で届く (`make dict-check`)。TLS の設定 (provider・
+    /// root_certs) の誤りは、実際に HTTPS でハンドシェイクするまで分からない。目録の中身が取得元の
+    /// 目録と同じことも確かめる。
     #[test]
     #[ignore = "ネットワークが必要"]
-    fn the_default_source_is_reachable() {
-        let dict = find("ipadic").unwrap();
-        let url = format!("{DEFAULT_SOURCE}/{}", dict.file_name());
-        let response = agent()
-            .head(&url)
-            .call()
-            .unwrap_or_else(|e| panic!("{url}: {e}"));
-        assert_eq!(response.status().as_u16(), 200, "{url}");
-        let length = response
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-        assert_eq!(length, Some(dict.size), "{url}");
+    fn the_default_source_serves_the_catalog() {
+        let remote = hasami::download::catalog_from(DEFAULT_SOURCE)
+            .unwrap_or_else(|e| panic!("{DEFAULT_SOURCE}: {e}"));
+        assert_eq!(format!("v{}", remote.hasami_version), HASAMI_TAG);
+        for dict in &DICTIONARIES {
+            let found = remote
+                .find(dict.name)
+                .unwrap_or_else(|| panic!("{}", dict.name));
+            let ours = dict.to_hasami();
+            assert_eq!(
+                (&found.file, found.size, &found.sha256, &found.compressed),
+                (&ours.file, ours.size, &ours.sha256, &ours.compressed),
+                "{}",
+                dict.name
+            );
+        }
     }
 
-    /// 目録の辞書をすべて本番の取得元から取得し、大きさ・SHA-256・依存の hasami で読めることを確かめる
-    /// (`make dict-check`。Release のワークフローが目録を更新したときに回す)。
+    /// 目録の辞書をすべて本番の取得元から取得し (圧縮版を展開する)、大きさ・SHA-256・依存の hasami で
+    /// 読めることを確かめる。展開前の辞書を取る経路も、いちばん小さい辞書で確かめる (`make dict-check`。
+    /// Release のワークフローが目録を更新したときに回す)。
     #[test]
-    #[ignore = "ネットワークが必要 (目録の辞書をすべて、合わせて約 477MB 取得する)"]
+    #[ignore = "ネットワークが必要 (目録の辞書をすべて圧縮版で約 146MB と、展開前の ipadic の約 18MB を取得する)"]
     fn every_catalog_dictionary_can_be_downloaded_and_read() {
         let dir = tempfile::tempdir().unwrap();
-        for dict in &DICTIONARIES {
+        let smallest = &DICTIONARIES[0];
+        let cases = DICTIONARIES
+            .iter()
+            .map(|dict| (dict, true))
+            .chain([(smallest, false)]);
+        for (dict, compressed) in cases {
             let path = dir.path().join(dict.file_name());
-            let outcome = download(dict, dir.path(), DEFAULT_SOURCE, false, &mut |_, _| {})
-                .unwrap_or_else(|e| panic!("{}: {e}", dict.name));
+            let mut total = 0;
+            let outcome = download(
+                dict,
+                dir.path(),
+                DEFAULT_SOURCE,
+                false,
+                compressed,
+                &mut |_, t| {
+                    total = t;
+                },
+            )
+            .unwrap_or_else(|e| panic!("{} (compressed: {compressed}): {e}", dict.name));
             assert_eq!(outcome, Outcome::Downloaded(path.clone()), "{}", dict.name);
+            assert_eq!(total, dict.transfer_size(compressed), "{}", dict.name);
             assert_eq!(check_file(&path, dict).unwrap(), Check::Verified);
             // 次の辞書の分のディスクを空ける
             fs::remove_file(&path).unwrap();
