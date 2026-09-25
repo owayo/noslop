@@ -7,6 +7,7 @@
 use std::ops::Range;
 use std::path::Path;
 
+use crate::code::CodeLanguage;
 use crate::diagnostic::Span;
 use crate::segment::{self, LineBreakMode};
 use crate::text;
@@ -16,21 +17,47 @@ use crate::text;
 pub enum SourceFormat {
     Markdown,
     PlainText,
+    /// コードのファイル。コメントだけを読む ([`crate::code`])。
+    Code(CodeLanguage),
 }
 
 impl SourceFormat {
-    /// 拡張子から形式を推定する。Markdown 系の拡張子以外はテキストとして扱う。
+    /// 拡張子から形式を推定する。Markdown 系の拡張子は Markdown、コードの拡張子はコード (このビルドで
+    /// 読めない言語も含む。読めない言語はコメントを取り出さない)、ほかはテキストとして扱う。
     pub fn from_path(path: &Path) -> Self {
-        match path
+        let Some(ext) = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("md" | "markdown" | "mdown" | "mkd" | "mdx") => SourceFormat::Markdown,
-            _ => SourceFormat::PlainText,
+        else {
+            return SourceFormat::PlainText;
+        };
+        match ext.as_str() {
+            "md" | "markdown" | "mdown" | "mkd" | "mdx" => SourceFormat::Markdown,
+            _ => CodeLanguage::from_extension(&ext)
+                .map_or(SourceFormat::PlainText, SourceFormat::Code),
         }
     }
+
+    /// この形式の文書の組み立て。コードはコメントの断片の集まり、ほかはひと続きの文章。
+    pub fn kind(self) -> DocumentKind {
+        match self {
+            SourceFormat::Markdown | SourceFormat::PlainText => DocumentKind::Prose,
+            SourceFormat::Code(_) => DocumentKind::Fragments,
+        }
+    }
+}
+
+/// 文書の組み立て。文書や段落をまたいで数えるルールを当てられるかを決める。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DocumentKind {
+    /// ひと続きの文章 (Markdown・テキスト・Google ドキュメントの本文など)。すべてのルールを当てる。
+    #[default]
+    Prose,
+    /// 互いに独立した短い断片の集まり (コードのコメント、表計算のセルなど)。1 文ずつ判定するルール
+    /// ([`RuleUnit::Sentence`](crate::rules::RuleUnit)) だけを当てる。断片をまとめて数えても、
+    /// 文書の統計の母数にも、ルールを校正した条件 (ひと続きの地の文) にもならないため。
+    Fragments,
 }
 
 /// 文書の読み込み方の設定。
@@ -323,6 +350,8 @@ pub struct Document {
     /// 表示用の名前 (パス。標準入力なら `<stdin>` か `--stdin-filename`)。
     pub name: String,
     pub format: SourceFormat,
+    /// 文書の組み立て (ひと続きの文章か、断片の集まりか)。当てるルールを決める。
+    pub kind: DocumentKind,
     /// 原文 (先頭の BOM は除く)。
     ///
     /// 診断の [`Span`] はこの文字列上のバイト位置で、ファイル上のバイト位置は
@@ -354,6 +383,7 @@ impl Document {
         let (mut blocks, directives) = match format {
             SourceFormat::Markdown => crate::markdown::parse(&source),
             SourceFormat::PlainText => crate::plaintext::parse(&source),
+            SourceFormat::Code(language) => crate::code::parse(&source, language),
         };
         let mut sentences = Vec::new();
         for (idx, block) in blocks.iter_mut().enumerate() {
@@ -381,6 +411,7 @@ impl Document {
         Self {
             name: name.into(),
             format,
+            kind: format.kind(),
             source,
             bom_len,
             lines,

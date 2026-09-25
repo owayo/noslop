@@ -3,7 +3,7 @@
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
 use crate::document::{Document, Sentence};
 use crate::genre::Genre;
-use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
+use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, RuleUnit};
 use crate::segment;
 use crate::text::reading_length;
 
@@ -77,6 +77,10 @@ impl LongSentence {
 }
 
 impl Rule for LongSentence {
+    fn unit(&self) -> RuleUnit {
+        RuleUnit::Sentence
+    }
+
     fn meta(&self) -> &'static RuleMeta {
         &META
     }
