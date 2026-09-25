@@ -61,6 +61,11 @@ assert_cmd = "2.2.2"
 hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "build"] }
 predicates = "3.1.4"
 
+# build.rs で配布辞書の目録 (dict/catalog.json) を読み、検証して定数を作る
+[build-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -323,8 +323,8 @@ impl From<SkillTarget> for crate::skill::Target {
 pub enum DictCommand {
     /// hasami の配布辞書を取得する (大きさ・SHA-256・辞書の形式を確かめてから置く)
     ///
-    /// 取得元は、noslop が依存する hasami の版のタグのリリースの添付ファイル。
-    /// 取得した中身は、そのリリースの大きさと SHA-256 (noslop に記録してある) で確かめ、辞書として読めることも確かめてから置く。
+    /// 取得元は、noslop に組み込んだ hasami のリリースの目録 (dict list の 1 行目の版) の添付ファイル。
+    /// 取得した中身は、目録の大きさと SHA-256 で確かめ、辞書として読めることも確かめてから置く。
     /// 途中で失敗しても、すでにあるファイルは消さず、壊さない。
     Download(DictDownloadArgs),
     /// 配布辞書と、取得済みかを表示する (通信しない)
@@ -362,7 +362,7 @@ pub struct DictListArgs {
 /// `dict download` の NAME に書ける名前 (配布辞書の表から作る)。
 fn dictionary_names() -> PossibleValuesParser {
     PossibleValuesParser::new(
-        dictionaries::DICTIONARIES.map(|d| PossibleValue::new(d.name).help(d.summary)),
+        dictionaries::DICTIONARIES.map(|d| PossibleValue::new(d.name).help(d.description())),
     )
 }
 
@@ -1289,28 +1289,44 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
         progress.update(r, t)
     });
     progress.finish();
-    let message = match result {
-        Ok(Outcome::Present(path)) => format!(
+    match result {
+        Ok(outcome) => {
+            let _ = writeln!(
+                io::stdout(),
+                "{}",
+                download_report(dict, &outcome, &dir, share.as_deref())
+            );
+            EXIT_OK
+        }
+        Err(e) => error(e),
+    }
+}
+
+/// `dict download` がうまくいったときに標準出力へ出す、結果と使い方の 2 行。
+fn download_report(
+    dict: &Distributed,
+    outcome: &Outcome,
+    dir: &Path,
+    share: Option<&Path>,
+) -> String {
+    let message = match outcome {
+        Outcome::Present(path) => format!(
             "{} は取得済みです (大きさと SHA-256 を確かめました): {}",
             dict.name,
-            display_path(&path)
+            display_path(path)
         ),
-        Ok(Outcome::Downloaded(path)) => format!(
+        Outcome::Downloaded(path) => format!(
             "{} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): {}",
             dict.name,
-            display_path(&path)
+            display_path(path)
         ),
-        Err(e) => return error(e),
     };
-    let mut out = io::stdout();
-    let _ = writeln!(out, "{message}");
-    let usage = if is_share_dir(&dir, share.as_deref()) {
+    let usage = if is_share_dir(dir, share) {
         share_usage(&format!("{}{}", dictionaries::SHARE_PREFIX, dict.name))
     } else {
         "使うときは --dict にこのファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)".to_string()
     };
-    let _ = writeln!(out, "{usage}");
-    EXIT_OK
+    format!("{message}\n{usage}")
 }
 
 /// `share:<名前>` の辞書の使い方の行。
@@ -1464,7 +1480,7 @@ fn dict_list_text(
             entry.dictionary.name.to_string(),
             format!("{} MB", megabytes(entry.dictionary.size)),
             state,
-            entry.dictionary.summary.to_string(),
+            entry.dictionary.description().to_string(),
         ]);
     }
     let width = |column: usize| rows.iter().map(|r| r[column].width()).max().unwrap_or(0);
@@ -1854,6 +1870,8 @@ mod tests {
                 check,
             })
             .collect();
+        // 目録 (dict/catalog.json) は Release のたびに変わりうるので、名前と大きさは目録から組み立てる
+        let [verified, differs, missing] = [0, 1, 2].map(|i| listed[i].dictionary);
         let text = dict_list_text(Path::new("share"), true, &listed, true);
         let line = |name: &str| {
             text.lines()
@@ -1864,11 +1882,18 @@ mod tests {
             "hasami {} の配布辞書 (保存先: share)\n",
             dictionaries::HASAMI_TAG
         )));
-        assert!(line("ipadic").contains(" 18.1 MB  取得済み (大きさと SHA-256 を確かめました)"));
-        assert!(line("ipadic-neologd").contains("中身が違う (hasami の別の版か、壊れています)"));
-        assert!(line("ipadic-neologd-sudachi").contains("237.8 MB  未取得"));
-        assert!(line("ipadic-neologd-sudachi").ends_with("(hasami の推奨、最大の語彙)"));
-        assert!(text.contains("noslop dict download <名前> (名前を省くと ipadic-neologd-sudachi)"));
+        assert!(line(verified.name).contains(&format!(
+            "{} MB  取得済み (大きさと SHA-256 を確かめました)",
+            megabytes(verified.size)
+        )));
+        assert!(line(differs.name).contains("中身が違う (hasami の別の版か、壊れています)"));
+        assert!(line(missing.name).contains(&format!("{} MB  未取得", megabytes(missing.size))));
+        let recommended = dictionaries::find(dictionaries::RECOMMENDED).unwrap();
+        assert!(line(recommended.name).ends_with(recommended.description()));
+        assert!(text.contains(&format!(
+            "noslop dict download <名前> (名前を省くと {})",
+            dictionaries::RECOMMENDED
+        )));
         assert!(text.contains("dictionary = \"share:<名前>\""));
         assert!(
             text.ends_with(
@@ -1885,6 +1910,44 @@ mod tests {
         );
         let text = dict_list_text(Path::new("share"), true, &listed, false);
         assert!(text.contains("ここにある辞書を hasami の推奨順 (ipadic-neologd-sudachi → ipadic-neologd → ipadic) で使います"), "{text}");
+    }
+
+    /// 取得できたときは結果と使い方を出す。share ディレクトリなら share:<名前>、ほかの場所ならファイルの
+    /// パスで指定するよう案内する (統合テストは目録の実物を取れないので、ここで確かめる)。
+    #[test]
+    fn download_reports_the_result_and_how_to_use_the_dictionary() {
+        let dict = dictionaries::find(dictionaries::RECOMMENDED).unwrap();
+        let share = Path::new("share");
+        let placed = share.join(dict.file_name());
+        let name = dict.name;
+
+        let downloaded = download_report(
+            dict,
+            &Outcome::Downloaded(placed.clone()),
+            share,
+            Some(share),
+        );
+        assert!(downloaded.starts_with(&format!(
+            "{name} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): "
+        )));
+        assert!(downloaded.ends_with(&format!(
+            "使うときは --dict share:{name} か、noslop.toml の [morphology] に dictionary = \"share:{name}\" を書いてください"
+        )));
+
+        let present = download_report(dict, &Outcome::Present(placed), share, Some(share));
+        assert!(present.starts_with(&format!(
+            "{name} は取得済みです (大きさと SHA-256 を確かめました): "
+        )));
+
+        let elsewhere = Path::new("elsewhere");
+        let report = download_report(
+            dict,
+            &Outcome::Downloaded(elsewhere.join(dict.file_name())),
+            elsewhere,
+            Some(share),
+        );
+        assert!(report.contains("使うときは --dict にこのファイルのパスを指定してください"));
+        assert!(!report.contains(&format!("share:{name}")), "{report}");
     }
 
     #[test]

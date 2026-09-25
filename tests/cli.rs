@@ -13,6 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use assert_cmd::Command;
+use noslop::dictionaries::{DICTIONARIES, RECOMMENDED};
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -1318,13 +1319,14 @@ fn noslop_offline() -> Command {
     cmd
 }
 
-/// `/ipadic.hsd` への GET に `body` を返す (ほかは 404) テスト用の HTTP サーバー。URL と、受けた
+/// `/<name>.hsd` への GET に `body` を返す (ほかは 404) テスト用の HTTP サーバー。URL と、受けた
 /// 要求の数を返す。
-fn serve_dictionary(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+fn serve_dictionary(name: &str, body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&requests);
+    let served = format!("GET /{name}.hsd ");
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -1340,7 +1342,7 @@ fn serve_dictionary(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
                     Ok(_) => {}
                 }
             }
-            let (status, body) = if request_line.starts_with("GET /ipadic.hsd ") {
+            let (status, body) = if request_line.starts_with(&served) {
                 ("200 OK", &body[..])
             } else {
                 ("404 Not Found", &[][..])
@@ -1399,72 +1401,72 @@ fn dict_list_shows_whether_each_dictionary_is_downloaded() {
         String::from_utf8(out.stdout).unwrap()
     };
     let stdout = list();
-    for name in ["ipadic", "ipadic-neologd", "ipadic-neologd-sudachi"] {
-        assert!(dictionary_row(&stdout, name).contains("未取得"), "{stdout}");
+    for dict in &DICTIONARIES {
+        assert!(
+            dictionary_row(&stdout, dict.name).contains("未取得"),
+            "{stdout}"
+        );
     }
 
-    // 同梱の辞書は配布辞書の ipadic と同じなので、写せば取得済みになる
-    fs::copy(bundled_dictionary(), dir.path().join("ipadic.hsd")).unwrap();
+    // 目録と中身の違うファイルは「中身が違う」。同梱の辞書も、目録の版と違えばこうなる
+    // (目録と同じ中身で「取得済み」になる表示は cli.rs の単体テストで確かめる)
+    let [first, second] = [&DICTIONARIES[0], &DICTIONARIES[1]];
+    fs::write(
+        dir.path().join(first.file_name()),
+        b"not the catalog dictionary",
+    )
+    .unwrap();
     let stdout = list();
     assert!(
-        dictionary_row(&stdout, "ipadic").contains("取得済み (大きさと SHA-256 を確かめました)"),
+        dictionary_row(&stdout, first.name).contains("中身が違う"),
         "{stdout}"
     );
-    assert!(dictionary_row(&stdout, "ipadic-neologd").contains("未取得"));
+    assert!(dictionary_row(&stdout, second.name).contains("未取得"));
 }
 
+/// 保存先は --dir、省くと share ディレクトリ (HASAMI_DATA_DIR、なければ $XDG_DATA_HOME/hasami)。
+/// 取得の前に保存先を作るので、目録と合わない中身を返すサーバーでも、どこに置こうとしたかが分かる。
+/// 取得できる場合は目録の実物が要るので、単体テスト (dictionaries・cli) と make dict-check で確かめる
 #[test]
-fn dict_download_fetches_and_verifies_a_dictionary_once() {
-    let expected = fs::read(bundled_dictionary()).unwrap();
-    let (url, requests) = serve_dictionary(expected.clone());
-    let dir = tempfile::tempdir().unwrap();
-    let download = || {
-        noslop_offline()
-            .args(["dict", "download", "ipadic", "--dir"])
-            .arg(dir.path())
-            .args(["--source", &url])
-            .assert()
-    };
-    // 標準エラーは端末ではないので、受信の進み具合は出さない
-    download()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "ipadic (18.1 MB) を取得しています: ",
-        ))
-        .stdout(predicate::str::contains(
-            "ipadic を取得しました (大きさ・SHA-256・辞書の形式を確かめました): ",
-        ))
-        .stdout(predicate::str::contains(
-            "--dict にこのファイルのパスを指定",
-        ))
-        .stderr(predicate::str::is_empty());
-    assert_eq!(fs::read(dir.path().join("ipadic.hsd")).unwrap(), expected);
-    assert!(partial_files(dir.path()).is_empty());
-    assert_eq!(requests.load(Ordering::SeqCst), 1);
+fn dict_download_puts_the_dictionary_in_the_chosen_directory() {
+    let dict = &DICTIONARIES[0];
+    // 目録と大きさの違う中身を返す (受信の前に Content-Length で断る)
+    let (url, requests) = serve_dictionary(dict.name, Vec::new());
+    let root = tempfile::tempdir().unwrap();
 
-    // 取得済みなら通信しない
-    download()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "ipadic は取得済みです (大きさと SHA-256 を確かめました): ",
-        ))
-        .stdout(predicate::str::contains("を取得しています").not());
-    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    let explicit = root.path().join("explicit");
+    noslop_offline()
+        .args(["dict", "download", dict.name, "--source", &url, "--dir"])
+        .arg(&explicit)
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains(format!("{} (", dict.name)))
+        .stdout(predicate::str::contains("を取得しています: "))
+        .stderr(predicate::str::contains("大きさが違います"));
+    assert!(explicit.is_dir());
+    assert!(!explicit.join(dict.file_name()).exists());
+    assert!(partial_files(&explicit).is_empty());
 
-    // 保存先を省くと share ディレクトリ ($XDG_DATA_HOME/hasami) に置き、share:<名前> を案内する
-    let data = tempfile::tempdir().unwrap();
+    // HASAMI_DATA_DIR は XDG_DATA_HOME より先 (hasami の data_dir と同じ規則)。下に hasami を足さない
+    let preferred = root.path().join("preferred");
+    let xdg = root.path().join("xdg");
+    noslop_offline()
+        .env("HASAMI_DATA_DIR", &preferred)
+        .env("XDG_DATA_HOME", &xdg)
+        .args(["dict", "download", dict.name, "--source", &url])
+        .assert()
+        .code(2);
+    assert!(preferred.is_dir());
+    assert!(!xdg.exists());
+
     noslop_offline()
         .env_remove("HASAMI_DATA_DIR")
-        .env("XDG_DATA_HOME", data.path())
-        .args(["dict", "download", "ipadic", "--source", &url])
+        .env("XDG_DATA_HOME", &xdg)
+        .args(["dict", "download", dict.name, "--source", &url])
         .assert()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "使うときは --dict share:ipadic か、noslop.toml の [morphology] に dictionary = \"share:ipadic\" を書いてください",
-        ));
-    let placed = data.path().join("hasami").join("ipadic.hsd");
-    assert_eq!(fs::read(&placed).unwrap(), expected);
-    assert_eq!(requests.load(Ordering::SeqCst), 2);
+        .code(2);
+    assert!(xdg.join("hasami").is_dir());
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
 #[test]
@@ -1473,13 +1475,14 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
         .args(["dict", "download", "unidic"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("ipadic-neologd-sudachi"));
+        .stderr(predicate::str::contains(RECOMMENDED));
 
-    // 取得元にない辞書 (サーバーは ipadic だけを配る)
-    let (url, requests) = serve_dictionary(Vec::new());
+    // 取得元にない辞書 (サーバーは目録の先頭の辞書だけを配る)
+    let [first, second] = [&DICTIONARIES[0], &DICTIONARIES[1]];
+    let (url, requests) = serve_dictionary(first.name, Vec::new());
     let dir = tempfile::tempdir().unwrap();
     noslop_offline()
-        .args(["dict", "download", "ipadic-neologd", "--dir"])
+        .args(["dict", "download", second.name, "--dir"])
         .arg(dir.path())
         .args(["--source", &url])
         .assert()
@@ -1487,15 +1490,15 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
         .stderr(predicate::str::contains("HTTP 404"));
     // 中身の違うものは置かない (大きさが合わない)
     noslop_offline()
-        .args(["dict", "download", "ipadic", "--dir"])
+        .args(["dict", "download", first.name, "--dir"])
         .arg(dir.path())
         .args(["--source", &url])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("大きさが違います"));
     assert_eq!(requests.load(Ordering::SeqCst), 2);
-    assert!(!dir.path().join("ipadic-neologd.hsd").exists());
-    assert!(!dir.path().join("ipadic.hsd").exists());
+    assert!(!dir.path().join(second.file_name()).exists());
+    assert!(!dir.path().join(first.file_name()).exists());
     assert!(partial_files(dir.path()).is_empty());
 }
 
