@@ -4,7 +4,7 @@
 
 | 項目 | 値 |
 |---|---|
-| 出所 | hasami v26.9.103 の `dict/ipadic.hsd` (Git LFS) |
+| 出所 | hasami v26.9.103 のリリースに添付された `ipadic.hsd` |
 | 元のデータ | mecab-ipadic 2.7.0-20070801 (辞書のメタデータ `sources=ipadic@61b90ba6e669`) |
 | 語数 | 390,849 |
 | 大きさ | 18,125,804 バイト |
@@ -15,7 +15,7 @@ NEologd の語彙を含む辞書 (ipadic-neologd など) は 220MB を超える�
 
 ## 更新の手順
 
-1. hasami の新しいタグで `dict/ipadic.hsd` を取り出す (`git lfs install` のうえで clone する)
-2. このディレクトリの `ipadic.hsd` を置き換え、上の表を書き換える。SHA-256 は `shasum -a 256 dict/ipadic.hsd` で求め、hasami のタグの LFS ポインタ (`git show <タグ>:dict/ipadic.hsd` の `oid`) と一致することを確かめる。語数と出典 (`sources`) は、hasami の clone で `cargo run --release -- info -d dict/ipadic.hsd` を実行すると表示される
-3. `src/morph.rs` のテストに固定した辞書の大きさ・語数・出典を書き換える。`src/dictionaries.rs` の `HASAMI_TAG`・`DEFAULT_SOURCE`・`DICTIONARIES` (3 つの配布辞書の大きさと SHA-256。タグの LFS ポインタの `size` と `oid`) も書き換える (テストが、この `ipadic.hsd` と表の ipadic の一致を確かめる)
+1. hasami の新しいタグのリリースから、`ipadic.hsd` と `dictionaries.json` を作業用のディレクトリに取得する (`gh release download <タグ> -R owayo/hasami -p ipadic.hsd -p dictionaries.json -D <ディレクトリ>`)
+2. このディレクトリの `ipadic.hsd` を置き換え、上の表を書き換える。SHA-256 は `shasum -a 256 dict/ipadic.hsd` で求め、`dictionaries.json` の ipadic の `sha256` と一致することを確かめる (大きさは `size`、出典は `sources` にある)。語数は、hasami の clone で `cargo run --release -- info -d <ipadic.hsd のパス>` を実行すると表示される
+3. `src/morph.rs` のテストに固定した辞書の大きさ・語数・出典を書き換える。`src/dictionaries.rs` の `HASAMI_TAG`・`DEFAULT_SOURCE` (タグのリリースの添付ファイルの URL)・`DICTIONARIES` (3 つの配布辞書の大きさと SHA-256。`dictionaries.json` の `size` と `sha256`) も書き換える (テストが、この `ipadic.hsd` と表の ipadic の一致を確かめる)
 4. 手元の文書で P15・P16 の指摘の差分を確かめてから `make ci` を通す

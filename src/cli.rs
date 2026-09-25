@@ -323,8 +323,8 @@ impl From<SkillTarget> for crate::skill::Target {
 pub enum DictCommand {
     /// hasami の配布辞書を取得する (大きさ・SHA-256・辞書の形式を確かめてから置く)
     ///
-    /// 取得元は、noslop が依存する hasami の版のタグに固定した Git LFS。
-    /// 取得した中身は、そのタグに記録された大きさと SHA-256 で確かめ、辞書として読めることも確かめてから置く。
+    /// 取得元は、noslop が依存する hasami の版のタグのリリースの添付ファイル。
+    /// 取得した中身は、そのリリースの大きさと SHA-256 (noslop に記録してある) で確かめ、辞書として読めることも確かめてから置く。
     /// 途中で失敗しても、すでにあるファイルは消さず、壊さない。
     Download(DictDownloadArgs),
     /// 配布辞書と、取得済みかを表示する (通信しない)

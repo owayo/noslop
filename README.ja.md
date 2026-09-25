@@ -692,9 +692,10 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 
 設定ファイルなら `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます。取得しただけでは使いません。指定しないときは、これまでどおり同梱の辞書を使います。
 
-- 取得元は、noslop が依存する hasami の版のタグ（`noslop dict list` の 1 行目に出ます）に固定した Git LFS です。取得した中身は、そのタグに記録された大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
+- 取得元は、noslop が依存する hasami の版（`noslop dict list` の 1 行目に出ます）の GitHub のリリースに添付された辞書です。取得した中身は、noslop に記録した大きさと SHA-256（そのリリースに添付された `dictionaries.json` と同じ値）で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
 - 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
-- LFS のダウンロードは、hasami のリポジトリの持ち主の帯域の枠に数えられます。ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
+- ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
+- noslop v26.9.100 は、hasami が辞書を置かなくなった Git LFS から取得しようとして `HTTP 404` で失敗します。v26.9.100 では `noslop dict download --source https://github.com/owayo/hasami/releases/download/v26.9.103` で取得できます
 - 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります
 
 share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
