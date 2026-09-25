@@ -4,7 +4,18 @@
   <strong>日本語の文章から「AI 臭さ」を機械的に拾う Linter</strong>
 </p>
 
+<h3 align="center">対応プラットフォーム</h3>
+
 <p align="center">
+  <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&amp;logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&amp;logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/Windows-0078D6" alt="Windows">
+</p>
+
+<p align="center">
+  <a href="https://github.com/owayo/noslop/actions/workflows/release.yml">
+    <img alt="Release" src="https://github.com/owayo/noslop/actions/workflows/release.yml/badge.svg?branch=main">
+  </a>
   <a href="https://github.com/owayo/noslop/actions/workflows/ci.yml">
     <img alt="CI" src="https://github.com/owayo/noslop/actions/workflows/ci.yml/badge.svg?branch=main">
   </a>
@@ -66,8 +77,10 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 ### cargo
 
 ```bash
-cargo install --git https://github.com/owayo/noslop
+cargo install --git https://github.com/owayo/noslop --locked
 ```
+
+`--locked` を付けると、CI とリリースのビルドと同じく `Cargo.lock` のとおりに依存を解決します。
 
 ### ソースから
 
@@ -77,7 +90,9 @@ cd noslop
 make install   # /usr/local/bin にインストール（INSTALL_PATH で変更可）
 ```
 
-`make install` は、バイナリを入れたあと、そのバイナリで Claude Code と Codex CLI のスキル（`~/.claude/skills/noslop/SKILL.md`・`~/.codex/skills/noslop/SKILL.md`）も入れます（[AI エージェントと使う](#ai-エージェントと使う)）。入れる先は `SKILL_TARGETS` で選べます（`make install SKILL_TARGETS=claude`、入れないなら `make install SKILL_TARGETS=`）。
+Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使います。mise を使わない場合は `make install SYSTEM_TOOLS=1` で、`PATH` 上の cargo でビルドします。
+
+`make install` は、バイナリを入れたあと、そのバイナリで Claude Code と Codex CLI のスキル（`~/.claude/skills/noslop/SKILL.md`・`~/.codex/skills/noslop/SKILL.md`）も入れます（[AI エージェントと使う](#ai-エージェントと使う)）。入れる先は `SKILL_TARGETS` で選べます（`make install SKILL_TARGETS=claude`、入れないなら `make install SKILL_TARGETS=`）。`make uninstall` はバイナリだけを取り除き、スキルは残します。
 
 ## 使い方
 
@@ -384,7 +399,7 @@ severity = "warning"
 ```json
 {
   "schemaVersion": 2,
-  "tool": { "name": "noslop", "version": "0.1.0" },
+  "tool": { "name": "noslop", "version": "26.9.100" },
   "columnUnit": "unicode-scalar",
   "settings": { "genre": "general", "experimental": false, "failOn": "never" },
   "files": [
@@ -706,19 +721,43 @@ share ディレクトリの外に置いた辞書は、ファイルのパスで�
 
 ## 開発
 
-ツールチェーンの版は [mise](https://mise.jdx.dev/) の `mise.toml` で固定しています。
+[mise](https://mise.jdx.dev/) が必要です。ツールチェーンの版は `mise.toml` で固定しています。Makefile はツールを `mise exec` 経由で呼ぶので、シェルで `mise activate` を済ませていなくても `mise.toml` の版で動きます。
 
 ```bash
-mise install              # mise.toml の Rust を入れる
-
-mise exec -- make build   # デバッグビルド
-mise exec -- make test    # テスト
-mise exec -- make check   # フォーマットの確認と clippy
-mise exec -- make ci      # CI と同じ検査（fmt・clippy・test）
-mise exec -- make release # リリースビルド
+make setup   # mise.toml のツールチェーンを入れ（mise install）、依存を取得する
+make ci      # CI と同じ検査
 ```
 
-`mise activate` を済ませたシェルなら `mise exec --` は省けます。
+ターゲットの一覧は `make`（引数なし）でも表示できます。下の表の説明は、その出力と同じです。
+
+| コマンド | 説明 |
+|---|---|
+| `make setup` | Install the toolchain (mise.toml) and fetch dependencies |
+| `make build` | Build debug version |
+| `make release` | Build release version |
+| `make run` | Run the debug build (pass arguments with ARGS="...") |
+| `make install` | Build release, install the binary and the skills (claude + codex) |
+| `make uninstall` | Remove the installed binary (the skills are kept) |
+| `make test` | Run tests |
+| `make test-no-default-features` | Run tests without the bundled dictionary (--no-default-features) |
+| `make lint` | Run clippy (warnings are errors) |
+| `make clippy` | Alias of lint |
+| `make fmt` | Format code |
+| `make fmt-check` | Check formatting |
+| `make check` | Run format check and clippy (no rewrite) |
+| `make docs` | Regenerate docs/rules.md from the built-in rule catalog |
+| `make docs-check` | Check that docs/rules.md is up to date (no rewrite) |
+| `make ci` | Run the same checks as CI (fmt, clippy, tests, docs) |
+| `make clean` | Clean build artifacts |
+| `make help` | Show this help message |
+
+`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
+
+cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに依存を解決します。依存を足した直後など、`Cargo.lock` を更新したいときは `CARGO_FLAGS=` を付けます。mise を使わない場合は `SYSTEM_TOOLS=1` を付けると、`PATH` 上のツールで動きます（ツールの版はそろいません）。
+
+## リリース
+
+GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64、macOS x86_64 / arm64、Windows x86_64 のバイナリと、`SHA256SUMS`・`LICENSE`・`THIRD_PARTY_NOTICES.md` が付きます。
 
 ## ロードマップ
 
@@ -734,5 +773,7 @@ mise exec -- make release # リリースビルド
 noslop のルール体系・語句カタログ・閾値の一部は、MIT ライセンスで公開されている日本語の文章作法プロジェクトに由来します。著作権表示とライセンス全文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
 
 文分割には、日本語の形態素解析器 [hasami](https://github.com/owayo/hasami)（MIT）の辞書を使わない文分割を使っています。hasami が組み込む例外表（文末記号を含む語の一覧）は辞書データ（SudachiDict ほか）から抽出したもので、その出典と著作権表示も [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
+
+既定のバイナリ（feature `bundled-dict`）には、hasami が mecab-ipadic から作った形態素解析の辞書を同梱しています。mecab-ipadic のライセンス（NAIST-2003）の条文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に、辞書の出所は [dict/README.md](dict/README.md) にあります。
 
 見る観点の一部は、[textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)（MIT）も参考にしています。コードと語句の一覧は含みません。

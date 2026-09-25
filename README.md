@@ -4,7 +4,18 @@
   <strong>A fast linter that flags AI-generated "slop" patterns in Japanese prose</strong>
 </p>
 
+<h3 align="center">Supported Platforms</h3>
+
 <p align="center">
+  <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&amp;logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&amp;logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/Windows-0078D6" alt="Windows">
+</p>
+
+<p align="center">
+  <a href="https://github.com/owayo/noslop/actions/workflows/release.yml">
+    <img alt="Release" src="https://github.com/owayo/noslop/actions/workflows/release.yml/badge.svg?branch=main">
+  </a>
   <a href="https://github.com/owayo/noslop/actions/workflows/ci.yml">
     <img alt="CI" src="https://github.com/owayo/noslop/actions/workflows/ci.yml/badge.svg?branch=main">
   </a>
@@ -66,8 +77,10 @@ Every release includes `SHA256SUMS`; use it to verify the download.
 ### cargo
 
 ```bash
-cargo install --git https://github.com/owayo/noslop
+cargo install --git https://github.com/owayo/noslop --locked
 ```
+
+`--locked` resolves dependencies exactly as in `Cargo.lock`, like the CI and release builds.
 
 ### From Source
 
@@ -77,7 +90,9 @@ cd noslop
 make install   # installs to /usr/local/bin (override with INSTALL_PATH)
 ```
 
-After installing the binary, `make install` uses it to install the skills for Claude Code and Codex CLI (`~/.claude/skills/noslop/SKILL.md` and `~/.codex/skills/noslop/SKILL.md`; see [Using noslop with AI Agents](#using-noslop-with-ai-agents)). Choose the agents with `SKILL_TARGETS` (`make install SKILL_TARGETS=claude`, or `make install SKILL_TARGETS=` to skip the skills).
+The Makefile uses [mise](https://mise.jdx.dev/) to build with the Rust version in `mise.toml`. Without mise, run `make install SYSTEM_TOOLS=1` to build with the cargo on your `PATH`.
+
+After installing the binary, `make install` uses it to install the skills for Claude Code and Codex CLI (`~/.claude/skills/noslop/SKILL.md` and `~/.codex/skills/noslop/SKILL.md`; see [Using noslop with AI Agents](#using-noslop-with-ai-agents)). Choose the agents with `SKILL_TARGETS` (`make install SKILL_TARGETS=claude`, or `make install SKILL_TARGETS=` to skip the skills). `make uninstall` removes only the binary and keeps the skills.
 
 ## Usage
 
@@ -384,7 +399,7 @@ A stable schema for machines. The essentials (the example below is the P01 findi
 ```json
 {
   "schemaVersion": 2,
-  "tool": { "name": "noslop", "version": "0.1.0" },
+  "tool": { "name": "noslop", "version": "26.9.100" },
   "columnUnit": "unicode-scalar",
   "settings": { "genre": "general", "experimental": false, "failOn": "never" },
   "files": [
@@ -706,19 +721,43 @@ To measure the rules on your own documents, run `noslop calibrate --human <human
 
 ## Development
 
-Toolchain versions are pinned in `mise.toml` for [mise](https://mise.jdx.dev/).
+Requires [mise](https://mise.jdx.dev/). Toolchain versions are pinned in `mise.toml`. The Makefile runs the tools through `mise exec`, so they use the versions in `mise.toml` even in a shell without `mise activate`.
 
 ```bash
-mise install              # install the Rust toolchain from mise.toml
-
-mise exec -- make build   # debug build
-mise exec -- make test    # run tests
-mise exec -- make check   # format check and clippy
-mise exec -- make ci      # the same checks as CI (fmt, clippy, test)
-mise exec -- make release # release build
+make setup   # install the toolchain from mise.toml (mise install) and fetch dependencies
+make ci      # the same checks as CI
 ```
 
-You can drop `mise exec --` in a shell where `mise activate` is set up.
+Running `make` with no target prints the same list; the descriptions below are its output.
+
+| Command | Description |
+|---|---|
+| `make setup` | Install the toolchain (mise.toml) and fetch dependencies |
+| `make build` | Build debug version |
+| `make release` | Build release version |
+| `make run` | Run the debug build (pass arguments with ARGS="...") |
+| `make install` | Build release, install the binary and the skills (claude + codex) |
+| `make uninstall` | Remove the installed binary (the skills are kept) |
+| `make test` | Run tests |
+| `make test-no-default-features` | Run tests without the bundled dictionary (--no-default-features) |
+| `make lint` | Run clippy (warnings are errors) |
+| `make clippy` | Alias of lint |
+| `make fmt` | Format code |
+| `make fmt-check` | Check formatting |
+| `make check` | Run format check and clippy (no rewrite) |
+| `make docs` | Regenerate docs/rules.md from the built-in rule catalog |
+| `make docs-check` | Check that docs/rules.md is up to date (no rewrite) |
+| `make ci` | Run the same checks as CI (fmt, clippy, tests, docs) |
+| `make clean` | Clean build artifacts |
+| `make help` | Show this help message |
+
+`make ci` runs the format check, clippy with warnings as errors, the tests, the check that `docs/rules.md` is up to date and the tests without the bundled dictionary. CI runs `make setup` and `make ci` on Linux and macOS; on Windows it skips make and runs the same checks except the `docs/rules.md` check as direct cargo commands. When you change a rule's definition or explanation, regenerate `docs/rules.md` with `make docs`; otherwise `make ci` fails.
+
+Cargo commands run with `--locked`, so dependencies resolve exactly as in `Cargo.lock`. To update `Cargo.lock` (for example right after adding a dependency), pass `CARGO_FLAGS=`. Without mise, add `SYSTEM_TOOLS=1` to use the tools on your `PATH` (the toolchain versions are then not pinned).
+
+## Release
+
+Releases are made by the Release workflow: open the Actions tab on GitHub, select Release and click Run workflow. Versions take the form `YY.M.COUNTER` (such as `26.9.100`); the first release of a month starts the counter at 100, and each later release in the same month adds 1. With `dry_run` enabled, the workflow only computes the next version and shows the change to `Cargo.toml`, without committing, tagging, building or publishing. Each release attaches the binaries for Linux x86_64, macOS x86_64 / arm64 and Windows x86_64, along with `SHA256SUMS`, `LICENSE` and `THIRD_PARTY_NOTICES.md`.
 
 ## Roadmap
 
@@ -734,5 +773,7 @@ You can drop `mise exec --` in a shell where `mise activate` is set up.
 Part of noslop's rule system, phrase catalog and thresholds is derived from an MIT-licensed project on Japanese writing practice. The copyright notice and full license text are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Sentences are split with the dictionary-free splitter of [hasami](https://github.com/owayo/hasami) (MIT), a Japanese morphological analyzer. hasami embeds an exception table (a list of words that contain sentence-ending marks) extracted from dictionary data (SudachiDict and others); its sources and copyright notices are also in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The default binary (feature `bundled-dict`) bundles a morphological-analysis dictionary that hasami built from mecab-ipadic. The license text of mecab-ipadic (NAIST-2003) is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the dictionary's origin is in [dict/README.md](dict/README.md).
 
 Some of the aspects noslop looks at were also informed by [textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing) (MIT). No code or phrase lists from it are included.

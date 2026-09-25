@@ -49,21 +49,34 @@ jobs:
           cargo --version
           cargo clippy --version
 
-      - name: Check formatting
+      # 検査の中身は Makefile の ci が定義する (fmt-check・clippy・test・docs/rules.md の差分・
+      # 辞書を同梱しないビルドのテスト)。検査を足すときは Makefile の ci に足す
+      - name: Set up
+        if: runner.os != 'Windows'
+        run: make setup
+
+      - name: Run checks (make ci)
+        if: runner.os != 'Windows'
+        run: make ci
+
+      # Windows のランナーの make は MinGW の mingw32-make の写しで、レシピの POSIX シェル前提の
+      # 解釈に癖があるため make を使わない。make ci と同じ cargo のコマンドを直接呼ぶ
+      # (Makefile の ci を変えたらここも合わせる。docs/rules.md の差分は Linux と macOS で見る)
+      - name: Check formatting (Windows)
+        if: runner.os == 'Windows'
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Run clippy (Windows)
+        if: runner.os == 'Windows'
+        run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Run tests
-        run: cargo test
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --locked
 
-      # docs/rules.md はルールの定義から生成する。定義を変えたのに再生成を忘れると落ちる
-      - name: Check docs/rules.md is up to date
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo run --quiet -- rules --format markdown --no-config > docs/rules.md
-          git diff --exit-code -- docs/rules.md
+      - name: Run tests without the bundled dictionary (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --locked --no-default-features
 
   build:
     name: Build (${{ matrix.target }})

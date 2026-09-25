@@ -100,7 +100,7 @@ flowchart TD
 6. 閾値を持つルールは `Rule::measure` を実装し、`noslop calibrate` で閾値を掃引できるようにする。実装したら `rhythm.rs` / `structure.rs` のテストにある `MEASURED` に ID を足す。`testing::assert_measures_agree` が、測定値が閾値を越えることと `check` が指摘することの一致を、閾値を測定値の前後に動かして確かめる (指摘する例と、値は測れるが指摘しない例を 1 つ以上用意する)。重大度を切り替えるだけの閾値 (R05 の `error_above` など) は `Measure::at` で切り替え先の重大度を示す
 7. 特定の重大度の率で校正したルールは、`Rule::calibration_basis` でその重大度を返す (既定は、既定の重大度が警告以上なら警告、情報なら情報。R05 は重大)。`noslop calibrate` は、見直しの判定をこの重大度以上の指摘で数える
 8. 品詞で判定したほうが元の校正条件に近いルールは、`Rule::uses_morphology` を真にし、`ctx.morph` (辞書があるときだけ `Some`) の形態素で判定する。辞書がない・文を解析できないときは辞書なしの近似に戻す。テストは `morph::testing::morphology` で小さな辞書を組み立て、`testing::run_with_morphology` で当てる (辞書なしと辞書ありの結果が違う例を並べる)
-9. README (日英) のルール一覧を更新し、`mise exec -- make docs` で `docs/rules.md` を作り直す
+9. README (日英) のルール一覧を更新し、`make docs` で `docs/rules.md` を作り直す
 
 ### `explanation` の書式
 
@@ -138,20 +138,22 @@ flowchart TD
 
 ## テストとチェック
 
+開発のコマンドは Makefile にまとめてある (一覧は `make help`)。make は `mise.toml` の版のツールを `mise exec` 経由で呼ぶので、シェルで mise を activate していなくてよい。
+
 ```bash
-mise install                       # mise.toml の Rust を入れる
-mise exec -- make ci               # CI と同じ検査 (fmt・clippy -D warnings・test)
-mise exec -- cargo test            # テストだけ
+make setup                         # mise.toml の Rust を入れ、依存を取得する (初回と依存の更新後)
+make ci                            # CI と同じ検査 (fmt・clippy -D warnings・test・docs-check・同梱しないビルドの test)
+make test                          # テストだけ
 mise exec -- cargo test segment::  # モジュールを絞る
-mise exec -- make docs             # docs/rules.md を作り直す
+make docs                          # docs/rules.md を作り直す
 ```
 
-- push 前に `make ci` を通す。手元と CI で clippy の版がずれないよう、`mise exec --` 経由で動かす
-- CI は ubuntu / macos / windows で同じ検査を回す。Windows では改行を LF のまま checkout している (テストの行・列・バイト位置は LF 前提。`.gitattributes` でも LF に固定している)
-- CI (ubuntu) は `docs/rules.md` を生成し直して差分がないことも確かめる。ルールの定義や説明文を変えたら `make docs` を忘れない
+- push 前に `make ci` を通す。make が `mise exec` 経由で動くので、手元と CI で clippy の版がずれない。cargo のコマンドには `--locked` が付く (`Cargo.lock` を更新したいときは `CARGO_FLAGS=` で外す)
+- CI は ubuntu / macos / windows で検査を回す。Linux と macOS のジョブは `make setup` と `make ci` だけを呼ぶので、検査を足すときは Makefile の `ci` に足し、`.github/workflows/ci.yml` に検査のコマンドを並べない。Windows のジョブはランナーの make (mingw32-make) を避け、`docs-check` 以外の同じ検査を cargo で直接呼ぶ。`ci` を変えたら、ci.yml の Windows のステップもそろえる。Windows では改行を LF のまま checkout している (テストの行・列・バイト位置は LF 前提。`.gitattributes` でも LF に固定している)
+- `make ci` は `docs/rules.md` を生成し直して差分がないことも確かめる (`make docs-check`。ファイルは書き換えない)。ルールの定義や説明文を変えたら `make docs` を忘れない
 - 統合テストは `tests/cli.rs` (サブコマンドの入出力・終了コード) と `tests/integrations.rs` (MCP サーバーとフック) にある。組み込みルールの増減で壊れないよう、件数は設定ファイルの独自ルールと `--only-rules` で確かめる
 - テスト用の文章は、実在の文書や既存の資料を写さずに自分で書く
-- 辞書ありの判定のテストは、既定の探索や同梱の辞書に頼らず、hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。ただし小さな辞書は hasami の既定の文字種で動くので、全角空白 (U+3000) がトークンにならないなど配布の IPAdic と違う点がある。全角空白のトークンに依る処理は形態素を手で組んで確かめる。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする。同梱の辞書に依るテストは `cfg(feature = "bundled-dict")` で分け、同梱しないビルドも `mise exec -- cargo test --no-default-features` で確かめる
+- 辞書ありの判定のテストは、既定の探索や同梱の辞書に頼らず、hasami の `DictBuilder` で小さな辞書を組み立てる (`morph::testing`、`tests/cli.rs` の `write_dictionary`)。ただし小さな辞書は hasami の既定の文字種で動くので、全角空白 (U+3000) がトークンにならないなど配布の IPAdic と違う点がある。全角空白のトークンに依る処理は形態素を手で組んで確かめる。手元の辞書に左右されないよう、既定の探索に頼るテストは `HASAMI_DICT` を外し `XDG_DATA_HOME` を空のディレクトリにする。同梱の辞書に依るテストは `cfg(feature = "bundled-dict")` で分ける。同梱しないビルドのテスト (`make test-no-default-features`。中身は `cargo test --no-default-features`) は `make ci` に入っている
 - Rust の文字列の行継続 (`\`) は次の行の先頭の空白を消す。説明文を数字や `(` の前で折り返すときは、`\` の前に空白を入れる (「90 字台から 100 字」のように、数字の前後の空白が落ちるため)
 
 ## 利用者に見せる文言
