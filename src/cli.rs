@@ -611,15 +611,91 @@ pub(crate) struct Environment {
     pub home: Option<PathBuf>,
     /// 辞書を探す場所 (`HASAMI_DICT` と share ディレクトリ)。
     pub dictionaries: DictionarySearch,
+    /// noslop のキャッシュの置き場所 ([`cache_dir`])。フックの状態 (gws の書き込みを止めた記録) を
+    /// 置く。`None` なら状態を使う機能は動かない (gws のフックは書き込みを止めず、知らせるだけにする)。
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Environment {
     /// 実行中のプロセスの環境から作る。
     pub(crate) fn from_process() -> Self {
+        let home = std::env::home_dir().filter(|h| h.is_absolute());
         Self {
-            home: std::env::home_dir().filter(|h| h.is_absolute()),
+            cache_dir: cache_dir(
+                std::env::consts::OS,
+                std::env::var_os("XDG_CACHE_HOME").as_deref(),
+                std::env::var_os("LOCALAPPDATA").as_deref(),
+                home.as_deref(),
+            ),
+            home,
             dictionaries: DictionarySearch::from_env(),
         }
+    }
+}
+
+/// noslop のキャッシュの置き場所。`XDG_CACHE_HOME` (絶対パスのときだけ) があれば
+/// `$XDG_CACHE_HOME/noslop`、なければ macOS は `~/Library/Caches/noslop`、Windows は
+/// `%LOCALAPPDATA%\noslop\cache`、ほかは `~/.cache/noslop`。`os` は `std::env::consts::OS` の値。
+fn cache_dir(
+    os: &str,
+    xdg_cache_home: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    fn absolute(v: Option<&std::ffi::OsStr>) -> Option<&Path> {
+        v.map(Path::new).filter(|p| p.is_absolute())
+    }
+    if let Some(dir) = absolute(xdg_cache_home) {
+        return Some(dir.join("noslop"));
+    }
+    match os {
+        "windows" => absolute(local_app_data).map(|dir| dir.join("noslop").join("cache")),
+        "macos" => home.map(|h| h.join("Library").join("Caches").join("noslop")),
+        _ => home.map(|h| h.join(".cache").join("noslop")),
+    }
+}
+
+#[cfg(test)]
+mod cache_dir_tests {
+    use super::*;
+
+    #[test]
+    fn the_cache_dir_follows_xdg_then_the_platform() {
+        let base = std::env::temp_dir();
+        let other = base.join("other");
+        let home = base.join("home");
+        let at = |os: &str, xdg: Option<&Path>, local: Option<&Path>| {
+            cache_dir(
+                os,
+                xdg.map(Path::as_os_str),
+                local.map(Path::as_os_str),
+                Some(&home),
+            )
+        };
+        // XDG_CACHE_HOME はどの OS でも先に見る
+        for os in ["linux", "macos", "windows"] {
+            assert_eq!(at(os, Some(&base), Some(&other)), Some(base.join("noslop")));
+        }
+        assert_eq!(
+            at("linux", None, None),
+            Some(home.join(".cache").join("noslop"))
+        );
+        assert_eq!(
+            at("macos", None, None),
+            Some(home.join("Library").join("Caches").join("noslop"))
+        );
+        assert_eq!(
+            at("windows", None, Some(&other)),
+            Some(other.join("noslop").join("cache"))
+        );
+        assert_eq!(at("windows", None, None), None);
+        // 相対パスの XDG_CACHE_HOME は使わない
+        assert_eq!(
+            at("linux", Some(Path::new("relative")), None),
+            Some(home.join(".cache").join("noslop"))
+        );
+        assert_eq!(cache_dir("linux", None, None, None), None);
+        assert_eq!(Environment::default().cache_dir, None);
     }
 }
 
