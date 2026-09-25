@@ -1,7 +1,7 @@
 //! hasami の配布辞書の取得 (`noslop dict download` / `noslop dict list`)。
 //!
 //! hasami のリリースに添付されたビルド済みの辞書 (`.hsd`) を、hasami の share
-//! ディレクトリ (`$XDG_DATA_HOME/hasami`、未設定なら `~/.local/share/hasami`) に取得する。
+//! ディレクトリ (hasami が辞書を探す場所。既定は `~/.local/share/hasami`) に取得する。
 //!
 //! - 取得元は hasami のタグ ([`HASAMI_TAG`]) のリリースに固定し、取得した中身を、そのリリースの
 //!   `dictionaries.json` と同じ大きさと SHA-256 ([`DICTIONARIES`]) で確かめる。hasami を上げるときは、
@@ -14,7 +14,6 @@
 //! - 取得は保存先と同じディレクトリの一時ファイルに書き、大きさ・SHA-256・辞書として読めることを
 //!   確かめてから rename で置く。途中で失敗しても、置き場所にある既存のファイルは消さず、壊さない
 
-use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -26,7 +25,7 @@ use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 use ureq::typestate::AgentScope;
 
 /// 配布辞書を取る hasami のタグ。`Cargo.toml` の hasami の依存のタグと同じにする (テストで確かめる)。
-pub const HASAMI_TAG: &str = "v26.9.103";
+pub const HASAMI_TAG: &str = "v26.9.105";
 
 /// 配布辞書の取得元 (URL の接頭辞。この後に `/<名前>.hsd` を付けて取得する)。
 ///
@@ -34,7 +33,7 @@ pub const HASAMI_TAG: &str = "v26.9.103";
 /// (Git LFS) から外し、既存のタグからも消したので、リポジトリの中のパスは指さない (noslop v26.9.100 は
 /// LFS のパスを指していて、404 になる)。ミラーがあれば `noslop dict download --source` で切り替えられる。
 /// どの取得元でも、取得した中身は大きさと SHA-256 で確かめる。
-pub const DEFAULT_SOURCE: &str = "https://github.com/owayo/hasami/releases/download/v26.9.103";
+pub const DEFAULT_SOURCE: &str = "https://github.com/owayo/hasami/releases/download/v26.9.105";
 
 /// 辞書の指定 (`--dict`・設定の `dictionary`) で、share ディレクトリの辞書を指す接頭辞。
 pub const SHARE_PREFIX: &str = "share:";
@@ -69,19 +68,19 @@ pub const DICTIONARIES: [Distributed; 3] = [
         name: "ipadic",
         summary: "IPAdic (noslop が同梱しているもの)",
         size: 18_125_804,
-        sha256: "e917bcdcdb45893fb4dd9b2de88ccb11dba2ecad2471dd0f62bd674a7f89ed73",
+        sha256: "1ca13555b1fc6ec12dd4b830aec97262b4481b70b7cfec6d2a9bea912e1d6277",
     },
     Distributed {
         name: "ipadic-neologd",
         summary: "IPAdic + NEologd",
         size: 221_759_218,
-        sha256: "61789d8f03b335f375fa3eb61c25aeb0e2b011c6950cf607b439b17766f19366",
+        sha256: "d1e4024898e33dfd5817f39a93d52a3b520ad94dfca4ad4aeebcefd0dcc40d56",
     },
     Distributed {
         name: "ipadic-neologd-sudachi",
         summary: "IPAdic + NEologd + SudachiDict (hasami の推奨、最大の語彙)",
         size: 237_760_279,
-        sha256: "003d85ab9f3c5bc3e323c6cebe0d0e15fcdc23fde750b60843a8baf72058b347",
+        sha256: "061fe9b1dc328efb82edafca06f894aa62900b44bd226b5c1a188d9e5c0d6c89",
     },
 ];
 
@@ -111,24 +110,12 @@ const PART_SUFFIX: &str = ".part";
 
 /// 配布辞書の置き場 (hasami の share ディレクトリ)。
 ///
-/// hasami が辞書を探す場所 (`hasami::analyzer::default_dict_path`) と同じ規則で決める。
-/// `XDG_DATA_HOME` が空でなければ `<XDG_DATA_HOME>/hasami`、なければ `HOME` が空でなければ
-/// `<HOME>/.local/share/hasami`。どちらもなければ `None`。
+/// hasami が辞書を探す場所 (`hasami::analyzer::default_dict_path`) とずれないよう、hasami の
+/// [`hasami::analyzer::data_dir`] をそのまま使う。`HASAMI_DATA_DIR`、`<XDG_DATA_HOME>/hasami`、
+/// Windows では `<LOCALAPPDATA>/hasami`、`<HOME>/.local/share/hasami` の順で、空の値は設定されて
+/// いないとみなす。どれもなければ `None`。
 pub fn share_dir() -> Option<PathBuf> {
-    share_dir_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
-}
-
-/// [`share_dir`] の本体 (環境変数の値を受け取る。テストで環境を書き換えずに済むように分ける)。
-pub fn share_dir_from(xdg_data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    if let Some(data) = xdg_data_home.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(data).join("hasami"));
-    }
-    home.filter(|v| !v.is_empty()).map(|home| {
-        PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("hasami")
-    })
+    hasami::analyzer::data_dir()
 }
 
 /// 辞書の指定が `share:<名前>` なら、その名前。
@@ -140,7 +127,7 @@ pub fn share_name(spec: &Path) -> Option<&str> {
 #[derive(Debug, thiserror::Error)]
 pub enum ShareError {
     #[error(
-        "share ディレクトリが分かりません (XDG_DATA_HOME も HOME も設定されていません)。辞書のファイルのパスを指定してください"
+        "share ディレクトリが分かりません (HASAMI_DATA_DIR・XDG_DATA_HOME・HOME のどれも設定されていません。Windows では LOCALAPPDATA も見ます)。辞書のファイルのパスを指定してください"
     )]
     NoShareDir,
     #[error("share: の後に辞書の名前がありません (例: share:{RECOMMENDED})")]
@@ -641,7 +628,7 @@ fn remove_stale_parts(dir: &Path, dict: &Distributed, now: SystemTime) {
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::{Shutdown, TcpListener, TcpStream};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
@@ -651,28 +638,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // share ディレクトリ
     // -----------------------------------------------------------------------
-
-    fn os(s: &str) -> Option<OsString> {
-        Some(OsString::from(s))
-    }
-
-    #[test]
-    fn share_dir_follows_the_rules_of_hasami() {
-        let xdg = Path::new("data");
-        let home = Path::new("home");
-        assert_eq!(
-            share_dir_from(os("data"), os("home")),
-            Some(xdg.join("hasami"))
-        );
-        let under_home = home.join(".local").join("share").join("hasami");
-        // XDG_DATA_HOME がないか空なら HOME の下
-        assert_eq!(share_dir_from(None, os("home")), Some(under_home.clone()));
-        assert_eq!(share_dir_from(os(""), os("home")), Some(under_home));
-        // どちらもなければ分からない
-        assert_eq!(share_dir_from(None, None), None);
-        assert_eq!(share_dir_from(os(""), os("")), None);
-        assert_eq!(share_dir_from(os("data"), None), Some(xdg.join("hasami")));
-    }
 
     #[test]
     fn share_specs_name_a_file_in_the_share_directory() {
@@ -946,7 +911,19 @@ mod tests {
         };
         stream.write_all(format!("HTTP/1.1 {head}\r\nConnection: close\r\n\r\n").as_bytes())?;
         stream.write_all(&body)?;
-        stream.flush()
+        stream.flush()?;
+        close_after_peer(&stream, &mut reader)
+    }
+
+    /// 送信側だけを閉じ、相手が読み終えて閉じるまで待つ (待つのは 10 秒まで)。書き終えてすぐに
+    /// 閉じると、Windows では相手が本文を受け取っている途中で接続が切られることがある
+    /// (統合テストで `Peer disconnected` になった)。
+    fn close_after_peer(stream: &TcpStream, reader: &mut BufReader<TcpStream>) -> io::Result<()> {
+        stream.shutdown(Shutdown::Write)?;
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))?;
+        io::copy(reader, &mut io::sink()).map(drop)
     }
 
     /// プロキシの環境変数に左右されない HTTP の設定 (ほかは本番と同じ)。

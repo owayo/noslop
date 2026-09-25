@@ -78,7 +78,7 @@ pub enum Command {
     SkillInstall(SkillInstallArgs),
     /// hasami の配布辞書 (形態素解析の辞書) を取得する・一覧する
     ///
-    /// 置き場は hasami の share ディレクトリ ($XDG_DATA_HOME/hasami、未設定なら ~/.local/share/hasami)。
+    /// 置き場は hasami の share ディレクトリ (既定は ~/.local/share/hasami。HASAMI_DATA_DIR・XDG_DATA_HOME で変わる)。
     /// 取得しただけでは使わない。
     /// 使うときは --dict share:<名前> か、noslop.toml の [morphology] に dictionary = "share:<名前>" を書く。
     #[command(subcommand)]
@@ -1281,7 +1281,7 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
     let share = dictionaries::share_dir();
     let Some(dir) = args.dir.or_else(|| share.clone()) else {
         return error(
-            "share ディレクトリが分かりません (XDG_DATA_HOME も HOME も設定されていません)。--dir で保存先を指定してください",
+            "share ディレクトリが分かりません (HASAMI_DATA_DIR・XDG_DATA_HOME・HOME のどれも設定されていません。Windows では LOCALAPPDATA も見ます)。--dir で保存先を指定してください",
         );
     };
     let mut progress = DownloadProgress::new(dict, &dir, io::stderr().is_terminal());
@@ -1416,7 +1416,7 @@ fn dict_list(args: DictListArgs) -> u8 {
     let share = dictionaries::share_dir();
     let Some(dir) = args.dir.or_else(|| share.clone()) else {
         return error(
-            "share ディレクトリが分かりません (XDG_DATA_HOME も HOME も設定されていません)。--dir で確かめる場所を指定してください",
+            "share ディレクトリが分かりません (HASAMI_DATA_DIR・XDG_DATA_HOME・HOME のどれも設定されていません。Windows では LOCALAPPDATA も見ます)。--dir で確かめる場所を指定してください",
         );
     };
     let listed = dictionaries::list(&dir);
@@ -1860,7 +1860,10 @@ mod tests {
                 .find(|l| l.split_whitespace().next() == Some(name))
                 .unwrap_or_else(|| panic!("{name}\n{text}"))
         };
-        assert!(text.starts_with("hasami v26.9.103 の配布辞書 (保存先: share)\n"));
+        assert!(text.starts_with(&format!(
+            "hasami {} の配布辞書 (保存先: share)\n",
+            dictionaries::HASAMI_TAG
+        )));
         assert!(line("ipadic").contains(" 18.1 MB  取得済み (大きさと SHA-256 を確かめました)"));
         assert!(line("ipadic-neologd").contains("中身が違う (hasami の別の版か、壊れています)"));
         assert!(line("ipadic-neologd-sudachi").contains("237.8 MB  未取得"));
