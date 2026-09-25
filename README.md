@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/app.png" width="128" alt="noslop">
+</p>
+
 <h1 align="center">noslop</h1>
 
 <p align="center">
