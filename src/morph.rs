@@ -1,10 +1,10 @@
 //! 形態素解析 (辞書を使う精密判定)。
 //!
 //! 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書 (`.hsd`) で、品詞で数えるルール
-//! (P15・P16) を判定する。既定のビルド (feature `bundled-dict`) は IPAdic の辞書
-//! (`dict/ipadic.hsd`) をバイナリに埋め込んでいるので、何も指定しなくても辞書で判定する。
-//! 辞書を使わないとき (`--no-dict`・同梱しないビルドで辞書が見つからないとき) は、それらのルールは
-//! 辞書なしの近似で判定する。
+//! (P15・P16) を判定する。既定の辞書の指定 (`auto`) は、hasami の share ディレクトリに取得した配布辞書を
+//! hasami の推奨順で選び、なければバイナリに埋め込んだ IPAdic の辞書 (`dict/ipadic.hsd`。feature
+//! `bundled-dict`) を使うので、何も指定しなくても辞書で判定する。辞書を使わないとき (`--no-dict`・
+//! 同梱しないビルドで辞書が見つからないとき) は、それらのルールは辞書なしの近似で判定する。
 //!
 //! - 辞書は実行ごとに 1 度だけ読む ([`resolve`])。ファイルの辞書は mmap し、同梱の辞書はバイナリに
 //!   埋め込んだバイト列を複製せずに読む。どちらも読み込みと解析で触れたページだけがメモリに載る。
@@ -53,10 +53,67 @@ impl MorphologyMode {
 #[derive(Debug, Clone, Default)]
 pub struct MorphologyOptions {
     pub mode: MorphologyMode,
-    /// 辞書のパスか、`share:<名前>` (hasami の share ディレクトリの `<名前>.hsd`)。なければ
-    /// `HASAMI_DICT`、次に同梱の辞書を使う (同梱しないビルドでは hasami の既定の場所
-    /// (share ディレクトリ。既定は `~/.local/share/hasami`) を探す)。
-    pub dictionary: Option<PathBuf>,
+    /// 使う辞書 (`[morphology] dictionary`・`--dict`)。既定は `auto`。
+    pub dictionary: DictionaryChoice,
+    /// 手元の辞書を探す場所 (`HASAMI_DICT` と share ディレクトリ)。CLI は
+    /// [`DictionarySearch::from_env`] で埋める。既定 (空) では手元を探さないので、テストの結果が
+    /// 手元に入れた辞書に左右されない。
+    pub search: DictionarySearch,
+}
+
+/// 辞書の指定のキーワード: 自動で選ぶ (既定)。
+pub const AUTO_DICTIONARY: &str = "auto";
+/// 辞書の指定のキーワード: 同梱の辞書。
+pub const BUNDLED_DICTIONARY: &str = "bundled";
+
+/// 使う辞書の指定 (`[morphology] dictionary`・`--dict`)。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum DictionaryChoice {
+    /// `auto`: `HASAMI_DICT` → share ディレクトリの配布辞書 (hasami の推奨順) → 同梱の辞書 ([`resolve`])。
+    #[default]
+    Auto,
+    /// `bundled`: 同梱の辞書 (`dict/ipadic.hsd`)。
+    Bundled,
+    /// `share:<名前>`: share ディレクトリの `<名前>.hsd` ([`dictionaries::resolve_share`])。
+    Share(String),
+    /// 辞書のファイル。
+    File(PathBuf),
+}
+
+impl DictionaryChoice {
+    /// 指定を読む。`auto`・`bundled` (どちらも完全一致) と `share:<名前>` のほかは、ファイルのパスとして
+    /// そのまま使う (`auto` という名前のファイルは `./auto` と書く)。
+    pub fn parse(spec: &Path) -> Self {
+        match spec.to_str() {
+            Some(AUTO_DICTIONARY) => Self::Auto,
+            Some(BUNDLED_DICTIONARY) => Self::Bundled,
+            _ => match dictionaries::share_name(spec) {
+                Some(name) => Self::Share(name.to_string()),
+                None => Self::File(spec.to_path_buf()),
+            },
+        }
+    }
+}
+
+/// 手元の辞書を探す場所。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DictionarySearch {
+    /// 環境変数 `HASAMI_DICT` (辞書のファイル)。
+    pub hasami_dict: Option<PathBuf>,
+    /// hasami の share ディレクトリ ([`dictionaries::share_dir`])。
+    pub share_dir: Option<PathBuf>,
+}
+
+impl DictionarySearch {
+    /// 実行中の環境から作る (空の `HASAMI_DICT` は設定されていないとみなす)。
+    pub fn from_env() -> Self {
+        Self {
+            hasami_dict: std::env::var_os(hasami::analyzer::DICT_ENV)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            share_dir: dictionaries::share_dir(),
+        }
+    }
 }
 
 /// 判定の方式。
@@ -231,17 +288,20 @@ static BUNDLED_HSD: &[u8] = hasami::include_hsd!("../dict/ipadic.hsd");
 ///
 /// `needed` は辞書を使う有効なルールがあるか。なければ辞書を探さない。
 ///
-/// 探す順は、明示のパス (`--dict`・設定の `dictionary`) → `HASAMI_DICT` → 同梱の辞書。
-/// share ディレクトリ (既定は `~/.local/share/hasami`) は探さない (同じ版の noslop なら、手元に入れた辞書によらず同じ結果に
-/// するため)。同梱しないビルドでは、同梱の辞書の代わりに hasami の既定の場所を探す。
+/// 辞書の指定 ([`DictionaryChoice`]) ごとに、次の辞書を使う。
 ///
-/// 明示の指定が `share:<名前>` なら、hasami の share ディレクトリの `<名前>.hsd` を使う
-/// (`noslop dict download` で取得した辞書。[`dictionaries::resolve_share`])。`HASAMI_DICT` には
-/// 当てない (hasami と同じく、ファイルのパスとして読む)。
+/// - `auto` (既定): `HASAMI_DICT` → share ディレクトリ (既定は `~/.local/share/hasami`) の配布辞書の
+///   うち、hasami の推奨順で最初に見つかったもの ([`dictionaries::preferred_in`]) → 同梱の辞書。
+///   同梱しないビルドでは、同梱の辞書の代わりに share ディレクトリのほかの `*.hsd` を名前順に探す
+///   (hasami の既定の探索と同じ)
+/// - `bundled`: 同梱の辞書 (同梱しないビルドでは `Err`)
+/// - `share:<名前>`: share ディレクトリの `<名前>.hsd` (`noslop dict download` で取得した辞書。
+///   [`dictionaries::resolve_share`])。`HASAMI_DICT` には当てない (hasami と同じく、ファイルのパスとして読む)
+/// - ファイルのパス: その辞書
 ///
-/// 指定した辞書が読めないときは `Err` にし、同梱の辞書や近似に黙って切り替えない。
-/// 同梱しないビルドで、`auto` なのに辞書が見つからないときだけ、辞書なしの近似に戻る
-/// (`required` なら `Err`)。
+/// 見つけた辞書が読めないときは `Err` にし、下の候補や同梱の辞書、近似に黙って切り替えない (手元の
+/// 辞書が壊れたまま、結果だけが変わるのを避ける)。`auto` で辞書が 1 つも見つからないのは同梱しない
+/// ビルドだけで、そのときは辞書なしの近似に戻る (`required` なら `Err`)。
 pub fn resolve(
     options: &MorphologyOptions,
     needed: bool,
@@ -259,15 +319,16 @@ pub fn resolve(
             MorphologyStatus::surface(requested, FallbackReason::NotNeeded),
         ));
     }
-    let explicit = match &options.dictionary {
-        Some(spec) => Some(explicit_dictionary(spec)?),
-        None => std::env::var_os(hasami::analyzer::DICT_ENV)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from),
-    };
-    let morphology = match explicit {
-        Some(path) => load_file(&path)?,
-        None => match fallback(requested)? {
+    let search = &options.search;
+    let morphology = match &options.dictionary {
+        DictionaryChoice::File(path) => load_file(path)?,
+        DictionaryChoice::Share(name) => {
+            let path = dictionaries::resolve_share(search.share_dir.as_deref(), name)
+                .map_err(|e| e.to_string())?;
+            load_file(&path)?
+        }
+        DictionaryChoice::Bundled => bundled()?,
+        DictionaryChoice::Auto => match auto(search, requested)? {
             Some(morphology) => morphology,
             None => {
                 return Ok((
@@ -286,12 +347,74 @@ pub fn resolve(
     Ok((Some(morphology), status))
 }
 
-/// 明示の指定 (`--dict`・設定の `dictionary`) を辞書のファイルに直す。`share:<名前>` なら share
-/// ディレクトリの辞書 (なければエラー)、それ以外はファイルのパスとしてそのまま使う。
-fn explicit_dictionary(spec: &Path) -> Result<PathBuf, String> {
-    match dictionaries::share_name(spec) {
-        Some(name) => dictionaries::resolve_share(name).map_err(|e| e.to_string()),
-        None => Ok(spec.to_path_buf()),
+/// `auto` が選ぶ辞書 (読み込む前)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoPick {
+    /// `HASAMI_DICT` の辞書。
+    HasamiDict(PathBuf),
+    /// share ディレクトリの辞書。
+    Share(PathBuf),
+    /// 同梱の辞書。
+    Bundled,
+    /// 辞書がない (同梱しないビルドだけ)。
+    Nothing,
+}
+
+/// `auto` が選ぶ辞書: `HASAMI_DICT` → share ディレクトリの配布辞書 (hasami の推奨順) → 同梱の辞書。
+/// 同梱しないビルドでは、同梱の辞書の代わりに share ディレクトリのほかの `*.hsd` を名前順に探す
+/// (hasami の既定の探索と同じ)。ファイルがあるかだけを見て、読めるかは確かめない。
+pub fn auto_pick(search: &DictionarySearch) -> AutoPick {
+    if let Some(path) = &search.hasami_dict {
+        return AutoPick::HasamiDict(path.clone());
+    }
+    if let Some(path) = search
+        .share_dir
+        .as_deref()
+        .and_then(dictionaries::preferred_in)
+    {
+        return AutoPick::Share(path);
+    }
+    fallback_pick(search)
+}
+
+#[cfg(feature = "bundled-dict")]
+fn fallback_pick(_search: &DictionarySearch) -> AutoPick {
+    AutoPick::Bundled
+}
+
+#[cfg(not(feature = "bundled-dict"))]
+fn fallback_pick(search: &DictionarySearch) -> AutoPick {
+    match search
+        .share_dir
+        .as_deref()
+        .and_then(hasami::analyzer::preferred_dict_in)
+    {
+        Some(path) => AutoPick::Share(path),
+        None => AutoPick::Nothing,
+    }
+}
+
+/// `auto` の辞書を読む。辞書が見つからなければ `None` (同梱しないビルドの `auto` だけ)。
+fn auto(
+    search: &DictionarySearch,
+    requested: MorphologyMode,
+) -> Result<Option<Morphology>, String> {
+    match auto_pick(search) {
+        AutoPick::HasamiDict(path) => load_file(&path).map(Some),
+        AutoPick::Share(path) => load_chosen(&path).map(Some),
+        AutoPick::Bundled => bundled().map(Some),
+        AutoPick::Nothing if requested == MorphologyMode::Auto => Ok(None),
+        AutoPick::Nothing => {
+            let share = match &search.share_dir {
+                Some(dir) => dir.join("*.hsd").display().to_string(),
+                None => "share ディレクトリ (HASAMI_DATA_DIR・XDG_DATA_HOME・HOME のどれも設定されていません)"
+                    .to_string(),
+            };
+            Err(format!(
+                "形態素解析の辞書が見つかりません (探した場所: {} (未設定)、{share})",
+                hasami::analyzer::DICT_ENV
+            ))
+        }
     }
 }
 
@@ -300,24 +423,32 @@ fn load_file(path: &Path) -> Result<Morphology, String> {
         .map_err(|e| format!("形態素解析の辞書を読めません: {}: {e}", path.display()))
 }
 
-/// 明示の指定がないときの辞書 (同梱の辞書)。
-#[cfg(feature = "bundled-dict")]
-fn fallback(_requested: MorphologyMode) -> Result<Option<Morphology>, String> {
-    Morphology::bundled().map(Some)
+/// share ディレクトリから自動で選んだ辞書を読む。読めなければ、取り直すか辞書を指定するよう案内する。
+fn load_chosen(path: &Path) -> Result<Morphology, String> {
+    load_file(path).map_err(|e| {
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let download = match dictionaries::find(name) {
+            Some(dict) => format!("`noslop dict download {} --force` で取り直すか、", dict.name),
+            None => String::new(),
+        };
+        format!(
+            "{e} (share ディレクトリから自動で選んだ辞書です。{download}[morphology] の dictionary か --dict で使う辞書を指定してください)"
+        )
+    })
 }
 
-/// 明示の指定がないときの辞書 (同梱しないビルドでは hasami の既定の場所)。
+/// `bundled` の辞書。
+#[cfg(feature = "bundled-dict")]
+fn bundled() -> Result<Morphology, String> {
+    Morphology::bundled()
+}
+
+/// `bundled` の辞書 (同梱しないビルドにはない)。
 #[cfg(not(feature = "bundled-dict"))]
-fn fallback(requested: MorphologyMode) -> Result<Option<Morphology>, String> {
-    match hasami::analyzer::default_dict_path() {
-        Ok(path) => load_file(&path).map(Some),
-        Err(DictError::NotFound(_)) if requested == MorphologyMode::Auto => Ok(None),
-        Err(DictError::NotFound(searched)) => Err(format!(
-            "形態素解析の辞書が見つかりません (探した場所: {})",
-            searched.join("、")
-        )),
-        Err(e) => Err(format!("形態素解析の辞書を探せません: {e}")),
-    }
+fn bundled() -> Result<Morphology, String> {
+    Err(format!(
+        "このビルドは形態素解析の辞書を同梱していません (dictionary = \"{BUNDLED_DICTIONARY}\")。辞書のファイルか share:<名前> を指定してください"
+    ))
 }
 
 /// 形態素 1 つ。
@@ -376,6 +507,28 @@ pub(crate) mod testing {
     /// 連接のコストはすべて 0 なので、語のコストが低い並びが選ばれる。長い語ほどコストを
     /// 低くしてあるので、辞書にある最も長い語で区切られる。
     pub(crate) fn morphology(words: &[(&str, &str)]) -> Morphology {
+        let dictionary = builder(words)
+            .build()
+            .expect("テスト用の辞書を組み立てられない");
+        Morphology::from_dictionary(
+            dictionary,
+            DictionaryInfo {
+                name: "test".into(),
+                source: DictionarySource::File,
+                path: Some(PathBuf::from("test.hsd")),
+            },
+        )
+    }
+
+    /// [`morphology`] と同じ辞書を、ファイル (`.hsd`) に書く。
+    pub(crate) fn write_dictionary(path: &Path, words: &[(&str, &str)]) {
+        let builder = builder(words);
+        builder
+            .write_hsd(path, &builder.write_options(), |_, _| {})
+            .expect("テスト用の辞書を書けない");
+    }
+
+    fn builder(words: &[(&str, &str)]) -> DictBuilder {
         let mut builder = DictBuilder::new();
         for (surface, pos) in words {
             let cost = 1000 - 10 * surface.chars().count() as i16;
@@ -389,20 +542,14 @@ pub(crate) mod testing {
                 ..Default::default()
             });
         }
-        let dictionary = builder.build().expect("テスト用の辞書を組み立てられない");
-        Morphology::from_dictionary(
-            dictionary,
-            DictionaryInfo {
-                name: "test".into(),
-                source: DictionarySource::File,
-                path: Some(PathBuf::from("test.hsd")),
-            },
-        )
+        builder
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::document::{ParseOptions, SourceFormat};
 
@@ -439,20 +586,45 @@ mod tests {
         assert!(dm.sentence(99).is_none());
     }
 
+    fn options(mode: MorphologyMode, dictionary: DictionaryChoice) -> MorphologyOptions {
+        MorphologyOptions {
+            mode,
+            dictionary,
+            ..Default::default()
+        }
+    }
+
+    fn file(path: &str) -> DictionaryChoice {
+        DictionaryChoice::File(PathBuf::from(path))
+    }
+
+    #[test]
+    fn dictionary_specs_are_keywords_share_names_or_files() {
+        let parse = |s: &str| DictionaryChoice::parse(Path::new(s));
+        assert_eq!(parse("auto"), DictionaryChoice::Auto);
+        assert_eq!(parse("bundled"), DictionaryChoice::Bundled);
+        assert_eq!(
+            parse("share:ipadic"),
+            DictionaryChoice::Share("ipadic".into())
+        );
+        // キーワードは完全一致だけ。それ以外はファイルのパス
+        for path in ["./auto", "Auto", "bundled.hsd", "dict/share:x.hsd"] {
+            assert_eq!(parse(path), file(path), "{path}");
+        }
+        assert_eq!(
+            MorphologyOptions::default().dictionary,
+            DictionaryChoice::Auto
+        );
+    }
+
     #[test]
     fn off_and_not_needed_do_not_look_for_a_dictionary() {
-        let off = MorphologyOptions {
-            mode: MorphologyMode::Off,
-            dictionary: Some(PathBuf::from("missing.hsd")),
-        };
+        let off = options(MorphologyMode::Off, file("missing.hsd"));
         let (m, status) = resolve(&off, true).unwrap();
         assert!(m.is_none());
         assert_eq!(status.reason, Some(FallbackReason::Disabled));
 
-        let required = MorphologyOptions {
-            mode: MorphologyMode::Required,
-            dictionary: Some(PathBuf::from("missing.hsd")),
-        };
+        let required = options(MorphologyMode::Required, file("missing.hsd"));
         let (m, status) = resolve(&required, false).unwrap();
         assert!(m.is_none());
         assert_eq!(status.reason, Some(FallbackReason::NotNeeded));
@@ -462,30 +634,110 @@ mod tests {
     #[test]
     fn an_explicit_dictionary_that_cannot_be_read_is_an_error() {
         for mode in [MorphologyMode::Auto, MorphologyMode::Required] {
-            let options = MorphologyOptions {
-                mode,
-                dictionary: Some(PathBuf::from("missing.hsd")),
-            };
-            let err = resolve(&options, true).unwrap_err();
+            let err = resolve(&options(mode, file("missing.hsd")), true).unwrap_err();
             assert!(err.contains("missing.hsd"), "{err}");
         }
     }
 
-    /// `share:<名前>` は share ディレクトリの中だけを指す (名前は環境変数を見る前に確かめる)。
+    /// `share:<名前>` は share ディレクトリの中だけを指す (名前は share ディレクトリを見る前に確かめる)。
     #[test]
     fn share_specs_must_name_a_file_in_the_share_directory() {
         for spec in ["share:../ipadic", "share:a/b", "share:"] {
-            let options = MorphologyOptions {
-                mode: MorphologyMode::Required,
-                dictionary: Some(PathBuf::from(spec)),
-            };
-            let err = resolve(&options, true).unwrap_err();
+            let o = options(
+                MorphologyMode::Required,
+                DictionaryChoice::parse(Path::new(spec)),
+            );
+            let err = resolve(&o, true).unwrap_err();
             assert!(err.starts_with("share:"), "{spec}: {err}");
         }
-        // share: で始まらなければファイルのパス
+    }
+
+    /// share ディレクトリに配布辞書の名前で置く。中身はどれも [`WORDS`] の辞書。
+    fn share_with(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in names {
+            testing::write_dictionary(&dir.path().join(format!("{name}.hsd")), WORDS);
+        }
+        dir
+    }
+
+    fn chosen_path(o: &MorphologyOptions) -> Option<PathBuf> {
+        let (m, status) = resolve(o, true).unwrap();
+        assert_eq!(m.is_some(), status.method == Method::Dictionary);
+        status.dictionary.and_then(|d| d.path)
+    }
+
+    /// auto は share ディレクトリの配布辞書を hasami の推奨順で選ぶ。HASAMI_DICT があればそれが先。
+    #[test]
+    fn auto_prefers_the_best_distributed_dictionary_in_the_share_directory() {
+        let share = share_with(&["ipadic", "ipadic-neologd-sudachi", "zzz-custom"]);
+        let mut o = options(MorphologyMode::Auto, DictionaryChoice::Auto);
+        o.search.share_dir = Some(share.path().to_path_buf());
         assert_eq!(
-            explicit_dictionary(Path::new("dict/share:x.hsd")).unwrap(),
-            PathBuf::from("dict/share:x.hsd")
+            chosen_path(&o),
+            Some(share.path().join("ipadic-neologd-sudachi.hsd"))
+        );
+
+        // 推奨の辞書がなければ、次に推奨する辞書
+        fs::remove_file(share.path().join("ipadic-neologd-sudachi.hsd")).unwrap();
+        assert_eq!(chosen_path(&o), Some(share.path().join("ipadic.hsd")));
+
+        // HASAMI_DICT は share ディレクトリより先
+        let other = tempfile::tempdir().unwrap();
+        let env_dict = other.path().join("env.hsd");
+        testing::write_dictionary(&env_dict, WORDS);
+        o.search.hasami_dict = Some(env_dict.clone());
+        assert_eq!(chosen_path(&o), Some(env_dict));
+
+        // 明示の指定は auto の探索より先。bundled は share ディレクトリに辞書があっても同梱の辞書
+        o.search.hasami_dict = None;
+        o.dictionary = DictionaryChoice::Share("ipadic".into());
+        assert_eq!(chosen_path(&o), Some(share.path().join("ipadic.hsd")));
+        o.dictionary = DictionaryChoice::Bundled;
+        let bundled = resolve(&o, true);
+        if cfg!(feature = "bundled-dict") {
+            let (_, status) = bundled.unwrap();
+            assert_eq!(status.dictionary.unwrap().source, DictionarySource::Bundled);
+        } else {
+            assert!(bundled.unwrap_err().contains("同梱していません"));
+        }
+    }
+
+    /// share ディレクトリに配布辞書がなければ、同梱の辞書 (同梱しないビルドでは、ほかの `*.hsd` を
+    /// 名前順に探し、なければ辞書なしの近似)。既定の探索場所は空なので、手元の辞書は探さない。
+    #[test]
+    fn auto_without_distributed_dictionaries_uses_the_bundled_one() {
+        let share = share_with(&["zzz-custom"]);
+        let mut o = options(MorphologyMode::Auto, DictionaryChoice::Auto);
+        for share_dir in [None, Some(share.path().to_path_buf())] {
+            o.search.share_dir = share_dir.clone();
+            let (_, status) = resolve(&o, true).unwrap();
+            match (cfg!(feature = "bundled-dict"), &share_dir) {
+                (true, _) => {
+                    assert_eq!(status.dictionary.unwrap().source, DictionarySource::Bundled)
+                }
+                (false, Some(dir)) => assert_eq!(
+                    status.dictionary.unwrap().path,
+                    Some(dir.join("zzz-custom.hsd"))
+                ),
+                (false, None) => assert_eq!(status.reason, Some(FallbackReason::NotFound)),
+            }
+        }
+    }
+
+    /// auto で選んだ辞書が読めなければ、下の候補や同梱の辞書に切り替えずにエラーにし、取り直しを案内する。
+    #[test]
+    fn a_broken_dictionary_chosen_by_auto_is_an_error() {
+        let share = share_with(&["ipadic"]);
+        let broken = share.path().join("ipadic-neologd-sudachi.hsd");
+        fs::write(&broken, b"not a dictionary").unwrap();
+        let mut o = options(MorphologyMode::Auto, DictionaryChoice::Auto);
+        o.search.share_dir = Some(share.path().to_path_buf());
+        let err = resolve(&o, true).unwrap_err();
+        assert!(err.contains(&broken.display().to_string()), "{err}");
+        assert!(
+            err.contains("noslop dict download ipadic-neologd-sudachi --force"),
+            "{err}"
         );
     }
 

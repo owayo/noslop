@@ -1,9 +1,16 @@
-//! 設定ファイル (`noslop.toml`) の読み込み。
+//! 設定ファイルの読み込み。
 //!
-//! 1 回の実行で使う設定ファイルは 1 つだけにする。`--config` の指定がなければ、
-//! カレントディレクトリから親へ向かって `noslop.toml` → `.noslop.toml` の順に探し、
-//! 最初に見つかったものを使う (入力ファイルごとに探すと、同じファイルでも
-//! 実行する場所によって結果が変わってしまうため)。
+//! 設定は 2 つの層に分ける。
+//!
+//! - ユーザーの設定 (`~/.config/noslop/config.toml`、[`user_config_path`]): 手元の環境や好みの設定
+//!   (辞書の場所など)。どの OS でもホームディレクトリの `.config/noslop` に置く (作者の別のツールと
+//!   そろえる。`XDG_CONFIG_HOME` は見ない)。自動では作らない
+//! - プロジェクトの設定 (`noslop.toml`): `--config` の指定がなければ、カレントディレクトリから親へ
+//!   向かって `noslop.toml` → `.noslop.toml` の順に探し、最初に見つかった 1 つだけを使う (入力ファイル
+//!   ごとに探すと、同じファイルでも実行する場所によって結果が変わってしまうため)
+//!
+//! 2 つは既定値 < ユーザー < プロジェクト < CLI の順に、項目ごとに重ねる ([`ConfigLayers`])。重ね方の
+//! 細部 (パスの基準・除外パターン・ルールの別名・独自ルール) は `cli.rs` と `engine.rs` が受け持つ。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -18,6 +25,11 @@ use crate::segment::LineBreakMode;
 
 /// 探索する設定ファイルの名前 (優先順)。
 pub const CONFIG_FILE_NAMES: [&str; 2] = ["noslop.toml", ".noslop.toml"];
+
+/// ユーザーの設定ファイルのパス (`<home>/.config/noslop/config.toml`)。
+pub fn user_config_path(home: &Path) -> PathBuf {
+    home.join(".config").join("noslop").join("config.toml")
+}
 
 /// 設定の誤り。終了コード 2 で報告する。
 #[derive(Debug, thiserror::Error)]
@@ -300,6 +312,36 @@ pub struct LoadedConfig {
     pub file: ConfigFile,
 }
 
+/// この実行で使う設定の層。どちらもなければ既定値だけで動く (`--no-config` もこれ)。
+#[derive(Debug, Clone, Default)]
+pub struct ConfigLayers {
+    /// ユーザーの設定 (`~/.config/noslop/config.toml`)。
+    pub user: Option<LoadedConfig>,
+    /// プロジェクトの設定 (探した `noslop.toml` か `--config`)。
+    pub project: Option<LoadedConfig>,
+}
+
+impl ConfigLayers {
+    /// 項目の値。プロジェクトの設定に書いてあればそれ、なければユーザーの設定。
+    pub fn pick<T>(&self, get: impl Fn(&ConfigFile) -> Option<T>) -> Option<T> {
+        self.project
+            .as_ref()
+            .and_then(|c| get(&c.file))
+            .or_else(|| self.user.as_ref().and_then(|c| get(&c.file)))
+    }
+
+    /// 項目の値と、それを書いた設定ファイル (プロジェクト、ユーザーの順に探す)。
+    pub fn pick_with_source<T>(
+        &self,
+        get: impl Fn(&ConfigFile) -> Option<T>,
+    ) -> Option<(T, &LoadedConfig)> {
+        [self.project.as_ref(), self.user.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|c| get(&c.file).map(|v| (v, c)))
+    }
+}
+
 impl ConfigFile {
     /// TOML の文字列を解釈する。
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
@@ -347,7 +389,8 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
 pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 #
 # CLI で指定した値はこのファイルより優先されます。
-# どの項目も、書かなければ既定値が使われます。
+# どの項目も、書かなければユーザーの設定 (~/.config/noslop/config.toml) の値、
+# それもなければ既定値が使われます。
 
 # 文書のジャンル: general / tech / business / essay (別名 blog / minutes)
 # ジャンルごとに閾値が変わり、慣習と衝突するルールは既定で止まります。
@@ -376,13 +419,16 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # blockquotes = false
 
 [morphology]
-# 形態素解析の辞書 (hasami の .hsd)。P15・P16 を品詞で判定する。既定は同梱の IPAdic
-#   auto (既定。HASAMI_DICT か同梱の辞書を使う) / required (必ず使う) / off (使わない)
+# 形態素解析の辞書 (hasami の .hsd) の使い方。P15・P16 を品詞で判定する
+#   auto (既定。辞書が見つかれば使う) / required (必ず使う) / off (使わない)
 # mode = "auto"
-# 同梱の辞書の代わりに使う辞書。share:<名前> は hasami の share ディレクトリ
-# (既定は ~/.local/share/hasami) の辞書で、noslop dict download <名前> で取得できる。
-# ファイルのパスも書ける (相対パスはこのファイルのあるディレクトリ基準)
-# dictionary = "share:ipadic-neologd-sudachi"
+# 使う辞書
+#   auto (既定): HASAMI_DICT → hasami の share ディレクトリ (既定は ~/.local/share/hasami) の
+#                辞書を推奨順 (ipadic-neologd-sudachi → ipadic-neologd → ipadic) → 同梱の IPAdic
+#   bundled: 同梱の IPAdic (P15・P16 を校正した辞書。手元の辞書で結果を変えたくないとき)
+#   share:<名前>: share ディレクトリの辞書 (noslop dict download <名前> で取得できる)
+#   ファイルのパス (相対パスはこのファイルのあるディレクトリ基準)
+# dictionary = "auto"
 
 [rules]
 # 有効にするルール (実験的なルールも個別に有効にできる)

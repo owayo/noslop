@@ -104,12 +104,13 @@ Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使いま
 | `noslop diff <BEFORE> <AFTER>` | 改稿の前後を比べる（新しく出た指摘・消えた事実・改稿の偏り） |
 | `noslop rules` | ルールの一覧を表示する |
 | `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
-| `noslop init` | 設定ファイル `noslop.toml` の雛形を作る |
+| `noslop init` | プロジェクトの設定ファイル `noslop.toml` の雛形を作る |
 | `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
 | `noslop hook claude-code` | Claude Code の PostToolUse フックとして、書き換えたファイルの指摘を返す |
+| `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み（claw-hooks など）から呼び、コミットしていない変更に重なる指摘をテキストで返す |
 | `noslop skill-install <claude\|codex>` | Claude Code・Codex CLI に noslop のスキルを入れる |
-| `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。大きさと SHA-256 を確かめてから置く |
-| `noslop dict list` | 配布辞書と、取得済みかを表示する（通信しない） |
+| `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。大きさと SHA-256 を確かめてから置く。取得した辞書は、辞書を指定しないとき（`auto`）に使われる |
+| `noslop dict list` | 配布辞書と取得済みかを表示し、辞書を指定しないときに使う辞書を示す（通信しない） |
 | `noslop calibrate --human <PATH> --ai <PATH>` | 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率と閾値を測る |
 
 ```bash
@@ -156,15 +157,15 @@ noslop explain R01
 | `--enable-rules <IDS>` | | 追加で有効にするルール（実験的ルールを個別に有効にする用途） |
 | `--only-rules <IDS>` | | 指定したルールだけを動かす |
 | `--experimental` | | 実験的なルールと語句をすべて有効にする |
-| `--config <PATH>` | | 設定ファイルを指定する |
-| `--no-config` | | 設定ファイルを読まない |
+| `--config <PATH>` | | プロジェクトの設定ファイルを指定する（ユーザーの設定は重ねて読む） |
+| `--no-config` | | 設定ファイルを読まない（ユーザーの設定もプロジェクトの設定も） |
 | `--fail-on <LEVEL>` | | この重大度以上の指摘があれば終了コード 1 にする。`never`（既定）/ `info` / `warning` / `error` |
 | `--stdin-filename <NAME>` | | 標準入力（`-`）を読むときの表示名。拡張子で形式を決める |
 | `--show-suppressed` | | 抑制コメントで残した指摘も表示する |
 | `--no-readability` | | 読みやすさの指摘を出さない |
 | `--include <KINDS>` | | 語句パターン系ルールをリスト・表・引用にも当てる。`lists` / `tables` / `quotes` / `all`（カンマ区切り） |
 | `--line-breaks <MODE>` | | 段落内の改行の扱い。`space`（既定）/ `sentence` |
-| `--dict <PATH>` | | 同梱の辞書の代わりに、この形態素解析の辞書（hasami の `.hsd`）を使う |
+| `--dict <DICT>` | | 形態素解析の辞書を指定し、必ず使う。`auto`（share ディレクトリの一番良い辞書、なければ同梱の辞書）/ `bundled`（同梱の IPAdic）/ `share:<名前>` / ファイルのパス（hasami の `.hsd`）。詳細は[形態素解析の辞書](#形態素解析の辞書) |
 | `--no-dict` | | 形態素解析の辞書を使わず、辞書なしの近似で判定する |
 | `--color <WHEN>` | | 色付けの有無。`auto`（既定）/ `always` / `never`。`NO_COLOR` も尊重する |
 | `--quiet` | `-q` | 指摘のないファイルとサマリを表示しない |
@@ -193,6 +194,7 @@ noslop explain R01
 | `noslop init` | `--force` | `noslop.toml` のひな形をカレントディレクトリに作る（既にあれば `--force` で上書き） |
 | `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](docs/integrations.md) |
+| `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
 | `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](#別の辞書を使う) |
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
@@ -279,7 +281,43 @@ noslop explain R01
 
 ## 設定
 
-設定ファイルは `noslop.toml`（または `.noslop.toml`）です。カレントディレクトリから親へ向かって探し、最初に見つかった 1 つを使います。`--config` で直接指定でき、`--no-config` で読まないようにできます。コマンドラインのオプションは設定ファイルより優先されます。
+設定ファイルは 2 つあります。どちらも書き方は同じです。
+
+| ファイル | 場所 | 向いている設定 |
+|---|---|---|
+| ユーザーの設定 | `~/.config/noslop/config.toml`（Windows は `%USERPROFILE%\.config\noslop\config.toml`） | 手元のマシンでだけ使うもの（辞書の選び方など）。どのディレクトリで実行しても読む |
+| プロジェクトの設定 | `noslop.toml`（または `.noslop.toml`） | 文書に合わせるもの（ジャンル・ルール・独自ルールなど）。カレントディレクトリから親へ向かって探し、最初に見つかった 1 つを使う |
+
+両方あるときは、ユーザーの設定にプロジェクトの設定を重ねます。優先するのは次の順で、下ほど強くなります。
+
+1. 既定値
+2. ユーザーの設定
+3. プロジェクトの設定
+4. コマンドラインのオプション
+
+重ね方は次のとおりです。
+
+- 上書きするのは、書いた項目だけです。プロジェクトの設定に書いていない項目は、ユーザーの設定の値が残ります。配列（`[files] extensions`・`exclude`）は丸ごと置き換えます
+- ルールの有効・無効（`[rules]` の `enable`・`disable` と `[rules.<ID>] enabled`）は、ルールごとに決めます。ID と名前のどちらで書いても同じルールとして扱います。プロジェクトの設定で触れたルールはそちらに従い、触れていないルールはユーザーの設定に従います。同じファイルの中では無効が優先です。ユーザーの設定で止めたルールをプロジェクトで動かすには、`enable` か `enabled = true` を書きます
+- `[rules.<ID>]` の `severity` と閾値は、項目ごとにプロジェクトの設定が上書きします
+- 独自ルール（`[[custom]]`）は両方を使います。同じ ID（大文字小文字は区別しない）があれば、プロジェクトの定義で丸ごと置き換えます
+- `[files] exclude` の基準は、プロジェクトの設定なら設定ファイルのあるディレクトリ、ユーザーの設定なら `noslop check` に渡したディレクトリ（フック（`noslop hook`）ではエージェントの作業ディレクトリ）です。プロジェクトの設定に `exclude` があれば、ユーザーの設定の `exclude` は使いません（`exclude = []` で打ち消せます）
+- `[morphology] dictionary` の相対パスは、書いたファイルのあるディレクトリが基準です（`~/` はホームディレクトリ）
+
+`--config <PATH>` はプロジェクトの設定だけを差し替え、ユーザーの設定は重ねたまま読みます。`--no-config` はどちらも読みません。どちらかのファイルの書式が正しくなければ、設定の誤りとして終了コード 2 で止まります。ユーザーの設定は自動では作りません。`noslop init` が作るのはプロジェクトの `noslop.toml` です。
+
+ユーザーの設定の例です。
+
+```toml
+# ~/.config/noslop/config.toml
+[morphology]
+dictionary = "share:ipadic-neologd-sudachi"   # 手元に取得した辞書を必ず使う
+
+[rules]
+disable = ["R03"]                              # 長い一文の指摘は出さない
+```
+
+プロジェクトの設定の例です。
 
 ```toml
 genre = "tech"
@@ -389,7 +427,7 @@ severity = "warning"
 機械処理向けの安定したスキーマで出力します。要点は次のとおりです（下の例は、上の text 出力と同じ文書の JSON から P01 の指摘だけを抜き出したものです）。
 
 - トップレベルに `schemaVersion`・`tool`（`name`・`version`）・`columnUnit`・`settings`（`genre`・`experimental`・`failOn`・`morphology`）・`files`・`summary`・`errors`
-- `settings.morphology` は判定の方式で、`requested`（`auto` / `required` / `off`）・`method`（`dictionary` / `surface`）・`dictionary`（使った辞書の `name`・`source`（`bundled`: 同梱 / `file`: 指定したファイル）・`path`（同梱なら `null`）。辞書なしなら `null`）・`reason`（辞書を使わなかった理由: `disabled` / `not-found` / `not-needed`）を持つ
+- `settings.morphology` は判定の方式で、`requested`（`auto` / `required` / `off`）・`method`（`dictionary` / `surface`）・`dictionary`（使った辞書の `name`・`source`（`bundled`: 同梱 / `file`: ファイルの辞書。指定したファイルと、`auto` で share ディレクトリから選んだ辞書）・`path`（同梱なら `null`）。辞書なしなら `null`）・`reason`（辞書を使わなかった理由: `disabled` / `not-found` / `not-needed`）を持つ
 - 各ファイルに `path`・`format`（`markdown` / `text`）・`characters`・`sentences`・`counts`（抑制していない指摘を、レーン（`slop`・`readability`・`custom`）ごと・重大度（`error`・`warning`・`info`）ごとに数えたもの。0 件も常に出る）・`diagnostics`・`warnings`
 - スキーマの版（`schemaVersion`）は 2 です。版 1 にあった文書全体の点数（`score`）は、版 2 で外して `counts` に置き換えました（[文書全体の点数を出さない理由](#文書全体の点数を出さない理由)）
 - 各指摘に `ruleId`・`ruleName`・`severity`・`lane`・`status`・`message`・`hint`・`range`・`context`・`excerpt`・`related`・`metrics`・`fingerprint`・`suppressed`
@@ -627,7 +665,7 @@ noslop は、指摘を 1 件ずつ並べ、レーンと重大度ごとの件数�
 
 ## 形態素解析の辞書
 
-noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdic の辞書（`dict/ipadic.hsd`）をバイナリに同梱していて、何も指定しなくても、品詞で数えるルールを元の校正と同じ条件で判定します。
+noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdic の辞書（`dict/ipadic.hsd`）をバイナリに同梱していて、何も指定しなくても、品詞で数えるルールを辞書で判定します。hasami の share ディレクトリに配布辞書を取得してあれば、そちらを使います（[使い方の指定](#使い方の指定)）。同梱の辞書で判定すれば、元の校正と同じ条件になります。
 
 | ルール | 辞書ありの判定（既定） | 辞書なしの判定（`--no-dict`） |
 |---|---|---|
@@ -650,25 +688,30 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 
 ほかのルールは辞書の有無で変わりません。文分割も辞書を使いません。体言止め（R06）は、文書単位の判定が辞書なし・ありで変わらなかったため、辞書なしの推定のままです。
 
-同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を読みません。
+同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を探しも読みもしません。share ディレクトリやファイルの辞書は mmap で読むので、200MB を超える辞書でも、メモリに載るのは解析で触れた部分だけです。
 
 ### 使い方の指定
 
+使う辞書は `[morphology] dictionary`（または `--dict`）で、辞書を使うかどうかは `[morphology] mode`（または `--no-dict`）で決めます。
+
 | 指定 | 動き |
 |---|---|
-| なにも指定しない（`mode = "auto"`） | `HASAMI_DICT` があればその辞書、なければ同梱の辞書を使う |
-| `mode = "off"` / `--no-dict` | 辞書を使わず、辞書なしの近似で判定する |
-| `dictionary = "<パス>"` / `--dict <パス>` | この辞書（hasami の `.hsd`）を使う。`--dict` は `required` を兼ねる。設定ファイルの相対パスは設定ファイルのディレクトリが基準 |
+| なにも指定しない（`dictionary = "auto"`） | `HASAMI_DICT` で指定した辞書 → share ディレクトリの配布辞書（hasami の推奨順。`ipadic-neologd-sudachi` → `ipadic-neologd` → `ipadic`）→ 同梱の辞書、の順に探し、最初に見つかったものを使う |
+| `dictionary = "bundled"` / `--dict bundled` | 同梱の IPAdic を使う（元の校正と同じ条件）。`HASAMI_DICT` と share ディレクトリの辞書は見ない |
 | `dictionary = "share:<名前>"` / `--dict share:<名前>` | hasami の share ディレクトリ（既定は `~/.local/share/hasami`）の `<名前>.hsd` を使う。`noslop dict download` で取得した辞書を指す（`HASAMI_DICT` には書けない） |
-| `mode = "required"` | 辞書を必ず使う。同梱しないビルドで辞書が見つからなければ設定の誤り（終了コード 2） |
+| `dictionary = "<パス>"` / `--dict <パス>` | この辞書（hasami の `.hsd`）を使う。設定ファイルの相対パスは設定ファイルのディレクトリが基準。`auto`・`bundled` という名前のファイルは `./auto` のように書く |
+| `mode = "off"` / `--no-dict` | 辞書を使わず、辞書なしの近似で判定する |
+| `mode = "required"` | 辞書を必ず使う。同梱しないビルドで辞書が見つからなければ設定の誤り（終了コード 2）。`--dict` は `required` を兼ねる |
 
-指定した辞書（`--dict`・`dictionary`・`HASAMI_DICT`）が読めないときは、同梱の辞書に切り替えず、設定の誤りにします。share ディレクトリに置いた辞書は自動では使いません（同じ版の noslop なら、手元に入れた辞書によらず同じ結果になるように）。使うときは `share:<名前>` で指定します。
+見つかった辞書が読めない（壊れている・形式の版が違う）ときは、次の候補や同梱の辞書に黙って切り替えず、設定の誤りにします（終了コード 2）。`auto` で share ディレクトリから選んだ辞書も同じです。`noslop dict download <名前> --force` で取り直すか、`dictionary` で別の辞書を指定してください。
+
+`auto` で使う辞書は、手元の share ディレクトリに何を取得したかで変わります。CI のように、どこで実行しても同じ結果にしたい場面では、`dictionary = "bundled"` か `share:<名前>` で辞書を固定してください。品詞で数えるルール（P15・P16）は同梱の IPAdic で校正したので、校正した条件で判定するなら `bundled` です。
 
 ```toml
 [morphology]
 mode = "auto"
-# 同梱の辞書の代わりに使う辞書（share:<名前> は noslop dict download で取得した辞書）
-# dictionary = "share:ipadic-neologd-sudachi"
+# 使う辞書: auto（既定）/ bundled / share:<名前> / ファイルのパス
+dictionary = "auto"
 ```
 
 使った方式は、text の集計の行（「辞書あり (同梱の ipadic)」など）、JSON の `settings.morphology`、改稿指示の `settings.method` と `settings.dictionary` に出ます。
@@ -687,23 +730,26 @@ hasami は、ほかにもビルド済みの辞書を配布しています。NEol
 # share ディレクトリ（既定は ~/.local/share/hasami）に取得する（名前を省くと ipadic-neologd-sudachi）
 noslop dict download ipadic-neologd-sudachi
 
-# 取得済みかを確かめる（通信しない）
+# 取得済みかと、辞書を指定しないときに使う辞書を確かめる（通信しない）
 noslop dict list
 
-# 取得した辞書で検査する
+# 辞書を指定しなければ（auto）、次の実行から取得した辞書を使う
+noslop check docs/
+
+# 辞書を名前で固定する
 noslop check docs/ --dict share:ipadic-neologd-sudachi
 ```
 
-設定ファイルなら `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます。取得しただけでは使いません。指定しないときは、これまでどおり同梱の辞書を使います。
+取得した辞書は、辞書を指定しないとき（`auto`）に次の実行から使われます。いくつか取得してあれば、hasami の推奨順で選びます。どのマシンでも同じ辞書で判定したいときは、プロジェクトの設定の `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます（取得していないマシンでは、取得のコマンドを案内して設定の誤りになります）。手元のマシンでだけ使うなら、ユーザーの設定（`~/.config/noslop/config.toml`）に書きます。
 
 - 取得元は、noslop に組み込んだ hasami のリリースの目録（`noslop dict list` の 1 行目に出る版）にある、そのリリースの添付ファイルです。目録は noslop をリリースするたびに hasami の最新のリリースに合わせます。取得した中身は目録の大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません
 - 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
 - ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd` を取得します。どの取得元でも大きさと SHA-256 を確かめます）
-- 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります
+- 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります。校正した条件で判定するなら `dictionary = "bundled"` を指定します
 
 share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
 
-辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときは、`--dict`・`dictionary`・`HASAMI_DICT` に加えて share ディレクトリの `*.hsd` を探し（hasami の推奨順。`noslop dict download` で取得した辞書も自動で使います）、見つからなければ辞書なしの近似で判定します。
+辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときの `auto` は、share ディレクトリに配布辞書がなければ、ほかの `*.hsd` を名前順に探します。それもなければ辞書なしの近似で判定します（`mode = "required"` なら設定の誤り）。`bundled` は使えず、設定の誤りになります。
 
 ## 校正の考え方
 

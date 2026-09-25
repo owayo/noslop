@@ -4,10 +4,15 @@
 //!
 //! 1. `--only-rules` があれば、列挙したルールだけを動かす (`--ignore-rules` で消したものを除く)
 //! 2. CLI の明示 (`--ignore-rules` / `--enable-rules`) があればそれに従う。同じ層では無効が優先
-//! 3. 設定ファイルの明示 (`[rules] disable` / `enable`、`[rules.X] enabled`) があればそれに従う。
+//! 3. プロジェクトの設定の明示 (`[rules] disable` / `enable`、`[rules.X] enabled`) があればそれに従う。
 //!    同じ層では無効が優先。CLI の明示は設定より優先する
-//! 4. どれもなければ既定: `--no-readability` なら読みやすさのレーンは止め、それ以外は
+//! 4. ユーザーの設定 (`~/.config/noslop/config.toml`) の明示があればそれに従う (プロジェクトの設定の
+//!    明示より弱い)。同じ層では無効が優先
+//! 5. どれもなければ既定: `--no-readability` なら読みやすさのレーンは止め、それ以外は
 //!    「校正済み (stable) か `--experimental`」かつ「そのジャンルで既定で動かすルール」なら動かす
+//!
+//! ルールの ID と名前の別名は層ごとに ID に直してから重ねる。`[rules.X]` の重大度と設定項目は、
+//! ユーザーの設定の上にプロジェクトの設定をキーごとに重ねる。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -26,9 +31,13 @@ use crate::suppress::{self, RuleNames};
 /// ルールの明示的な有効化・無効化の指定。
 #[derive(Debug, Clone, Default)]
 pub struct Selection {
-    /// 設定ファイルの `[rules] enable`。
+    /// ユーザーの設定の `[rules] enable`。
+    pub user_enable: Vec<String>,
+    /// ユーザーの設定の `[rules] disable`。
+    pub user_disable: Vec<String>,
+    /// プロジェクトの設定ファイルの `[rules] enable`。
     pub config_enable: Vec<String>,
-    /// 設定ファイルの `[rules] disable`。
+    /// プロジェクトの設定ファイルの `[rules] disable`。
     pub config_disable: Vec<String>,
     /// `--enable-rules`。
     pub cli_enable: Vec<String>,
@@ -48,8 +57,11 @@ pub struct EngineOptions {
     pub scope: Scope,
     pub parse: ParseOptions,
     pub selection: Selection,
-    /// `[rules.<ID か名前>]` の設定。
+    /// ユーザーの設定の `[rules.<ID か名前>]`。
+    pub user_rule_tables: BTreeMap<String, RuleTable>,
+    /// プロジェクトの設定ファイルの `[rules.<ID か名前>]` (ユーザーの設定にキーごとに重ねる)。
     pub rule_tables: BTreeMap<String, RuleTable>,
+    /// 独自ルール (ユーザーの設定とプロジェクトの設定を ID で重ねたもの)。
     pub custom: Vec<CustomRuleConfig>,
     /// 形態素解析の辞書 (`[morphology]`・`--dict`・`--no-dict`)。
     pub morphology: MorphologyOptions,
@@ -127,6 +139,8 @@ impl Engine {
                 .collect()
         };
         let sel = &options.selection;
+        let user_enable = resolve_all(&sel.user_enable, "ユーザーの設定の [rules] enable")?;
+        let user_disable = resolve_all(&sel.user_disable, "ユーザーの設定の [rules] disable")?;
         let config_enable = resolve_all(&sel.config_enable, "設定ファイルの [rules] enable")?;
         let config_disable = resolve_all(&sel.config_disable, "設定ファイルの [rules] disable")?;
         let cli_enable = resolve_all(&sel.cli_enable, "--enable-rules")?;
@@ -137,51 +151,29 @@ impl Engine {
             .map(|keys| resolve_all(keys, "--only-rules"))
             .transpose()?;
 
-        let mut tables: HashMap<String, &RuleTable> = HashMap::new();
-        for (key, table) in &options.rule_tables {
-            let id = names.resolve(key).ok_or_else(|| {
-                ConfigError::Invalid(format!("設定ファイルの [rules.{key}] は未知のルールです"))
-            })?;
-            if tables.insert(id.to_string(), table).is_some() {
-                return Err(ConfigError::Invalid(format!(
-                    "設定ファイルに {id} の設定が ID と名前で重複しています"
-                )));
-            }
-        }
+        let user_tables = resolve_tables(&names, &options.user_rule_tables, USER_CONFIG)?;
+        let tables = resolve_tables(&names, &options.rule_tables, PROJECT_CONFIG)?;
 
         let mut entries = Vec::new();
         for (mut rule, is_builtin) in rules {
             let meta = rule.meta();
+            let user_table = user_tables.get(meta.id).copied();
             let table = tables.get(meta.id).copied();
-            if let Some(table) = table {
-                for (key, value) in &table.options {
+            // ユーザーの設定の上に、プロジェクトの設定をキーごとに重ねる
+            for (layer, source) in [(user_table, USER_CONFIG), (table, PROJECT_CONFIG)] {
+                for (key, value) in layer.iter().flat_map(|t| &t.options) {
                     rule.configure(key, value).map_err(|e| {
-                        ConfigError::Invalid(format!("設定ファイルの [rules.{}]: {e}", meta.id))
+                        ConfigError::Invalid(format!("{source}の [rules.{}]: {e}", meta.id))
                     })?;
                 }
             }
             let enabled = if let Some(only) = &only {
                 only.contains(meta.id) && !cli_disable.contains(meta.id)
             } else {
-                let cli_state = if cli_disable.contains(meta.id) {
-                    Some(false)
-                } else if cli_enable.contains(meta.id) {
-                    Some(true)
-                } else {
-                    None
-                };
-                let config_state = if config_disable.contains(meta.id)
-                    || table.and_then(|t| t.enabled) == Some(false)
-                {
-                    Some(false)
-                } else if config_enable.contains(meta.id)
-                    || table.and_then(|t| t.enabled) == Some(true)
-                {
-                    Some(true)
-                } else {
-                    None
-                };
-                match cli_state.or(config_state) {
+                let cli_state = explicit_state(meta.id, &cli_enable, &cli_disable, None);
+                let config_state = explicit_state(meta.id, &config_enable, &config_disable, table);
+                let user_state = explicit_state(meta.id, &user_enable, &user_disable, user_table);
+                match cli_state.or(config_state).or(user_state) {
                     Some(explicit) => explicit,
                     None if sel.no_readability && meta.lane == Lane::Readability => false,
                     None => {
@@ -194,7 +186,9 @@ impl Engine {
                 rule,
                 enabled,
                 builtin: is_builtin,
-                severity: table.and_then(|t| t.severity),
+                severity: table
+                    .and_then(|t| t.severity)
+                    .or(user_table.and_then(|t| t.severity)),
             });
         }
 
@@ -340,6 +334,49 @@ impl Engine {
                 format,
             } => Ok(self.lint_source(name, source, format)),
         }
+    }
+}
+
+/// 誤りの文言で、ユーザーの設定 (`~/.config/noslop/config.toml`) を指す呼び名。
+const USER_CONFIG: &str = "ユーザーの設定";
+/// 誤りの文言で、プロジェクトの設定ファイル (`noslop.toml`) を指す呼び名。
+const PROJECT_CONFIG: &str = "設定ファイル";
+
+/// 1 つの層の `[rules.<ID か名前>]` を ID に直す。未知のルールと、同じルールを ID と名前の両方で
+/// 書いたものは設定の誤り。
+fn resolve_tables<'a>(
+    names: &RuleNames,
+    tables: &'a BTreeMap<String, RuleTable>,
+    source: &str,
+) -> Result<HashMap<String, &'a RuleTable>, ConfigError> {
+    let mut resolved = HashMap::new();
+    for (key, table) in tables {
+        let id = names.resolve(key).ok_or_else(|| {
+            ConfigError::Invalid(format!("{source}の [rules.{key}] は未知のルールです"))
+        })?;
+        if resolved.insert(id.to_string(), table).is_some() {
+            return Err(ConfigError::Invalid(format!(
+                "{source}に {id} の設定が ID と名前で重複しています"
+            )));
+        }
+    }
+    Ok(resolved)
+}
+
+/// 1 つの層の明示 (`enable` / `disable` と `[rules.X] enabled`)。同じ層では無効が優先。
+fn explicit_state(
+    id: &str,
+    enable: &HashSet<String>,
+    disable: &HashSet<String>,
+    table: Option<&RuleTable>,
+) -> Option<bool> {
+    let enabled = table.and_then(|t| t.enabled);
+    if disable.contains(id) || enabled == Some(false) {
+        Some(false)
+    } else if enable.contains(id) || enabled == Some(true) {
+        Some(true)
+    } else {
+        None
     }
 }
 
@@ -601,6 +638,107 @@ pub(crate) mod tests {
             s.cli_disable = vec!["T02".into()];
         });
         assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
+    }
+
+    /// ユーザーの設定はプロジェクトの設定より弱い。層ごとに別名を ID に直してから比べる。
+    #[test]
+    fn the_user_layer_is_weaker_than_the_project_layer() {
+        // ユーザーの設定だけでも効く
+        let o = sel(|s| {
+            s.user_enable = vec!["EXPERIMENTAL_SLOP".into()];
+            s.user_disable = vec!["t01".into()];
+        });
+        assert_eq!(ids(o), vec!["T02", "T03", "T04"]);
+        // 同じルールを別名で書いても、プロジェクトの明示が勝つ (ユーザーの名前 / プロジェクトの ID)
+        let o = sel(|s| {
+            s.user_disable = vec!["STABLE_SLOP".into()];
+            s.config_enable = vec!["t01".into()];
+            s.user_enable = vec!["T02".into()];
+            s.config_disable = vec!["experimental_slop".into()];
+        });
+        assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
+        // ユーザーの層の中では無効が優先。CLI はどちらよりも強い
+        let o = sel(|s| {
+            s.user_enable = vec!["T03".into()];
+            s.user_disable = vec!["T03".into()];
+            s.cli_enable = vec!["T02".into()];
+            s.user_disable.push("T02".into());
+        });
+        assert_eq!(ids(o), vec!["T01", "T02", "T04"]);
+
+        // [rules.X] enabled も同じ層の明示として数える
+        let mut o = EngineOptions::default();
+        o.user_rule_tables.insert(
+            "T01".into(),
+            RuleTable {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        o.rule_tables.insert(
+            "STABLE_SLOP".into(),
+            RuleTable {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
+    }
+
+    /// `[rules.X]` の重大度と設定項目は、ユーザーの設定の上にプロジェクトの設定をキーごとに重ねる。
+    #[test]
+    fn rule_tables_are_layered_per_key() {
+        let table = |severity: Option<Severity>, needle: Option<&str>| {
+            let mut t = RuleTable {
+                severity,
+                ..Default::default()
+            };
+            if let Some(needle) = needle {
+                t.options
+                    .insert("needle".into(), toml::Value::String(needle.into()));
+            }
+            t
+        };
+        let find_t01 = |o: EngineOptions| {
+            let report = engine(o).lint(Document::markdown("これは言えるでしょう。\n"));
+            let d = report
+                .diagnostics
+                .iter()
+                .find(|d| d.rule_id == "T01")
+                .unwrap()
+                .clone();
+            (d.severity, report.doc.slice(d.span).to_string())
+        };
+
+        // ユーザーの設定だけ
+        let mut o = EngineOptions::default();
+        o.user_rule_tables
+            .insert("T01".into(), table(Some(Severity::Error), Some("言える")));
+        assert_eq!(find_t01(o.clone()), (Severity::Error, "言える".into()));
+        // プロジェクトが書いたキーだけが上書きされる (重大度はユーザー、needle はプロジェクト)
+        o.rule_tables
+            .insert("STABLE_SLOP".into(), table(None, Some("でしょう")));
+        assert_eq!(find_t01(o.clone()), (Severity::Error, "でしょう".into()));
+        o.rule_tables
+            .insert("STABLE_SLOP".into(), table(Some(Severity::Info), None));
+        assert_eq!(find_t01(o), (Severity::Info, "言える".into()));
+
+        // ユーザーの設定の誤りは、ユーザーの設定の誤りとして知らせる
+        let mut bad = EngineOptions::default();
+        bad.user_rule_tables
+            .insert("NOPE".into(), RuleTable::default());
+        let err = Engine::with_rules(test_rules(), bad).err().unwrap();
+        assert!(
+            err.to_string().starts_with("ユーザーの設定の [rules.NOPE]"),
+            "{err}"
+        );
+        let mut bad = EngineOptions::default();
+        bad.selection.user_enable = vec!["NOPE".into()];
+        let err = Engine::with_rules(test_rules(), bad).err().unwrap();
+        assert!(
+            err.to_string().contains("ユーザーの設定の [rules] enable"),
+            "{err}"
+        );
     }
 
     #[test]

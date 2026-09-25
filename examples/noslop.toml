@@ -1,8 +1,15 @@
 # noslop の設定ファイルの例。
 #
-# noslop はカレントディレクトリから親へ向かって `noslop.toml` (または `.noslop.toml`) を探し、
-# 最初に見つかった 1 つを使う。`--config <PATH>` で直接指定でき、`--no-config` で読まない。
-# コマンドラインのオプションは、このファイルの値より優先される。
+# 設定ファイルは 2 つあり、どちらもこの書き方で書ける。
+#   ユーザーの設定     ~/.config/noslop/config.toml (Windows は %USERPROFILE%\.config\noslop\config.toml)。
+#                      手元のマシンでだけ使う設定 (辞書の選び方など) を書く。自動では作らない
+#   プロジェクトの設定 noslop.toml (または .noslop.toml)。カレントディレクトリから親へ向かって探し、
+#                      最初に見つかった 1 つを使う。`--config <PATH>` で差し替えられる
+#
+# 両方あるときは、ユーザーの設定にプロジェクトの設定を重ねる (既定値 < ユーザーの設定 <
+# プロジェクトの設定 < コマンドラインのオプション)。上書きするのは書いた項目だけで、配列は丸ごと
+# 置き換える。ルールの有効・無効と [rules.<ID>] の項目はルールごとに重ね、[[custom]] は両方を使う
+# (同じ ID はプロジェクトの定義に置き換える)。`--no-config` はどちらも読まない。
 #
 # どの項目も省略でき、省略すると下に書いた既定値になる。
 
@@ -33,7 +40,9 @@ line_breaks = "space"
 # ディレクトリを渡したときに対象にする拡張子。直接指定したファイルは拡張子を問わない。
 extensions = ["md", "markdown", "txt"]
 
-# 対象から外すパス。.gitignore と同じ書式で、この設定ファイルのディレクトリを基準にする。
+# 対象から外すパス。.gitignore と同じ書式で、この設定ファイルのディレクトリを基準にする
+# (ユーザーの設定に書いたときは、noslop check に渡したディレクトリが基準)。プロジェクトの設定に
+# 書くと、ユーザーの設定の exclude は使わない (exclude = [] で打ち消せる)。
 # .gitignore・.ignore・.noslopignore に書かれたものは、ここに書かなくても外れる。
 exclude = [
   "CHANGELOG.md",
@@ -51,18 +60,24 @@ blockquotes = false  # 引用 (> で始まる部分)
 
 [morphology]
 # 形態素解析の辞書 (hasami の .hsd)。「の」の連鎖 (P16) と連続漢字 (P15) を品詞で判定する。
-# 既定は、バイナリに同梱した IPAdic の辞書。
-#   auto     HASAMI_DICT があればその辞書、なければ同梱の辞書を使う (既定)
+# 辞書を使うかどうか。
+#   auto     辞書が見つかれば使う (既定。同梱の辞書があるので、既定のビルドでは必ず見つかる)
 #   required 必ず使う。同梱しないビルドで見つからなければ設定の誤りにする
 #   off      使わない (辞書なしの近似で判定する)
 mode = "auto"
-# 同梱の辞書の代わりに使う辞書のファイル。相対パスはこの設定ファイルのディレクトリが基準で、
-# ~/ はホームディレクトリ。share:<名前> は `noslop dict download <名前>` で取得した配布辞書
-# (hasami の share ディレクトリの <名前>.hsd。既定は ~/.local/share/hasami/<名前>.hsd で、
-# HASAMI_DATA_DIR・XDG_DATA_HOME で変わる)。
-# 読めなければ設定の誤りにする (同梱の辞書に切り替えない)。品詞で数えるルールは同梱の IPAdic で
-# 校正しているので、ほかの辞書では結果が変わることがある。
-# dictionary = "share:ipadic-neologd-sudachi"
+# 使う辞書。
+#   auto          次の順に探し、最初に見つかったものを使う (既定)
+#                 HASAMI_DICT → hasami の share ディレクトリの配布辞書 (hasami の推奨順。
+#                 ipadic-neologd-sudachi → ipadic-neologd → ipadic) → 同梱の辞書
+#   bundled       バイナリに同梱した IPAdic の辞書 (品詞で数えるルールを校正した条件)
+#   share:<名前>  `noslop dict download <名前>` で取得した配布辞書 (share ディレクトリの <名前>.hsd。
+#                 既定は ~/.local/share/hasami/<名前>.hsd で、HASAMI_DATA_DIR・XDG_DATA_HOME で変わる)
+#   それ以外      辞書のファイルのパス。相対パスはこの設定ファイルのディレクトリが基準で、~/ は
+#                 ホームディレクトリ。auto・bundled という名前のファイルは ./auto のように書く
+# 見つかった辞書が読めなければ設定の誤りにする (次の候補や同梱の辞書に切り替えない)。auto の辞書は
+# 手元に取得した辞書で変わるので、結果をそろえたい場面 (CI など) では bundled か share:<名前> で
+# 固定する。品詞で数えるルールは同梱の IPAdic で校正しているので、ほかの辞書では結果が変わることがある。
+dictionary = "auto"
 
 # ルールごとの設定。表の名前はルールの ID か名前 (例: [rules.AI_CONCLUSION])。
 # 共通の項目:

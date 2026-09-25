@@ -1,4 +1,4 @@
-//! エージェントのフック (`noslop hook claude-code`)。
+//! エージェントのフック (`noslop hook claude-code` / `noslop hook file`)。
 //!
 //! Claude Code の PostToolUse フックとして、Write / Edit / MultiEdit で書き換えた文書を検査し、
 //! 指摘があれば短い改稿指示を `hookSpecificOutput.additionalContext` で Claude に渡す。
@@ -10,15 +10,21 @@
 //! 繰り返し渡して、残すと決めた箇所まで直させないため)。変わった行は、ツールの結果にある
 //! 差分 (`tool_response.structuredPatch`) から求め、なければ Edit / MultiEdit の `new_string`
 //! の位置から求める。位置を 1 つに決められないときは、ファイル全体の指摘を返す。
+//!
+//! `noslop hook file` は、編集したファイルのパスだけを渡すフックの仕組み (claw-hooks の
+//! extension_hooks など) から呼ぶ。検査と改稿指示は claude-code と同じで、結果は JSON ではなく
+//! テキストで書く (呼び出し側がエージェントに渡す)。変わった行は git の差分 (HEAD との比較) から
+//! 求める。編集のたびにコミットしない運用でも、前のコミットから変えた行に絞れる。
 
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
-use crate::cli::{self, ClaudeCodeArgs};
+use crate::cli::{self, FileHookArgs, HookArgs};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::document::{Document, SourceFormat};
 use crate::engine::{Engine, RunReport};
@@ -37,10 +43,13 @@ const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 /// 検査するファイルの上限。これより大きいファイルは、編集のたびに検査すると遅いので飛ばす。
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// 改稿指示の後ろに添える注記 (どちらのフックも)。
+const KEEP_NOTE: &str = "このフックは編集のたびに動きます。一度見直して残すと決めた指摘は、再び出ても直す必要はありません。\n";
+
 /// `noslop hook claude-code` の本体。終了コードを返す。
 ///
 /// 入力の誤りは標準エラーに書いて 1 で終わる (Claude Code では処理を止めないエラーになる)。
-pub fn claude_code(args: &ClaudeCodeArgs) -> u8 {
+pub fn claude_code(args: &HookArgs) -> u8 {
     let mut input = String::new();
     match io::stdin()
         .take(MAX_INPUT_BYTES + 1)
@@ -79,7 +88,16 @@ pub fn claude_code(args: &ClaudeCodeArgs) -> u8 {
 }
 
 /// フックの入力 (JSON) に対して標準出力に書く JSON。何も書かないなら `None`。
-pub fn respond(input: &str, args: &ClaudeCodeArgs) -> Result<Option<String>, String> {
+pub fn respond(input: &str, args: &HookArgs) -> Result<Option<String>, String> {
+    respond_in(input, args, &cli::Environment::from_process())
+}
+
+/// [`respond`] の本体 (手元の環境を受け取る。テストでは空の環境を渡す)。
+fn respond_in(
+    input: &str,
+    args: &HookArgs,
+    env: &cli::Environment,
+) -> Result<Option<String>, String> {
     let event: Value = serde_json::from_str(input)
         .map_err(|e| format!("フックの入力を JSON として読めません: {e}"))?;
     if let Some(name) = event.get("hook_event_name").and_then(Value::as_str)
@@ -106,35 +124,132 @@ pub fn respond(input: &str, args: &ClaudeCodeArgs) -> Result<Option<String>, Str
         _ => PathBuf::from(file_path),
     };
 
-    let cfg = cli::load_config_from(&args.config, cwd.as_deref()).map_err(|e| e.to_string())?;
-    let walk = cli::walk_options(cfg.as_ref()).map_err(|e| e.to_string())?;
-    if !crate::walk::has_extension(&path, &walk.extensions)
-        || walk
-            .exclude
-            .as_ref()
-            .is_some_and(|ex| ex.is_excluded(&path, false))
-    {
+    let changed = |doc: &Document| {
+        if args.whole_file {
+            None
+        } else {
+            changed_regions(tool, &event, doc)
+        }
+    };
+    let Some(review) = review(&path, cwd.as_deref(), args, env, changed)? else {
+        return Ok(None);
+    };
+    let mut context = review.brief;
+    context.push_str(KEEP_NOTE);
+    if review.limited {
+        context.push_str(&format!(
+            "今回変わった行に重なる指摘だけを返しています。ファイル全体は `noslop check --format brief {}` で確認できます。\n",
+            review.name
+        ));
+    }
+    let context = truncate_lines(&context, CONTEXT_BUDGET_CHARS);
+    let output = json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": context,
+        }
+    });
+    Ok(Some(output.to_string()))
+}
+
+/// `noslop hook file` の本体。指摘があれば改稿指示をテキストで標準出力に書き、終了コードを返す。
+///
+/// 誤りは標準エラーに書いて 1 で終わる。
+pub fn file(args: &FileHookArgs) -> u8 {
+    let cwd = std::env::current_dir().ok();
+    match review_file(args, cwd.as_deref(), &cli::Environment::from_process()) {
+        Ok(Some(text)) => {
+            let mut out = io::stdout().lock();
+            match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("noslop: 出力に失敗しました: {e}");
+                    1
+                }
+            }
+        }
+        Ok(None) => 0,
+        Err(message) => {
+            eprintln!("noslop: {message}");
+            1
+        }
+    }
+}
+
+/// [`file`] が書く改稿指示。何も書かないなら `None`。`cwd` はエージェントの作業ディレクトリ
+/// (設定ファイルを探し始める場所と表示名の基準)。
+fn review_file(
+    args: &FileHookArgs,
+    cwd: Option<&Path>,
+    env: &cli::Environment,
+) -> Result<Option<String>, String> {
+    let path = match cwd {
+        Some(dir) if args.path.is_relative() => dir.join(&args.path),
+        _ => args.path.clone(),
+    };
+    let changed = |doc: &Document| {
+        if args.hook.whole_file {
+            None
+        } else {
+            git_changed_regions(&path, doc)
+        }
+    };
+    let Some(review) = review(&path, cwd, &args.hook, env, changed)? else {
+        return Ok(None);
+    };
+    let mut text = review.brief;
+    text.push_str(KEEP_NOTE);
+    if review.limited {
+        text.push_str(&format!(
+            "コミットしていない変更 (git の HEAD との差分) の行に重なる指摘だけを返しています。ファイル全体は `noslop check --format brief {}` で確認できます。\n",
+            review.name
+        ));
+    }
+    Ok(Some(truncate_lines(&text, args.max_chars)))
+}
+
+/// フックの検査の結果。
+struct Review {
+    /// 短い改稿指示。
+    brief: String,
+    /// 表示名。
+    name: String,
+    /// 変わった行に絞ったか (絞れなければファイル全体)。
+    limited: bool,
+}
+
+/// 編集したファイルを検査し、変わった行 (`changed` が求める。`None` ならファイル全体) に重なる指摘の
+/// 改稿指示を作る。対象外のファイル (拡張子・除外・なくなった・大きすぎる) と、指摘がないときは `None`。
+fn review(
+    path: &Path,
+    cwd: Option<&Path>,
+    args: &HookArgs,
+    env: &cli::Environment,
+    changed: impl FnOnce(&Document) -> Option<Vec<Span>>,
+) -> Result<Option<Review>, String> {
+    let cfg = cli::load_config_from(&args.config, cwd, env).map_err(|e| e.to_string())?;
+    let walk = cli::walk_options(&cfg).map_err(|e| e.to_string())?;
+    // ユーザーの設定の除外は、検査の起点 (エージェントの作業ディレクトリ。なければファイルの
+    // ディレクトリ) が基準
+    let root = cwd.or_else(|| path.parent()).unwrap_or(Path::new("."));
+    if !crate::walk::has_extension(path, &walk.extensions) || walk.is_excluded(root, path, false) {
         return Ok(None);
     }
-    let name = display_name(&path, cwd.as_deref());
-    let Some(source) = read_source(&path, &name)? else {
+    let name = display_name(path, cwd);
+    let Some(source) = read_source(path, &name)? else {
         return Ok(None);
     };
 
-    let mut options = cli::config_engine_options(cfg.as_ref());
+    let mut options = cli::config_engine_options(&cfg, env);
     if let Some(genre) = args.genre {
         options.genre = genre;
     }
     options.experimental |= args.experimental;
     options.selection.no_readability = !args.include_readability;
     let engine = Engine::new(options).map_err(|e| e.to_string())?;
-    let mut file = engine.lint_source(name.clone(), source, SourceFormat::from_path(&path));
+    let mut file = engine.lint_source(name.clone(), source, SourceFormat::from_path(path));
 
-    let changed = if args.whole_file {
-        None
-    } else {
-        changed_regions(tool, &event, &file.doc)
-    };
+    let changed = changed(&file.doc);
     if let Some(regions) = &changed {
         file.diagnostics.retain(|d| touches(d, regions));
     }
@@ -157,23 +272,11 @@ pub fn respond(input: &str, args: &ClaudeCodeArgs) -> Result<Option<String>, Str
     };
     let mut buf = Vec::new();
     output::brief::render(&report, &opts, &mut buf).map_err(|e| e.to_string())?;
-    let mut context = String::from_utf8(buf).map_err(|e| e.to_string())?;
-    context.push_str(
-        "このフックは編集のたびに動きます。一度見直して残すと決めた指摘は、再び出ても直す必要はありません。\n",
-    );
-    if changed.is_some() {
-        context.push_str(&format!(
-            "今回変わった行に重なる指摘だけを返しています。ファイル全体は `noslop check --format brief {name}` で確認できます。\n"
-        ));
-    }
-    let context = truncate_lines(&context, CONTEXT_BUDGET_CHARS);
-    let output = json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": context,
-        }
-    });
-    Ok(Some(output.to_string()))
+    Ok(Some(Review {
+        brief: String::from_utf8(buf).map_err(|e| e.to_string())?,
+        name,
+        limited: changed.is_some(),
+    }))
 }
 
 /// 表示名 (作業ディレクトリの中なら相対パス)。
@@ -294,6 +397,80 @@ fn inserted_regions(input: &Value, doc: &Document) -> Option<Vec<Span>> {
     Some(regions)
 }
 
+/// git の差分 (HEAD との比較) で変わった行 (原文上の範囲)。git の外・追跡していないファイル・
+/// HEAD がない・git を実行できないときは `None` (ファイル全体)。コミットしていない変更がなければ空。
+fn git_changed_regions(path: &Path, doc: &Document) -> Option<Vec<Span>> {
+    let lines = git_changed_lines(path)?;
+    Some(
+        lines
+            .into_iter()
+            .map(|line| doc.lines.line_span(&doc.source, line))
+            .collect(),
+    )
+}
+
+fn git_changed_lines(path: &Path) -> Option<BTreeSet<usize>> {
+    // git -C でファイルのディレクトリに移るので、相対パスのままでは指す先がずれる
+    let path = std::path::absolute(path).ok()?;
+    let dir = path.parent()?;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .arg(&path)
+            // パスの * や ? をパターンとして読ませない
+            .env("GIT_LITERAL_PATHSPECS", "1")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+    };
+    // 追跡していないファイル (新しく作った・無視している) はファイル全体を見る
+    if !git(&["ls-files", "--error-unmatch", "--"])?
+        .status
+        .success()
+    {
+        return None;
+    }
+    let diff = git(&[
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "-U0",
+        "HEAD",
+        "--",
+    ])?;
+    if !diff.status.success() {
+        return None;
+    }
+    unified_diff_lines(&String::from_utf8_lossy(&diff.stdout))
+}
+
+/// `git diff -U0` の出力から、変わった後のファイルの行番号 (1 始まり) を集める。削除だけの箇所は、
+/// つなぎ目の前後の行を入れる。hunk の見出しの形が想定と違えば `None`。
+fn unified_diff_lines(diff: &str) -> Option<BTreeSet<usize>> {
+    let mut lines = BTreeSet::new();
+    // -U0 では本文の行は + か - で始まるので、@@ で始まる行は hunk の見出しだけ
+    for header in diff.lines().filter(|l| l.starts_with("@@ ")) {
+        // @@ -<旧の開始>[,<行数>] +<新の開始>[,<行数>] @@
+        let new = header.split_whitespace().nth(2)?.strip_prefix('+')?;
+        let (start, count) = match new.split_once(',') {
+            Some((start, count)) => (start.parse::<usize>().ok()?, count.parse::<usize>().ok()?),
+            None => (new.parse::<usize>().ok()?, 1),
+        };
+        if count == 0 {
+            // 削除だけ: start 行の後ろが消えた
+            lines.insert(start.max(1));
+            lines.insert(start + 1);
+        } else {
+            lines.extend(start.max(1)..start + count);
+        }
+    }
+    Some(lines)
+}
+
 /// 指摘の箇所か文脈 (文・段落) が、変わった行に重なるか。
 fn touches(d: &Diagnostic, regions: &[Span]) -> bool {
     std::iter::once(d.span)
@@ -357,12 +534,21 @@ hint = "用語集の表記に合わせてください"
 severity = "warning"
 "#;
 
-    fn args(extra: &[&str]) -> ClaudeCodeArgs {
+    fn args(extra: &[&str]) -> HookArgs {
         let mut argv = vec!["noslop", "hook", "claude-code"];
         argv.extend_from_slice(extra);
         match cli::Cli::try_parse_from(argv).unwrap().command {
             cli::Command::Hook(cli::HookCommand::ClaudeCode(a)) => a,
             _ => panic!("hook claude-code"),
+        }
+    }
+
+    fn file_args(extra: &[&str]) -> FileHookArgs {
+        let mut argv = vec!["noslop", "hook", "file"];
+        argv.extend_from_slice(extra);
+        match cli::Cli::try_parse_from(argv).unwrap().command {
+            cli::Command::Hook(cli::HookCommand::File(a)) => a,
+            _ => panic!("hook file"),
         }
     }
 
@@ -395,8 +581,11 @@ severity = "warning"
             .to_string()
     }
 
+    /// 手元の設定 (~/.config/noslop) と辞書に左右されないよう、空の環境で答える。
     fn run(input: &str, extra: &[&str]) -> Option<String> {
-        respond(input, &args(extra)).unwrap().map(|o| context(&o))
+        respond_in(input, &args(extra), &cli::Environment::default())
+            .unwrap()
+            .map(|o| context(&o))
     }
 
     fn workspace(doc: &str) -> tempfile::TempDir {
@@ -530,7 +719,7 @@ severity = "warning"
         assert_eq!(run(&ev("Write", "missing.md"), &[]), None);
         let pre = ev("Write", "guide.md").replace("PostToolUse", "PreToolUse");
         assert_eq!(run(&pre, &[]), None);
-        assert!(respond("not json", &args(&[])).is_err());
+        assert!(respond_in("not json", &args(&[]), &cli::Environment::default()).is_err());
     }
 
     #[test]
@@ -568,6 +757,67 @@ severity = "warning"
         assert_eq!(patch_lines(&json!([])), None);
         assert_eq!(patch_lines(&json!([{ "lines": ["+a"] }])), None);
         assert_eq!(patch_lines(&json!("diff")), None);
+    }
+
+    #[test]
+    fn unified_diff_lines_follow_the_hunk_headers() {
+        let diff = "diff --git a/g.md b/g.md\nindex 1..2 100644\n--- a/g.md\n+++ b/g.md\n\
+            @@ -3 +3 @@ 見出し\n-old\n+new\n\
+            @@ -5,2 +6,0 @@\n-a\n-b\n\
+            @@ -9,0 +10,2 @@\n+c\n+d\n";
+        let lines: Vec<usize> = unified_diff_lines(diff).unwrap().into_iter().collect();
+        // 3 行目の書き換え、6 行目の後ろの削除 (つなぎ目の 6・7 行目)、10〜11 行目の追加
+        assert_eq!(lines, vec![3, 6, 7, 10, 11]);
+        // 新しいファイルの全行と、差分なし
+        let lines: Vec<usize> = unified_diff_lines("@@ -0,0 +1,3 @@\n+a\n+b\n+c\n")
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(lines, vec![1, 2, 3]);
+        assert_eq!(unified_diff_lines(""), Some(BTreeSet::new()));
+        assert_eq!(unified_diff_lines("@@ -1 +x @@\n"), None);
+    }
+
+    /// パスだけを受け取るフックも、claude-code と同じ短い改稿指示をテキストで返す。git の外では
+    /// ファイル全体を見る。上限を超える分は行の単位で省く。
+    #[test]
+    fn file_hook_returns_the_compact_brief_as_text() {
+        let dir = workspace(DOC);
+        let run = |extra: &[&str]| {
+            review_file(
+                &file_args(extra),
+                Some(dir.path()),
+                &cli::Environment::default(),
+            )
+            .unwrap()
+        };
+        let text = run(&["guide.md"]).unwrap();
+        assert!(
+            text.starts_with("noslop が guide.md に 独自ルールの指摘を 2 件見つけました。"),
+            "{text}"
+        );
+        assert!(text.contains("- X01 "), "{text}");
+        assert!(text.contains(KEEP_NOTE));
+        assert!(
+            !text.contains("コミットしていない変更"),
+            "git の外ではファイル全体: {text}"
+        );
+        assert!(!text.trim_start().starts_with('{'), "JSON ではなくテキスト");
+
+        let short = run(&["--max-chars", "120", "guide.md"]).unwrap();
+        assert!(short.chars().count() <= 120, "{short}");
+        assert!(short.contains("残り"), "{short}");
+
+        // 対象外の拡張子・ないファイル・指摘のないファイルは何も返さない
+        std::fs::write(dir.path().join("notes.rs"), DOC).unwrap();
+        assert_eq!(run(&["notes.rs"]), None);
+        assert_eq!(run(&["missing.md"]), None);
+        std::fs::write(
+            dir.path().join("clean.md"),
+            "# 見出し\n\n何もない段落です。\n",
+        )
+        .unwrap();
+        assert_eq!(run(&["clean.md"]), None);
     }
 
     #[test]

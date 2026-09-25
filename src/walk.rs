@@ -2,8 +2,9 @@
 //!
 //! - ディレクトリは再帰的にたどる。`.gitignore` / `.ignore` / `.noslopignore` を尊重し、
 //!   隠しファイルは飛ばす (git リポジトリの外でも `.gitignore` を読む)
-//! - ディレクトリから集めるファイルは拡張子で絞り、設定の `exclude` (.gitignore と同じ書式、
-//!   設定ファイルのディレクトリ基準) に一致するものを除く
+//! - ディレクトリから集めるファイルは拡張子で絞り、設定の `exclude` (.gitignore と同じ書式) に一致する
+//!   ものを除く。基準は、プロジェクトの設定なら設定ファイルのディレクトリ、ユーザーの設定なら検査の
+//!   起点 (渡したディレクトリ) ([`ExcludeRule`])
 //! - コマンドラインで直接指定したファイルは、拡張子や除外の指定に関係なく必ず検査する
 //! - シンボリックリンクのファイルはリンク先を見て判定する (ディレクトリのリンクはたどらない)
 
@@ -27,7 +28,38 @@ pub const IGNORE_FILE_NAME: &str = ".noslopignore";
 pub struct WalkOptions {
     /// 小文字の拡張子 (ドットなし)。
     pub extensions: Vec<String>,
-    pub exclude: Option<Arc<Exclude>>,
+    pub exclude: Option<ExcludeRule>,
+}
+
+impl WalkOptions {
+    /// `root` を起点に検査するとき、`path` を除外するか (設定の `exclude`。ディレクトリをたどらずに
+    /// 1 つのファイルだけを見るフック向け)。
+    pub fn is_excluded(&self, root: &Path, path: &Path, is_dir: bool) -> bool {
+        self.exclude
+            .as_ref()
+            .and_then(|rule| rule.under(root).ok())
+            .is_some_and(|exclude| exclude.is_excluded(path, is_dir))
+    }
+}
+
+/// 設定の `exclude` とその基準。
+#[derive(Clone)]
+pub enum ExcludeRule {
+    /// プロジェクトの設定の除外。基準は設定ファイルのディレクトリ。
+    Fixed(Arc<Exclude>),
+    /// ユーザーの設定の除外。基準は検査の起点 (渡したディレクトリ)。どのプロジェクトにも当てるので、
+    /// 置き場 (`~/.config/noslop`) を基準にはできない。
+    PerRoot(Arc<[String]>),
+}
+
+impl ExcludeRule {
+    /// `root` を起点に検査するときの除外。
+    pub fn under(&self, root: &Path) -> Result<Arc<Exclude>, ConfigError> {
+        match self {
+            ExcludeRule::Fixed(exclude) => Ok(Arc::clone(exclude)),
+            ExcludeRule::PerRoot(patterns) => Exclude::new(root, patterns).map(Arc::new),
+        }
+    }
 }
 
 impl Default for WalkOptions {
@@ -125,7 +157,17 @@ pub fn collect(paths: &[PathBuf], options: &WalkOptions) -> Collected {
             .git_exclude(true)
             .require_git(false)
             .add_custom_ignore_filename(IGNORE_FILE_NAME);
-        if let Some(exclude) = options.exclude.clone() {
+        if let Some(rule) = &options.exclude {
+            let exclude = match rule.under(path) {
+                Ok(exclude) => exclude,
+                Err(e) => {
+                    errors.push(WalkError {
+                        path: display(path),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
+            };
             builder.filter_entry(move |entry| {
                 let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
                 !exclude.is_excluded(entry.path(), is_dir)
@@ -261,11 +303,44 @@ mod tests {
         fs::write(root.join("docs/keep.md"), "a").unwrap();
         let exclude = Exclude::new(root, &["vendor/".into(), "CHANGELOG.md".into()]).unwrap();
         let options = WalkOptions {
-            exclude: Some(Arc::new(exclude)),
+            exclude: Some(ExcludeRule::Fixed(Arc::new(exclude))),
             ..Default::default()
         };
         let c = collect(&[root.to_path_buf()], &options);
         assert_eq!(names(root, &c.files), vec!["docs/keep.md"]);
+    }
+
+    /// ユーザーの設定の除外は、検査の起点 (渡したディレクトリ) が基準。
+    #[test]
+    fn user_exclude_patterns_are_relative_to_each_search_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for file in [
+            "a/drafts/x.md",
+            "a/keep.md",
+            "b/drafts/y.md",
+            "b/sub/drafts/z.md",
+        ] {
+            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            fs::write(root.join(file), "a").unwrap();
+        }
+        let options = WalkOptions {
+            exclude: Some(ExcludeRule::PerRoot(vec!["/drafts/".to_string()].into())),
+            ..Default::default()
+        };
+        // 先頭の / は起点に当てる。起点ごとに基準が変わる
+        let c = collect(&[root.join("a"), root.join("b")], &options);
+        assert_eq!(
+            names(root, &c.files),
+            vec!["a/keep.md", "b/sub/drafts/z.md"]
+        );
+        // 起点が変われば、同じパターンでも当たる場所が変わる
+        let c = collect(&[root.join("b/sub")], &options);
+        assert!(c.files.is_empty(), "{:?}", c.files);
+
+        // フックのように 1 つのファイルだけを見るときも、起点を基準にする
+        assert!(options.is_excluded(&root.join("a"), &root.join("a/drafts/x.md"), false));
+        assert!(!options.is_excluded(root, &root.join("a/drafts/x.md"), false));
     }
 
     #[test]
