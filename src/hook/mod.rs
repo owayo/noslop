@@ -27,7 +27,7 @@ use std::path::Path;
 
 use crate::cli::{self, HookArgs};
 use crate::diagnostic::{Diagnostic, Span};
-use crate::document::{Document, SourceFormat};
+use crate::document::{Document, ParseOptions, SourceFormat};
 use crate::engine::{Engine, FileReport, RunReport};
 use crate::output::{self, RenderOptions, RuleCatalog};
 use crate::walk::WalkOptions;
@@ -91,6 +91,16 @@ impl Reviewer {
             source,
             SourceFormat::from_path(path),
         )))
+    }
+
+    /// 読み込み済みの文書を検査する (gws で書き込む値のように、ファイルでない文書)。
+    fn lint(&self, doc: Document) -> FileReport {
+        self.engine.lint(doc)
+    }
+
+    /// 文書の読み込み方の設定 (改行の扱い)。値から文書を組み立てるときに使う。
+    fn parse_options(&self) -> &ParseOptions {
+        &self.engine.options().parse
     }
 
     /// 検査の結果を短い改稿指示にする。見せる指摘が 1 件もなければ `None`。

@@ -14,6 +14,7 @@ pub mod directive;
 pub mod document;
 pub mod engine;
 pub mod genre;
+pub mod gws;
 pub mod heading;
 pub mod hook;
 pub mod markdown;

@@ -87,6 +87,9 @@ rayon = "1.12.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# gws のフックが止めた書き込みの記録の名前 (セッション・書き込み先・値のハッシュ)。hasami の download と
+# 同じ版で、依存の木に新しく加わらない
+sha2 = "0.11.0"
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
 toon-format = { version = "0.5.0", default-features = false }
@@ -122,8 +125,6 @@ assert_cmd = "2.2.2"
 # テストで小さな辞書を組み立てる (build)。CI に辞書を置かずに、辞書ありの判定を確かめるため
 hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "build", "download"] }
 predicates = "3.1.4"
-# テスト用の配布辞書の SHA-256 を計算する (hasami の download と同じ版。依存の木に新しく加わらない)
-sha2 = "0.11.0"
 tempfile = "3.27.0"
 
 # build.rs で配布辞書の目録 (dict/catalog.json) を読み、検証して定数を作る
