@@ -30,6 +30,23 @@ struct Entry {
     file: String,
     size: u64,
     sha256: String,
+    /// zstd で圧縮した同じ辞書 (`<名前>.hsd.zst`)。`noslop dict download` は既定でこちらを取る。
+    #[serde(default)]
+    compressed: Option<Compressed>,
+}
+
+#[derive(Deserialize)]
+struct Compressed {
+    file: String,
+    size: u64,
+    sha256: String,
+}
+
+/// SHA-256 の書き方 (16 進の小文字 64 桁) か。
+fn is_sha256(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn main() {
@@ -92,16 +109,29 @@ fn validate(catalog: &Catalog) -> Result<(), String> {
         if dict.size == 0 {
             return Err(format!("{name} の大きさが 0 です"));
         }
-        if dict.sha256.len() != 64
-            || !dict
-                .sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
+        if !is_sha256(&dict.sha256) {
             return Err(format!(
                 "{name} の SHA-256 が 16 進の小文字 64 桁ではありません: {:?}",
                 dict.sha256
             ));
+        }
+        if let Some(c) = &dict.compressed {
+            // 取得元の URL の末尾になるので、名前から決まる形だけを許す
+            if c.file != format!("{}.zst", dict.file) {
+                return Err(format!(
+                    "{name} の圧縮版のファイル名が <名前>.hsd.zst ではありません: {:?}",
+                    c.file
+                ));
+            }
+            if c.size == 0 {
+                return Err(format!("{name} の圧縮版の大きさが 0 です"));
+            }
+            if !is_sha256(&c.sha256) {
+                return Err(format!(
+                    "{name} の圧縮版の SHA-256 が 16 進の小文字 64 桁ではありません: {:?}",
+                    c.sha256
+                ));
+            }
         }
     }
     if !names.contains(catalog.recommended.as_str()) {
@@ -129,7 +159,7 @@ fn generate(catalog: &Catalog) -> String {
     let _ = writeln!(code, "pub const HASAMI_TAG: &str = {tag:?};\n");
     let _ = writeln!(
         code,
-        "/// 配布辞書の取得元 (URL の接頭辞。この後に `/<名前>.hsd` を付けて取得する)。[`HASAMI_TAG`] の"
+        "/// 配布辞書の取得元 (URL の接頭辞。この後に `/<名前>.hsd.zst` か `/<名前>.hsd` を付けて取得する)。[`HASAMI_TAG`] の"
     );
     let _ = writeln!(code, "/// リリースの添付ファイルを指す。");
     let _ = writeln!(
@@ -157,7 +187,7 @@ fn generate(catalog: &Catalog) -> String {
     );
     let _ = writeln!(
         code,
-        "/// [`HASAMI_TAG`] の配布辞書 (小さい順)。大きさと SHA-256 は目録の `size` と `sha256`。"
+        "/// [`HASAMI_TAG`] の配布辞書 (小さい順)。大きさと SHA-256 は目録の `size` と `sha256`、圧縮版は `compressed`。"
     );
     let _ = writeln!(
         code,
@@ -165,9 +195,16 @@ fn generate(catalog: &Catalog) -> String {
         catalog.dictionaries.len()
     );
     for dict in &catalog.dictionaries {
+        let compressed = match &dict.compressed {
+            Some(c) => format!(
+                "Some(Compressed {{ file: {:?}, size: {}, sha256: {:?} }})",
+                c.file, c.size, c.sha256
+            ),
+            None => "None".to_string(),
+        };
         let _ = writeln!(
             code,
-            "    Distributed {{ name: {:?}, summary: {:?}, size: {}, sha256: {:?} }},",
+            "    Distributed {{ name: {:?}, summary: {:?}, size: {}, sha256: {:?}, compressed: {compressed} }},",
             dict.name, dict.summary, dict.size, dict.sha256
         );
     }
