@@ -183,6 +183,22 @@ fn display_name(path: &Path, cwd: Option<&Path>) -> String {
     crate::walk::display(relative.unwrap_or(path))
 }
 
+/// フックの入力 (標準入力) を読む。
+fn read_input() -> Result<String, String> {
+    let mut input = String::new();
+    match io::stdin()
+        .take(MAX_INPUT_BYTES + 1)
+        .read_to_string(&mut input)
+    {
+        Ok(n) if n as u64 > MAX_INPUT_BYTES => Err(format!(
+            "フックの入力が大きすぎます (上限 {} MiB)",
+            MAX_INPUT_BYTES / 1024 / 1024
+        )),
+        Ok(_) => Ok(input),
+        Err(e) => Err(format!("フックの入力を読めません: {e}")),
+    }
+}
+
 /// 検査するファイルを読む。消えたファイルと大きすぎるファイルは飛ばす (`None`)。
 fn read_source(path: &Path, name: &str) -> Result<Option<String>, String> {
     let file = match File::open(path) {

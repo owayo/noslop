@@ -246,8 +246,9 @@ impl<'a> Call<'a> {
     }
 }
 
-/// gws の呼び出し 1 つの書き込み。表にないコマンドと、値を 1 つも読めないものは `None`。
-fn write(args: &[Arg]) -> Option<Write> {
+/// gws の呼び出し 1 つ (プログラム名より後ろの引数) の書き込み。表にないコマンドと、値を 1 つも
+/// 読めないものは `None`。
+pub fn write(args: &[Arg]) -> Option<Write> {
     let call = Call::parse(args);
     if call.help {
         return None;

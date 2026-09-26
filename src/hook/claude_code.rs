@@ -12,12 +12,12 @@
 //! `hook_event_name` がない入力は PostToolUse とみなす。ほかのイベントは何もしない。
 
 use std::collections::BTreeSet;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::{CONTEXT_BUDGET_CHARS, KEEP_NOTE, MAX_INPUT_BYTES, review, truncate_lines};
+use super::{CONTEXT_BUDGET_CHARS, KEEP_NOTE, read_input, review, truncate_lines};
 use crate::cli::{self, HookArgs};
 use crate::diagnostic::Span;
 use crate::document::Document;
@@ -29,24 +29,13 @@ const TOOLS: [&str; 3] = ["Write", "Edit", "MultiEdit"];
 ///
 /// 入力の誤りは標準エラーに書いて 1 で終わる (Claude Code では処理を止めないエラーになる)。
 pub fn claude_code(args: &HookArgs) -> u8 {
-    let mut input = String::new();
-    match io::stdin()
-        .take(MAX_INPUT_BYTES + 1)
-        .read_to_string(&mut input)
-    {
-        Ok(n) if n as u64 > MAX_INPUT_BYTES => {
-            eprintln!(
-                "noslop: フックの入力が大きすぎます (上限 {} MiB)",
-                MAX_INPUT_BYTES / 1024 / 1024
-            );
+    let input = match read_input() {
+        Ok(input) => input,
+        Err(message) => {
+            eprintln!("noslop: {message}");
             return 1;
         }
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("noslop: フックの入力を読めません: {e}");
-            return 1;
-        }
-    }
+    };
     match respond(&input, args) {
         Ok(Some(output)) => {
             let mut out = io::stdout().lock();
