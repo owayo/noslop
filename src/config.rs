@@ -693,6 +693,18 @@ message = "表記を統一します"
         }
     }
 
+    /// 設定の例 (examples/noslop.toml) は読めて、読める拡張子すべてを並べている。
+    #[test]
+    fn the_example_lists_every_readable_extension() {
+        let cfg = parse(include_str!("../examples/noslop.toml")).unwrap();
+        let known_files: Vec<String> = DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect();
+        let known_code: Vec<String> = CodeLanguage::known_extensions()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(cfg.files.extensions, Some(known_files));
+        assert_eq!(cfg.code.extensions, Some(known_code));
+    }
+
     /// ひな形の節 `header` の中の、コメントにした `extensions` の設定の行頭の `# ` を外し、節の見出しと
     /// その設定だけの TOML にする。
     fn uncomment_section(template: &str, header: &str) -> String {
