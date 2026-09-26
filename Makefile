@@ -145,7 +145,7 @@ clean: ## ビルド成果物を消す
 dict-catalog: ## 配布辞書の目録 (dict/catalog.json) を hasami のリリースに合わせる (TAG=... で版を指定、省くと最新)
 	tools/dict-catalog.sh $(TAG)
 
-# 通信が要り重い (3 つの辞書の圧縮版で約 146MB と、展開前の ipadic の約 18MB を取得する) ので、ci には入れない
+# 配布辞書をすべて取得するため通信が重く、ci には入れない
 dict-check: ## 目録の辞書を実際に取得し (圧縮版を展開する)、大きさ・SHA-256・読めることを確かめる (通信が要る)
 	$(RUN) cargo test $(CARGO_FLAGS) --lib dictionaries::tests:: -- --ignored
 

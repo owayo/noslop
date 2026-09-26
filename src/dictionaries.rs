@@ -286,8 +286,8 @@ pub struct DownloadError {
 }
 
 impl DownloadError {
-    /// hasami の誤りを言い換える。`dict` は取ろうとした辞書、`compressed` は圧縮版を取ろうとしたか。
-    fn from_hasami(e: HasamiError, dict: &Distributed, compressed: bool) -> Self {
+    /// hasami の誤りを言い換える。`dict` は取ろうとした辞書。
+    fn from_hasami(e: HasamiError, dict: &Distributed) -> Self {
         let name = dict.name;
         // 誤りの出所の「〜の」。圧縮版を展開したものの検査の誤りは、hasami が `<URL> (decompressed)` を
         // 出所にするので、「<URL> を展開した中身の」と書く
@@ -315,12 +315,7 @@ impl DownloadError {
             }
             HasamiError::Request { url, source } => format!("{url} を取得できません: {source}"),
             HasamiError::Status { url, status } => {
-                let hint = if status == 404 && compressed && url.ends_with(".zst") {
-                    "。取得元に圧縮版 (.hsd.zst) がなければ、--uncompressed を付けると展開前の辞書 (.hsd) を取得します"
-                } else {
-                    ""
-                };
-                format!("{url} を取得できません (HTTP {status}){hint}")
+                format!("{url} を取得できません (HTTP {status})")
             }
             HasamiError::ContentLength {
                 url,
@@ -393,11 +388,13 @@ impl DownloadError {
 ///
 /// `source` は取得元の URL の接頭辞 (既定は [`DEFAULT_SOURCE`])。`compressed` が真で目録に圧縮版が
 /// あれば `<source>/<名前>.hsd.zst` を取って展開し、なければ `<source>/<名前>.hsd` を取る。
+/// 圧縮版が HTTP 404 のときも非圧縮版へ切り替える。通信・検証・展開の失敗では切り替えない。
 /// 正しいファイルがすでにあれば、`force` でなければ通信せずに [`Outcome::Present`] を返す。中身の
 /// 違うファイルがあれば、`force` でなければエラーにする。
 ///
 /// `progress(受信したバイト数, 受信する全体のバイト数)` は、通信を始める前に 1 度 (受信 0 で)、その後は
 /// 受け取るたびに呼ぶ。圧縮版を取るときの全体は圧縮版の大きさ ([`Distributed::transfer_size`])。
+/// 非圧縮版へ切り替えるときは、その大きさと受信 0 で呼び直す。
 /// 通信しないときは呼ばない。
 pub fn download(
     dict: &Distributed,
@@ -417,7 +414,7 @@ pub fn download(
     match hasami::download::download(&dict.to_hasami(), dir, options) {
         Ok(HasamiOutcome::Present(path)) => Ok(Outcome::Present(path)),
         Ok(HasamiOutcome::Downloaded(path)) => Ok(Outcome::Downloaded(path)),
-        Err(e) => Err(DownloadError::from_hasami(e, dict, compressed)),
+        Err(e) => Err(DownloadError::from_hasami(e, dict)),
     }
 }
 
@@ -559,7 +556,7 @@ mod tests {
         assert!(find("unidic").is_none());
     }
 
-    /// 同梱の辞書 (dict/ipadic.hsd) は、dict/README.md に記した大きさと SHA-256 のもの。目録の ipadic とは
+    /// 同梱の辞書 (dict/ipadic.hsd) は、dict/README.md に記した SHA-256 のもの。目録の ipadic とは
     /// 別に上げる (目録は hasami のリリースごとに変わり、同梱の辞書は判定の校正の前提になるため)。
     #[test]
     fn the_bundled_dictionary_matches_dict_readme() {
@@ -573,14 +570,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("dict/README.md に {label} の行がない"))
                 .to_string()
         };
-        let size: u64 = row("大きさ")
-            .trim_end_matches(" バイト")
-            .replace(',', "")
-            .parse()
-            .unwrap();
         let sha256 = row("SHA-256").trim_matches('`').to_string();
         let bundled = dict_dir.join("ipadic.hsd");
-        assert_eq!(fs::metadata(&bundled).unwrap().len(), size);
         assert_eq!(hasami::download::sha256_file(&bundled).unwrap(), sha256);
     }
 
@@ -712,41 +703,30 @@ mod tests {
         let dict = find(RECOMMENDED).unwrap();
         let zst = format!("{DEFAULT_SOURCE}/{}.zst", dict.file_name());
         let hsd = format!("{DEFAULT_SOURCE}/{}", dict.file_name());
-        let say = |e: HasamiError, compressed: bool| {
-            DownloadError::from_hasami(e, dict, compressed).to_string()
-        };
+        let say = |e: HasamiError| DownloadError::from_hasami(e, dict).to_string();
 
-        // 圧縮版が取得元にないときは、展開前の辞書を取る指定を案内する
-        let missing = say(
-            HasamiError::Status {
-                url: zst.clone(),
-                status: 404,
-            },
-            true,
-        );
+        // HTTP の誤りは、実際に取得に失敗した URL とステータスを伝える
+        let missing = say(HasamiError::Status {
+            url: zst.clone(),
+            status: 404,
+        });
         assert!(
             missing.starts_with(&format!("{zst} を取得できません (HTTP 404)")),
             "{missing}"
         );
-        assert!(missing.contains("--uncompressed"), "{missing}");
-        let missing = say(
-            HasamiError::Status {
-                url: hsd.clone(),
-                status: 404,
-            },
-            false,
-        );
+        assert!(!missing.contains("--uncompressed"), "{missing}");
+        let missing = say(HasamiError::Status {
+            url: hsd.clone(),
+            status: 404,
+        });
         assert_eq!(missing, format!("{hsd} を取得できません (HTTP 404)"));
 
         // 圧縮版の大きさの違いは、圧縮版と分かるように書く
-        let length = say(
-            HasamiError::ContentLength {
-                url: zst.clone(),
-                expected: 10,
-                actual: 11,
-            },
-            true,
-        );
+        let length = say(HasamiError::ContentLength {
+            url: zst.clone(),
+            expected: 10,
+            actual: 11,
+        });
         assert!(length.contains("大きさが違います"), "{length}");
         assert!(
             length.contains(&format!("{} の圧縮版は 10 バイト", dict.name)),
@@ -755,52 +735,40 @@ mod tests {
 
         // 展開したものの誤りは「展開した中身」と書き、受信の誤りと分ける
         let decoded = format!("{zst}{DECOMPRESSED}");
-        let checksum = say(
-            HasamiError::Checksum {
-                from: decoded.clone(),
-                expected: "a".into(),
-                actual: "b".into(),
-            },
-            true,
-        );
+        let checksum = say(HasamiError::Checksum {
+            from: decoded.clone(),
+            expected: "a".into(),
+            actual: "b".into(),
+        });
         assert_eq!(
             checksum,
             format!("{zst} を展開した中身の SHA-256 が違います (期待 a、実際 b)")
         );
-        let short = say(
-            HasamiError::Truncated {
-                from: decoded,
-                expected: 10,
-                received: 3,
-            },
-            true,
-        );
+        let short = say(HasamiError::Truncated {
+            from: decoded,
+            expected: 10,
+            received: 3,
+        });
         assert!(
             short.contains("を展開した中身の大きさが足りません (3 / 10 バイト)"),
             "{short}"
         );
-        let cut = say(
-            HasamiError::Truncated {
-                from: zst.clone(),
-                expected: 10,
-                received: 3,
-            },
-            true,
-        );
+        let cut = say(HasamiError::Truncated {
+            from: zst.clone(),
+            expected: 10,
+            received: 3,
+        });
         assert_eq!(
             cut,
             format!("{zst} の受信が途中で切れました (3 / 10 バイト)")
         );
-        let broken = say(
-            HasamiError::Decompress {
-                from: zst.clone(),
-                reason: "bad frame".into(),
-            },
-            true,
-        );
+        let broken = say(HasamiError::Decompress {
+            from: zst.clone(),
+            reason: "bad frame".into(),
+        });
         assert_eq!(broken, format!("{zst} を展開できません (zstd): bad frame"));
         // 取得では起きない誤りも、hasami の説明を添えて返す
-        let other = say(HasamiError::InvalidDict("x".into()), true);
+        let other = say(HasamiError::InvalidDict("x".into()));
         assert!(
             other.starts_with(&format!("{} を取得できません: ", dict.name)),
             "{other}"
@@ -834,7 +802,7 @@ mod tests {
     /// 読めることを確かめる。展開前の辞書を取る経路も、いちばん小さい辞書で確かめる (`make dict-check`。
     /// Release のワークフローが目録を更新したときに回す)。
     #[test]
-    #[ignore = "ネットワークが必要 (目録の辞書をすべて圧縮版で約 146MB と、展開前の ipadic の約 18MB を取得する)"]
+    #[ignore = "ネットワークが必要 (目録の辞書をすべて圧縮版で取得し、非圧縮版の ipadic も取得する)"]
     fn every_catalog_dictionary_can_be_downloaded_and_read() {
         let dir = tempfile::tempdir().unwrap();
         let smallest = &DICTIONARIES[0];

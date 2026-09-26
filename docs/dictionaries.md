@@ -27,7 +27,7 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 
 ほかのルールは辞書の有無で変わりません。文分割も辞書を使いません。体言止め（R06）は、文書単位の判定が辞書なし・ありで変わらなかったため、辞書なしの推定のままです。
 
-同梱の辞書はバイナリを約 18MB 大きくします（バイナリは、コードのコメントを読む 20 言語の文法も含めて約 53MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を探しも読みもしません。share ディレクトリやファイルの辞書は mmap で読むので、200MB を超える辞書でも、メモリに載るのは解析で触れた部分だけです。
+同梱の辞書は、バイナリに埋め込んだまま複製せずに読みます。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を探しも読みもしません。share ディレクトリやファイルの辞書は mmap で読むので、大きな辞書でも、メモリに載るのは解析で触れた部分だけです。
 
 ### 使い方の指定
 
@@ -44,6 +44,8 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 
 見つかった辞書が読めない（壊れている・形式の版が違う）ときは、次の候補や同梱の辞書に黙って切り替えず、設定の誤りにします（終了コード 2）。`auto` で share ディレクトリから選んだ辞書も同じです。`noslop dict download <名前> --force` で取り直すか、`dictionary` で別の辞書を指定してください。
 
+現在の辞書は HSD v5 形式です。v4 以前の辞書は読めません。以前に取得した配布辞書は `noslop dict download <名前> --force` で取り直してください。自作の辞書は hasami v26.9.107 以降の対応版で作り直します。同梱の辞書だけを使う場合は、noslop の更新だけで移行できます。
+
 `auto` で使う辞書は、手元の share ディレクトリに何を取得したかで変わります。CI のように、どこで実行しても同じ結果にしたい場面では、`dictionary = "bundled"` か `share:<名前>` で辞書を固定してください。品詞で数えるルール（P15・P16）は同梱の IPAdic で校正したので、校正した条件で判定するなら `bundled` です。
 
 ```toml
@@ -57,13 +59,15 @@ dictionary = "auto"
 
 ### 別の辞書を使う
 
-hasami は、ほかにもビルド済みの辞書を配布しています。NEologd の語彙を含む `ipadic-neologd` と `ipadic-neologd-sudachi` は、収録語が多い分だけ大きく、どちらも 220MB を超えるため同梱していません。`noslop dict download` で hasami の share ディレクトリに取得できます。share ディレクトリは hasami と同じ規則で決まり、`HASAMI_DATA_DIR` が設定されていればそこ、次に `$XDG_DATA_HOME/hasami`、Windows では `%LOCALAPPDATA%\hasami`、どれもなければ `~/.local/share/hasami` です。
+hasami は、ほかにもビルド済みの辞書を配布しています。NEologd の語彙を含む `ipadic-neologd` と `ipadic-neologd-sudachi` は、収録語が多い分だけ大きいため同梱していません。`noslop dict download` で hasami の share ディレクトリに取得できます。share ディレクトリは hasami と同じ規則で決まり、`HASAMI_DATA_DIR` が設定されていればそこ、次に `$XDG_DATA_HOME/hasami`、Windows では `%LOCALAPPDATA%\hasami`、どれもなければ `~/.local/share/hasami` です。
 
-| 名前 | 大きさ | 取得の量（圧縮版） | 中身 |
-|---|---:|---:|---|
-| `ipadic` | 約 18MB | 約 5.9MB | IPAdic（同梱の辞書と同じ mecab-ipadic から作ったもの） |
-| `ipadic-neologd` | 約 222MB | 約 68MB | IPAdic + NEologd |
-| `ipadic-neologd-sudachi` | 約 238MB | 約 73MB | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
+| 名前 | 中身 |
+|---|---|
+| `ipadic` | IPAdic（同梱の辞書と同じ mecab-ipadic から作ったもの） |
+| `ipadic-neologd` | IPAdic + NEologd |
+| `ipadic-neologd-sudachi` | IPAdic + NEologd + SudachiDict（hasami の推奨。語彙が最も多い） |
+
+辞書の大きさは `noslop dict list` で確認できます。圧縮版の大きさは取得時に表示します。
 
 ```bash
 # share ディレクトリ（既定は ~/.local/share/hasami）に取得する（名前を省くと ipadic-neologd-sudachi）
@@ -82,9 +86,9 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 取得した辞書は、辞書を指定しないとき（`auto`）に次の実行から使われます。いくつか取得してあれば、hasami の推奨順で選びます。どのマシンでも同じ辞書で判定したいときは、プロジェクトの設定の `[morphology]` に `dictionary = "share:ipadic-neologd-sudachi"` と書きます（取得していないマシンでは、取得のコマンドを案内して設定の誤りになります）。手元のマシンでだけ使うなら、ユーザーの設定（`~/.config/noslop/config.toml`）に書きます。
 
 - 取得元は、noslop に組み込んだ hasami のリリースの目録（`noslop dict list` の 1 行目に出る版）にある、そのリリースの添付ファイルです。目録は noslop をリリースするたびに hasami の最新のリリースに合わせます
-- 既定では、zstd で圧縮した版（`<名前>.hsd.zst`。3 分の 1 ほどの大きさ）を取り、受け取りながら展開します。受け取った圧縮版と展開した辞書の両方を目録の大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません。取得の処理は hasami のライブラリ（`hasami::download`）を使っています
+- 既定では、zstd で圧縮した版（`<名前>.hsd.zst`）を取り、受け取りながら展開します。受け取った圧縮版と展開した辞書の両方を目録の大きさと SHA-256 で確かめ、hasami の辞書として読めることも確かめてから置きます。途中で失敗しても、すでにあるファイルは消さず、壊しません。取得の処理は hasami のライブラリ（`hasami::download`）を使っています
 - 置き場所に中身の違うファイル（hasami の別の版など）があるときは、`--force` を付けたときだけ置き換えます。`--force` は正しいファイルがあっても取り直します
-- ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd.zst` を取得します。どの取得元でも大きさと SHA-256 を確かめます）。圧縮版を置いていないミラーでは `--uncompressed` を付けると、展開前の `<URL>/<名前>.hsd` を取得します
+- ミラーがあれば `--source <URL>` で取得元を切り替えられます（`<URL>/<名前>.hsd.zst` を取得します。どの取得元でも大きさと SHA-256 を確かめます）。圧縮版が HTTP 404 のときだけ、非圧縮版の `<URL>/<名前>.hsd` へ自動で切り替えます。通信・検証・展開の失敗では切り替えません。`--uncompressed` を付けると、最初から非圧縮版を取得します
 - 品詞で数えるルール（P15・P16）の閾値は、同梱の IPAdic で校正しています。ほかの辞書では語の区切り方や品詞が変わるので、指摘の数や位置が変わることがあります。校正した条件で判定するなら `dictionary = "bundled"` を指定します
 
 share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。

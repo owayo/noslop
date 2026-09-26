@@ -742,11 +742,10 @@ mod tests {
     }
 
     /// 同梱の辞書は hasami の IPAdic (出所と更新の手順は dict/README.md)。辞書を差し替えたら、
-    /// 手元の文書で P15・P16 の指摘の差分を確かめてから、ここに固定した値を書き換える。
+    /// 手元の文書で P15・P16 の指摘の差分を確かめてから、語数と出典が変わっていれば、ここに固定した値を書き換える。
     #[cfg(feature = "bundled-dict")]
     #[test]
     fn the_bundled_dictionary_is_ipadic_from_hasami() {
-        assert_eq!(BUNDLED_HSD.len(), 18_125_804);
         let m = Morphology::bundled().unwrap();
         assert_eq!(m.info().name, "ipadic");
         assert_eq!(m.info().source, DictionarySource::Bundled);
