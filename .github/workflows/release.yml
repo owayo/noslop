@@ -183,25 +183,15 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: noslop
-            asset_name: noslop-linux-amd64
           # arm64 の Linux は、arm64 のランナーでそのままビルドする (クロスビルドの道具が要らない)
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact_name: noslop
-            asset_name: noslop-linux-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: noslop
-            asset_name: noslop-darwin-amd64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: noslop
-            asset_name: noslop-darwin-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: noslop.exe
-            asset_name: noslop-windows-amd64.exe
 
     steps:
       # Windows のランナーは既定で LF を CRLF に変えて checkout する
@@ -224,17 +214,37 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Stage binary
+      # 添付の名前は noslop-<target>.tar.gz (Windows は .zip。depup・astro-sight と同じ形)。中身は最上位に
+      # バイナリと、LICENSE・THIRD_PARTY_NOTICES.md を置く (バイナリに入る同梱の辞書 IPAdic (NAIST-2003) と
+      # tree-sitter の文法 (MIT) は、再配布に表示を添えることを求めるため)。Homebrew の formula はこの形を前提にする
+      - name: Package
+        id: package
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          mkdir -p dist
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "dist/${{ matrix.asset_name }}"
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            bin="${BINARY_NAME}.exe"
+            asset="${BINARY_NAME}-${TARGET}.zip"
+          else
+            bin="${BINARY_NAME}"
+            asset="${BINARY_NAME}-${TARGET}.tar.gz"
+          fi
+          mkdir -p dist/stage
+          cp "target/${TARGET}/release/${bin}" LICENSE THIRD_PARTY_NOTICES.md dist/stage/
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            (cd dist/stage && 7z a "../${asset}" "${bin}" LICENSE THIRD_PARTY_NOTICES.md)
+          else
+            tar -czf "dist/${asset}" -C dist/stage "${bin}" LICENSE THIRD_PARTY_NOTICES.md
+          fi
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          name: ${{ steps.package.outputs.asset }}
+          path: dist/${{ steps.package.outputs.asset }}
           if-no-files-found: error
 
   publish-release:
@@ -249,18 +259,7 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      # バイナリには同梱の辞書 (IPAdic、NAIST-2003) が入るので、ライセンスの表示を添える
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: source
-          sparse-checkout: |
-            LICENSE
-            THIRD_PARTY_NOTICES.md
-          sparse-checkout-cone-mode: false
-
-      - name: Add license notices
-        run: cp source/LICENSE source/THIRD_PARTY_NOTICES.md release-assets/
-
+      # ライセンスの表示 (LICENSE・THIRD_PARTY_NOTICES.md) は、それぞれのアーカイブの中に入っている
       - name: Generate checksums
         working-directory: release-assets
         run: |
@@ -310,7 +309,7 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # 公開したリリースの SHA256SUMS から、formula が指すバイナリの SHA-256 を読む
+      # 公開したリリースの SHA256SUMS から、formula が指す 4 つのアーカイブの SHA-256 を読む
       - name: Read checksums
         id: sums
         if: steps.app.outputs.enabled == 'true'
@@ -318,13 +317,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release download "$TAG" --repo "${{ github.repository }}" --pattern SHA256SUMS
-          for asset in noslop-darwin-arm64 noslop-darwin-amd64 noslop-linux-arm64 noslop-linux-amd64; do
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            asset="${BINARY_NAME}-${target}.tar.gz"
             sum="$(awk -v f="$asset" '$2 == f { print $1 }' SHA256SUMS)"
             if [ "${#sum}" -ne 64 ]; then
               echo "::error::SHA256SUMS に ${asset} がありません"
               exit 1
             fi
-            echo "${asset//-/_}=${sum}" >> "$GITHUB_OUTPUT"
+            echo "${target//-/_}=${sum}" >> "$GITHUB_OUTPUT"
           done
 
       # App のトークンは tap を触る直前に作る (トークンに手が届く時間を短くする)
@@ -351,10 +351,10 @@ jobs:
         working-directory: tap
         env:
           BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}
-          SHA_DARWIN_ARM64: ${{ steps.sums.outputs.noslop_darwin_arm64 }}
-          SHA_DARWIN_AMD64: ${{ steps.sums.outputs.noslop_darwin_amd64 }}
-          SHA_LINUX_ARM64: ${{ steps.sums.outputs.noslop_linux_arm64 }}
-          SHA_LINUX_AMD64: ${{ steps.sums.outputs.noslop_linux_amd64 }}
+          SHA_MACOS_ARM: ${{ steps.sums.outputs.aarch64_apple_darwin }}
+          SHA_MACOS_INTEL: ${{ steps.sums.outputs.x86_64_apple_darwin }}
+          SHA_LINUX_ARM: ${{ steps.sums.outputs.aarch64_unknown_linux_gnu }}
+          SHA_LINUX_INTEL: ${{ steps.sums.outputs.x86_64_unknown_linux_gnu }}
         run: |
           mkdir -p Formula
           # 展開するのは ${...} だけ (Ruby の #{...} はシェルでは展開されない)。版は URL
@@ -367,29 +367,28 @@ jobs:
 
             on_macos do
               if Hardware::CPU.arm?
-                url "${BASE_URL}/noslop-darwin-arm64"
-                sha256 "${SHA_DARWIN_ARM64}"
+                url "${BASE_URL}/${BINARY_NAME}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_ARM}"
               else
-                url "${BASE_URL}/noslop-darwin-amd64"
-                sha256 "${SHA_DARWIN_AMD64}"
+                url "${BASE_URL}/${BINARY_NAME}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_INTEL}"
               end
             end
 
             on_linux do
               if Hardware::CPU.arm?
-                url "${BASE_URL}/noslop-linux-arm64"
-                sha256 "${SHA_LINUX_ARM64}"
+                url "${BASE_URL}/${BINARY_NAME}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
               else
-                url "${BASE_URL}/noslop-linux-amd64"
-                sha256 "${SHA_LINUX_AMD64}"
+                url "${BASE_URL}/${BINARY_NAME}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_INTEL}"
               end
             end
 
             def install
-              # リリースの添付は圧縮していないバイナリ (noslop-<OS>-<CPU>) なので、名前を noslop に直して入れる
-              binary = Dir["noslop-*"].first
-              chmod 0755, binary
-              bin.install binary => "noslop"
+              bin.install "${BINARY_NAME}"
+              # LICENSE は Homebrew が自動で入れる。同梱の辞書と文法の表示は名前が決まった形でないので明示する
+              prefix.install "THIRD_PARTY_NOTICES.md"
             end
 
             test do
@@ -400,14 +399,17 @@ jobs:
             end
           end
           FORMULA
-          git diff --stat
-          if git diff --quiet; then
+          # 壊れた Ruby を tap に push しない
+          ruby -c Formula/noslop.rb
+          # 新しく作った formula も差分に入るよう、add してから比べる
+          git add Formula/noslop.rb
+          git diff --cached --stat
+          if git diff --cached --quiet; then
             echo "formula は ${TAG} のまま (変更なし)"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/noslop.rb
           git commit -m "noslop を ${TAG} に更新"
           git push
           echo "🍺 Homebrew の tap を ${TAG} に更新しました: ${{ github.repository_owner }}/homebrew-noslop"

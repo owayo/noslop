@@ -91,7 +91,7 @@ noslop skill-install claude --dir .claude/skills  # プロジェクトに置く
 
 | ツール | 引数 | 返すもの |
 |---|---|---|
-| `check` | `text` (必須)、`filename` (拡張子で Markdown / テキストを判断)、`genre`、`experimental`、`report` (`brief` 既定 / `full`)、`format` (`markdown` / `json` / `toon`) | `report: brief` は改稿指示 (`format` の既定は `markdown`)、`report: full` は `check --format json` と同じ全指摘のレポート (`format` の既定は `json`)。`markdown` は `brief` のときだけ |
+| `check` | `text` (必須)、`filename` (拡張子で Markdown・テキスト・コードを判断。コードならコメントだけを検査する)、`genre`、`experimental`、`report` (`brief` 既定 / `full`)、`format` (`markdown` / `json` / `toon`) | `report: brief` は改稿指示 (`format` の既定は `markdown`)、`report: full` は `check --format json` と同じ全指摘のレポート (`format` の既定は `json`)。`markdown` は `brief` のときだけ |
 | `diff` | `before`・`after` (必須)、`filename`、`genre`、`experimental`、`format` (`text` 既定 / `json` / `toon`) | `noslop diff` と同じ確認事項 (新しく出た指摘・事実の変化・改稿の偏り)。text は端末向けの書式を外して返す |
 | `explain` | `rule` (必須、ID か名前)、`genre` | `noslop explain` と同じ説明 |
 | `rules` | `genre`、`experimental` | `noslop rules` と同じ一覧 |
