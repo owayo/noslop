@@ -42,7 +42,7 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 - **括弧を考慮した文分割**: 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割を使う。「」や（）の内側の句点では文を切らず、閉じ忘れた括弧があっても後続の文を巻き込まない。`Yahoo!ニュース` のように文末記号を含む語の途中でも切らない
 - **判断を記録できる**: `<!-- noslop-disable-next-line P01 -- 引用のため -->` のように、残す理由を文書に書ける
 - **CI 向けの出力**: text（色付き）・JSON（安定したスキーマ）・GitHub Actions の注釈に対応する。既定ではジョブを落とさない
-- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`。書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたとき）、claw-hooks から呼ぶ入口（`noslop hook command` など）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる
+- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`。書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたとき）、claw-hooks から呼ぶ入口（`noslop hook command` など）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる。gws の書き込み前に読める値とコマンドの形は[連携方法](docs/integrations.md#gws-の書き込み-pretooluse)にまとめた
 - **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
 - **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ
 
