@@ -23,8 +23,7 @@ use crate::document::{Block, Directive};
 
 /// コメントを読める言語。
 ///
-/// 文法は言語ごとの feature (`lang-rust` など) で入れる。Bash だけは gws のコマンドの解析にも
-/// 使うので常に入る。このビルドで読めるかは [`CodeLanguage::is_available`] で確かめる。
+/// 文法はすべてバイナリに入れている (feature で分けない)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CodeLanguage {
     Rust,
@@ -50,7 +49,7 @@ pub enum CodeLanguage {
 }
 
 impl CodeLanguage {
-    /// すべての言語 (このビルドで読めないものも含む)。
+    /// すべての言語。
     pub const ALL: [CodeLanguage; 20] = [
         CodeLanguage::Rust,
         CodeLanguage::JavaScript,
@@ -126,58 +125,7 @@ impl CodeLanguage {
         }
     }
 
-    /// 文法を入れる feature の名前 (読めないときの案内に使う)。
-    pub fn feature(self) -> &'static str {
-        match self {
-            CodeLanguage::Rust => "lang-rust",
-            CodeLanguage::JavaScript => "lang-javascript",
-            CodeLanguage::TypeScript | CodeLanguage::Tsx => "lang-typescript",
-            CodeLanguage::Python => "lang-python",
-            CodeLanguage::Go => "lang-go",
-            CodeLanguage::Java => "lang-java",
-            CodeLanguage::C => "lang-c",
-            CodeLanguage::Cpp => "lang-cpp",
-            CodeLanguage::CSharp => "lang-csharp",
-            CodeLanguage::Ruby => "lang-ruby",
-            CodeLanguage::Php => "lang-php",
-            CodeLanguage::Swift => "lang-swift",
-            CodeLanguage::Kotlin => "lang-kotlin",
-            // 常に入る
-            CodeLanguage::Bash => "",
-            CodeLanguage::Yaml => "lang-yaml",
-            CodeLanguage::Toml => "lang-toml",
-            CodeLanguage::Html => "lang-html",
-            CodeLanguage::Css => "lang-css",
-            CodeLanguage::Lua => "lang-lua",
-        }
-    }
-
-    /// このビルドで読めるか (文法を feature で入れたか)。
-    pub fn is_available(self) -> bool {
-        match self {
-            CodeLanguage::Rust => cfg!(feature = "lang-rust"),
-            CodeLanguage::JavaScript => cfg!(feature = "lang-javascript"),
-            CodeLanguage::TypeScript | CodeLanguage::Tsx => cfg!(feature = "lang-typescript"),
-            CodeLanguage::Python => cfg!(feature = "lang-python"),
-            CodeLanguage::Go => cfg!(feature = "lang-go"),
-            CodeLanguage::Java => cfg!(feature = "lang-java"),
-            CodeLanguage::C => cfg!(feature = "lang-c"),
-            CodeLanguage::Cpp => cfg!(feature = "lang-cpp"),
-            CodeLanguage::CSharp => cfg!(feature = "lang-csharp"),
-            CodeLanguage::Ruby => cfg!(feature = "lang-ruby"),
-            CodeLanguage::Php => cfg!(feature = "lang-php"),
-            CodeLanguage::Swift => cfg!(feature = "lang-swift"),
-            CodeLanguage::Kotlin => cfg!(feature = "lang-kotlin"),
-            CodeLanguage::Bash => true,
-            CodeLanguage::Yaml => cfg!(feature = "lang-yaml"),
-            CodeLanguage::Toml => cfg!(feature = "lang-toml"),
-            CodeLanguage::Html => cfg!(feature = "lang-html"),
-            CodeLanguage::Css => cfg!(feature = "lang-css"),
-            CodeLanguage::Lua => cfg!(feature = "lang-lua"),
-        }
-    }
-
-    /// 拡張子 (大文字小文字を問わない、ドットなし) から言語を決める。このビルドで読めない言語も返す。
+    /// 拡張子 (大文字小文字を問わない、ドットなし) から言語を決める。
     pub fn from_extension(ext: &str) -> Option<Self> {
         let ext = ext.to_ascii_lowercase();
         Self::ALL
@@ -185,11 +133,10 @@ impl CodeLanguage {
             .find(|lang| lang.extensions().contains(&ext.as_str()))
     }
 
-    /// このビルドで読める言語の拡張子 (小文字、ドットなし)。
-    pub fn available_extensions() -> impl Iterator<Item = &'static str> {
+    /// コメントを読めるコードの拡張子 (小文字、ドットなし)。
+    pub fn known_extensions() -> impl Iterator<Item = &'static str> {
         Self::ALL
             .into_iter()
-            .filter(|lang| lang.is_available())
             .flat_map(|lang| lang.extensions().iter().copied())
     }
 }
@@ -197,7 +144,7 @@ impl CodeLanguage {
 /// コードのファイルから、コメントの本文のブロックと抑制のコメントを取り出す。
 ///
 /// ブロックの解析用テキストはコメントの記号を外した本文で、[`Block::to_source`] で原文
-/// (`source`) のバイト位置に戻る。このビルドで読めない言語は何も返さない。
+/// (`source`) のバイト位置に戻る。
 pub fn parse(source: &str, language: CodeLanguage) -> (Vec<Block>, Vec<Directive>) {
     let Some(raws) = extract::comments(source, language) else {
         return (Vec::new(), Vec::new());
