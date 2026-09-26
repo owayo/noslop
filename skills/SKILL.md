@@ -96,4 +96,4 @@ files[1]:
 - 書き手が今後も残すと決めた箇所だけに抑制コメントを書く (`<!-- noslop-disable-next-line P01 -- 理由 -->`。コードでは、コメントの中身全体を `// noslop-disable-next-line P01 -- 理由` の形にする)。指摘を消すために足さない。
 - 実験的なルール (`experimentalOnly: true`、`--experimental` で有効) は未校正。校正済みの指摘を優先する。
 - 設定は、ユーザーの設定 (`~/.config/noslop/config.toml`) に、カレントから親へたどって見つけたプロジェクトの `noslop.toml` を重ねて読む (`--no-config` でどちらも読まない)。ユーザーの設定のひな形は `noslop init --user` で作れる。
-- 品詞で数えるルール (P15・P16) の辞書は、既定で share ディレクトリに取得した辞書を使い、なければ同梱の IPAdic を使う。辞書は `noslop dict download` で取得できる (既定で圧縮版を取る)。CI など別の環境と結果をそろえるときは `--dict bundled` で固定する。
+- 品詞で数えるルール (P15・P16) の辞書は、既定で share ディレクトリに取得した辞書を使い、なければ同梱の IPAdic を使う。辞書は `noslop dict download` で取得できる (既定で圧縮版を取る)。既存の辞書も毎回取得し直し、検証後に置き換える。失敗した場合は既存の辞書を保つ。CI など別の環境と結果をそろえるときは `--dict bundled` で固定する。

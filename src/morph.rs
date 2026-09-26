@@ -428,7 +428,7 @@ fn load_chosen(path: &Path) -> Result<Morphology, String> {
     load_file(path).map_err(|e| {
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let download = match dictionaries::find(name) {
-            Some(dict) => format!("`noslop dict download {} --force` で取り直すか、", dict.name),
+            Some(dict) => format!("`noslop dict download {}` で取り直すか、", dict.name),
             None => String::new(),
         };
         format!(
@@ -736,7 +736,7 @@ mod tests {
         let err = resolve(&o, true).unwrap_err();
         assert!(err.contains(&broken.display().to_string()), "{err}");
         assert!(
-            err.contains("noslop dict download ipadic-neologd-sudachi --force"),
+            err.contains("`noslop dict download ipadic-neologd-sudachi`"),
             "{err}"
         );
     }
