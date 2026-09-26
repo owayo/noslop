@@ -9,7 +9,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -18,8 +18,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: noslop
-  # mise 自身の版の正はここ (mise.toml には mise 自身を書けない)。ci.yml と同じ値にそろえる。
-  MISE_VERSION: "2026.9.4"
 
 jobs:
   # 配布辞書の目録 (dict/catalog.json) を hasami の最新のリリースに合わせる (make dict-catalog)。
@@ -36,13 +34,14 @@ jobs:
       changed: ${{ steps.catalog.outputs.changed }}
       tag: ${{ steps.catalog.outputs.tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: jdx/mise-action@v4
         with:
-          version: ${{ env.MISE_VERSION }}
+          minimum_release_age: 14d
+          cache: false
 
       # 最新のリリースと dictionaries.json を gh で取る (outputs: changed・tag)
       - name: Update dictionary catalog
@@ -50,9 +49,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: make dict-catalog
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.catalog.outputs.changed == 'true'
 
       - name: Set up
         if: steps.catalog.outputs.changed == 'true'
@@ -68,7 +64,7 @@ jobs:
 
       - name: Upload dictionary catalog
         if: steps.catalog.outputs.changed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: dictionary-catalog
           path: dict/catalog.json
@@ -78,25 +74,38 @@ jobs:
     name: Prepare Release
     needs: dictionary-catalog
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.bump.outputs.version }}
       tag: ${{ steps.bump.outputs.tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check release branch
+        if: ${{ !inputs.dry_run }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::リリースは既定のブランチから実行してください"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # dictionary-catalog が新しい目録を取り込んで確かめたら、このリリースのコミットに含める
       - name: Download dictionary catalog
         if: needs.dictionary-catalog.outputs.changed == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@v8
         with:
           name: dictionary-catalog
           path: dict
 
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: jdx/mise-action@v4
         with:
-          version: ${{ env.MISE_VERSION }}
+          minimum_release_age: 14d
+          cache: false
 
       - name: Configure Git
         run: |
@@ -108,8 +117,8 @@ jobs:
         run: |
           set -euo pipefail
           # Use 2-digit year (YY) for Windows MSI compatibility (major version must be <= 255)
-          YEAR=$(date +%y)
-          MONTH=$(date +%-m)
+          YEAR=$(TZ=Asia/Tokyo date +%y)
+          MONTH=$(TZ=Asia/Tokyo date +%-m)
 
           CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           echo "Current version: ${CURRENT}"
@@ -148,7 +157,7 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Commit and tag
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ !inputs.dry_run }}
         env:
           TAG: ${{ steps.bump.outputs.tag }}
           CATALOG_CHANGED: ${{ needs.dictionary-catalog.outputs.changed }}
@@ -163,19 +172,19 @@ jobs:
           fi
           git commit "${message[@]}"
           git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${{ github.ref_name }}" "${TAG}"
+          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "${TAG}"
 
       - name: Dry run info
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ inputs.dry_run }}
         run: |
           echo "🧪 Dry run mode - skipping commit and tag"
           echo "Would release: ${{ steps.bump.outputs.tag }}"
           git diff -- Cargo.toml Cargo.lock dict/catalog.json
 
-  build-and-release:
+  build:
     name: Build (${{ matrix.target }})
     needs: prepare-release
-    if: ${{ inputs.dry_run != true }}
+    if: ${{ !inputs.dry_run }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -183,29 +192,36 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            asset_name: noslop-x86_64-unknown-linux-gnu.tar.gz
           # arm64 の Linux は、arm64 のランナーでそのままビルドする (クロスビルドの道具が要らない)
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            asset_name: noslop-aarch64-unknown-linux-gnu.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
+            asset_name: noslop-x86_64-apple-darwin.tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
+            asset_name: noslop-aarch64-apple-darwin.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            asset_name: noslop-x86_64-pc-windows-msvc.zip
 
     steps:
       # Windows のランナーは既定で LF を CRLF に変えて checkout する
       - name: Keep LF line endings
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare-release.outputs.tag }}
+          persist-credentials: false
 
       # Rust の版は mise.toml が正
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: jdx/mise-action@v4
         with:
-          version: ${{ env.MISE_VERSION }}
+          minimum_release_age: 14d
+          cache: false
 
       # mise が入れたツールチェーンにクロスビルド用のターゲットを足す
       - name: Add Rust target
@@ -222,64 +238,96 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset_name }}
         run: |
           set -euo pipefail
           if [ "${RUNNER_OS}" = "Windows" ]; then
             bin="${BINARY_NAME}.exe"
-            asset="${BINARY_NAME}-${TARGET}.zip"
           else
             bin="${BINARY_NAME}"
-            asset="${BINARY_NAME}-${TARGET}.tar.gz"
           fi
           mkdir -p dist/stage
           cp "target/${TARGET}/release/${bin}" LICENSE THIRD_PARTY_NOTICES.md dist/stage/
           if [ "${RUNNER_OS}" = "Windows" ]; then
-            (cd dist/stage && 7z a "../${asset}" "${bin}" LICENSE THIRD_PARTY_NOTICES.md)
+            (cd dist/stage && 7z a "../${ASSET}" "${bin}" LICENSE THIRD_PARTY_NOTICES.md)
           else
-            tar -czf "dist/${asset}" -C dist/stage "${bin}" LICENSE THIRD_PARTY_NOTICES.md
+            tar -czf "dist/${ASSET}" -C dist/stage "${bin}" LICENSE THIRD_PARTY_NOTICES.md
           fi
-          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+          echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.package.outputs.asset }}
+          archive: false
           path: dist/${{ steps.package.outputs.asset }}
           if-no-files-found: error
 
-  publish-release:
+  release:
     name: Publish Release
-    needs: [prepare-release, build-and-release]
-    if: ${{ inputs.dry_run != true }}
+    permissions:
+      contents: write
+    needs: [prepare-release, build]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
+          pattern: noslop-*
           merge-multiple: true
 
       # ライセンスの表示 (LICENSE・THIRD_PARTY_NOTICES.md) は、それぞれのアーカイブの中に入っている
       - name: Generate checksums
         working-directory: release-assets
         run: |
+          set -euo pipefail
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
           ls -la
 
       - name: Create Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare-release.outputs.tag }}
           # タイトルはタグ名だけにする (「Release v26.9.100」のように Release を付けない)
           name: ${{ needs.prepare-release.outputs.tag }}
-          files: release-assets/*
+          body: |
+            ## インストール
+
+            Homebrew (macOS / Linux):
+
+            ```bash
+            brew install owayo/noslop/noslop
+            ```
+
+            添付の `noslop-<target>.tar.gz`（Windows は `.zip`）を展開し、バイナリを PATH の通った場所に置く方法でも使えます。チェックサムは `SHA256SUMS`、同梱の辞書と文法のライセンス表示は各アーカイブの `THIRD_PARTY_NOTICES.md` にあります。
+          files: |
+            release-assets/*.tar.gz
+            release-assets/*.zip
+            release-assets/SHA256SUMS
+          fail_on_unmatched_files: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release summary
-        run: echo "🚀 Released ${{ needs.prepare-release.outputs.tag }}"
+      # 公開した添付の名前・大きさ・状態と、取得できる場合は SHA-256 を照合する。
+      - name: Verify published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > "$RUNNER_TEMP/assets.json"
+          find release-assets -type f -printf '%f %s uploaded\n' | LC_ALL=C sort > "$RUNNER_TEMP/expected.txt"
+          jq -r '.assets[] | "\(.name) \(.size) \(.state)"' "$RUNNER_TEMP/assets.json" | LC_ALL=C sort > "$RUNNER_TEMP/published.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/published.txt"
+          jq -r '.assets[] | select(.digest != null) | "\(.digest | ltrimstr("sha256:"))  \(.name)"' "$RUNNER_TEMP/assets.json" > "$RUNNER_TEMP/published.sha256"
+          if [ -s "$RUNNER_TEMP/published.sha256" ]; then
+            (cd release-assets && sha256sum --check --strict --quiet "$RUNNER_TEMP/published.sha256")
+          else
+            echo "::warning::GitHub が添付の digest を返さないため、SHA-256 の照合は省きました"
+          fi
 
   # Homebrew の tap (owayo/homebrew-noslop) の formula を、公開したリリースの版に書き換える。
   # tap は別のリポジトリなので GITHUB_TOKEN では push できず、GitHub App のトークン
@@ -287,11 +335,14 @@ jobs:
   # ほかのワークフロー (on: release) を起動しないので、同じワークフローの後続のジョブにしている
   update-homebrew:
     name: Update Homebrew tap
-    needs: [prepare-release, publish-release]
-    if: ${{ inputs.dry_run != true }}
+    needs: [prepare-release, release]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      configured: ${{ steps.app.outputs.enabled }}
+      state: ${{ steps.formula.outputs.state }}
     env:
       TAG: ${{ needs.prepare-release.outputs.tag }}
     steps:
@@ -299,10 +350,10 @@ jobs:
       - name: Check GitHub App settings
         id: app
         env:
-          CLIENT_ID: ${{ vars.APP_CLIENT_ID }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          HAS_CLIENT_ID: ${{ vars.APP_CLIENT_ID != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.PRIVATE_KEY != '' }}
         run: |
-          if [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ]; then
+          if [ "$HAS_CLIENT_ID" = "true" ] && [ "$HAS_PRIVATE_KEY" = "true" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::APP_CLIENT_ID (Variables) か PRIVATE_KEY (Secrets) がないので、Homebrew の tap を更新しません"
@@ -331,7 +382,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token
         if: steps.app.outputs.enabled == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
@@ -339,7 +390,7 @@ jobs:
           repositories: homebrew-noslop
           permission-contents: write
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         if: steps.app.outputs.enabled == 'true'
         with:
           repository: ${{ github.repository_owner }}/homebrew-noslop
@@ -347,6 +398,7 @@ jobs:
           path: tap
 
       - name: Update formula
+        id: formula
         if: steps.app.outputs.enabled == 'true'
         working-directory: tap
         env:
@@ -406,10 +458,60 @@ jobs:
           git diff --cached --stat
           if git diff --cached --quiet; then
             echo "formula は ${TAG} のまま (変更なし)"
+            echo "state=unchanged" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "noslop を ${TAG} に更新"
           git push
+          echo "state=updated" >> "$GITHUB_OUTPUT"
           echo "🍺 Homebrew の tap を ${TAG} に更新しました: ${{ github.repository_owner }}/homebrew-noslop"
+
+  # 途中で失敗した場合や dry_run でも、各ジョブの結果を残す。
+  release-summary:
+    name: Release summary
+    needs: [dictionary-catalog, prepare-release, build, release, update-homebrew]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          CATALOG_RESULT: ${{ needs.dictionary-catalog.result }}
+          PREPARE_RESULT: ${{ needs.prepare-release.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          HOMEBREW_RESULT: ${{ needs.update-homebrew.result }}
+          HOMEBREW_CONFIGURED: ${{ needs.update-homebrew.outputs.configured }}
+          HOMEBREW_STATE: ${{ needs.update-homebrew.outputs.state }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ${TAG:-版の計算前に停止}"
+            echo
+            echo "| ジョブ | 結果 |"
+            echo "|---|---|"
+            echo "| dictionary-catalog | ${CATALOG_RESULT} |"
+            echo "| prepare-release | ${PREPARE_RESULT} |"
+            echo "| build | ${BUILD_RESULT} |"
+            echo "| release | ${RELEASE_RESULT} |"
+            echo "| update-homebrew | ${HOMEBREW_RESULT} |"
+            echo
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "dry_run: コミット・タグ・配布物のビルド・公開は行いません。版と辞書目録の確認結果は上の表を参照してください。"
+            elif [ "${HOMEBREW_CONFIGURED}" = "false" ]; then
+              echo "GitHub App が未設定のため、Homebrew の tap の更新を省きました。"
+            elif [ "${HOMEBREW_STATE}" = "updated" ]; then
+              echo "Homebrew の tap を ${TAG} に更新しました。"
+            elif [ "${HOMEBREW_STATE}" = "unchanged" ]; then
+              echo "Homebrew の tap は既に ${TAG} でした。"
+            fi
+            if [ "${RELEASE_RESULT}" = "success" ]; then
+              echo
+              echo "### 公開した添付"
+              gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

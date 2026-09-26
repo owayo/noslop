@@ -11,7 +11,7 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 - 文書 (Markdown・テキスト) のほかに、コードのファイルのコメント (tree-sitter で取り出す。`code/`) を検査できる。コメントや表計算のセルのような互いに独立した短い断片の集まり (`DocumentKind::Fragments`) には、1 文ずつ判定するルール (`RuleUnit::Sentence`) だけを当てる。文書・段落をまたいで数えるルールは、ひと続きの地の文で校正したため
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
 - AI 臭さ (`slop`) と読みやすさ (`readability`) の 2 つのレーンを混ぜない
-- 文書全体の点数は出さない。指摘を 1 件ずつ並べ、レーンと重大度ごとの件数を数えるだけにする (以前の「自然度スコア」は校正しておらず、人の文書と AI の文書を見分けていなかったので外した。README の「文書全体の点数を出さない理由」)
+- 文書全体の点数は出さない。指摘を 1 件ずつ並べ、レーンと重大度ごとの件数を数えるだけにする (以前の「自然度スコア」は校正しておらず、人の文書と AI の文書を見分けていなかったので外した。[点数を出さない理由](docs/revision.md#文書全体の点数を出さない理由))
 
 ## 技術スタック
 
@@ -110,7 +110,7 @@ flowchart TD
 7. 特定の重大度の率で校正したルールは、`Rule::calibration_basis` でその重大度を返す (既定は、既定の重大度が警告以上なら警告、情報なら情報。R05 は重大)。`noslop calibrate` は、見直しの判定をこの重大度以上の指摘で数える
 8. 品詞で判定したほうが元の校正条件に近いルールは、`Rule::uses_morphology` を真にし、`ctx.morph` (辞書があるときだけ `Some`) の形態素で判定する。辞書がない・文を解析できないときは辞書なしの近似に戻す。テストは `morph::testing::morphology` で小さな辞書を組み立て、`testing::run_with_morphology` で当てる (辞書なしと辞書ありの結果が違う例を並べる)
 9. 1 文の中だけで判定が決まるルールは、`Rule::unit` で `RuleUnit::Sentence` を返す (コードのコメントや表計算のセルのような断片の集まりにも当たる)。文をまたぐ・数を数える・文書の構造を見るルールは既定 (`RuleUnit::Document`) のままにする (断片をまとめた母数で数えることになるため)
-10. README のルール一覧を更新し、`make docs` で `docs/rules.md` を作り直す
+10. docs/rule-catalog.md のルール一覧を更新し、`make docs` で `docs/rules.md` を作り直す
 
 ### `explanation` の書式
 
@@ -159,7 +159,7 @@ make docs                          # docs/rules.md を作り直す
 ```
 
 - push 前に `make ci` を通す。make が `mise exec` 経由で動くので、手元と CI で clippy の版がずれない。cargo のコマンドには `--locked` が付く (`Cargo.lock` を更新したいときは `CARGO_FLAGS=` で外す)
-- CI は ubuntu / macos / windows で検査を回す。Linux と macOS のジョブは `make setup` と `make ci` だけを呼ぶので、検査を足すときは Makefile の `ci` に足し、`.github/workflows/ci.yml` に検査のコマンドを並べない。Windows のジョブはランナーの make (mingw32-make) を避け、`docs-check` 以外の同じ検査を cargo で直接呼ぶ。`ci` を変えたら、ci.yml の Windows のステップもそろえる。Windows では改行を LF のまま checkout している (テストの行・列・バイト位置は LF 前提。`.gitattributes` でも LF に固定している)
+- CI は ubuntu / macos / windows で検査を回す。Linux と macOS のジョブは `make setup` と `make ci` だけを呼ぶので、検査を足すときは Makefile の `ci` に足し、`.github/workflows/ci.yml` に検査のコマンドを並べない。Windows の build ジョブはランナーの make (mingw32-make) を避け、`docs-check` 以外の同じ検査を cargo で直接呼ぶ。`ci` を変えたら、ci.yml の build ジョブの Windows のステップもそろえる。Windows では改行を LF のまま checkout している (テストの行・列・バイト位置は LF 前提。`.gitattributes` でも LF に固定している)
 - `make ci` は `docs/rules.md` を生成し直して差分がないことも確かめる (`make docs-check`。ファイルは書き換えない)。ルールの定義や説明文を変えたら `make docs` を忘れない
 - 統合テストは `tests/cli.rs` (サブコマンドの入出力・終了コード) と `tests/integrations.rs` (MCP サーバーとフック) にある。組み込みルールの増減で壊れないよう、件数は設定ファイルの独自ルールと `--only-rules` で確かめる
 - 手元の設定と辞書にテストが左右されないようにする。統合テストの補助関数 (`noslop()`) は、`HOME`・`USERPROFILE`・`HASAMI_DATA_DIR` を空の一時ディレクトリにし、`HASAMI_DICT` を外して、手元のユーザーの設定 (`~/.config/noslop/config.toml`) と share ディレクトリの辞書から切り離す (Windows の `std::env::home_dir()` は `HOME` ではなく `USERPROFILE` を見るので、両方を渡す)。ユーザーの設定や share ディレクトリを使うテストは、その変数を上書きして一時ディレクトリに置く。in-process のテストは環境変数を書き換えず (Rust 2024 では `set_var` が unsafe で、並列のテストとも競合する)、ホームディレクトリと share ディレクトリを引数で渡す
@@ -184,10 +184,10 @@ make docs                          # docs/rules.md を作り直す
 
 ## リリース
 
-GitHub Actions の Release ワークフロー (workflow_dispatch) で行う。版は `YY.M.COUNTER` (例: `26.9.100`) で、同じ月の 2 回目以降は COUNTER を 1 ずつ上げる。`dry_run` で版の計算だけを確かめられる。成果物は Linux x86_64 / arm64 (arm64 は `ubuntu-24.04-arm` のランナーでそのままビルドする)、macOS x86_64 / arm64、Windows x86_64 のアーカイブと `SHA256SUMS`。アーカイブは depup・astro-sight と同じ `noslop-<ターゲット>.tar.gz` (Windows は `.zip`) で、最上位にバイナリと `LICENSE`・`THIRD_PARTY_NOTICES.md` を置く (同梱の辞書 IPAdic (NAIST-2003) と tree-sitter の文法 (MIT) は、再配布に表示を添えることを求めるため)。
+GitHub Actions の Release ワークフロー (workflow_dispatch) で行う。版は日本時間で `YY.M.COUNTER` (例: `26.9.100`) で、同じ月の 2 回目以降は COUNTER を 1 ずつ上げる。`dry_run` では版と配布辞書の目録を確認し、コミット・タグ・配布物のビルド・公開は行わない (目録が変われば検査は回る)。成果物は Linux x86_64 / arm64 (arm64 は `ubuntu-24.04-arm` のランナーでそのままビルドする)、macOS x86_64 / arm64、Windows x86_64 のアーカイブと `SHA256SUMS`。アーカイブは depup・astro-sight と同じ `noslop-<ターゲット>.tar.gz` (Windows は `.zip`) で、最上位にバイナリと `LICENSE`・`THIRD_PARTY_NOTICES.md` を置く (同梱の辞書 IPAdic (NAIST-2003) と tree-sitter の文法 (MIT) は、再配布に表示を添えることを求めるため)。
 
-公開の後、`update-homebrew` のジョブが Homebrew の tap (`owayo/homebrew-noslop`) の `Formula/noslop.rb` を、公開したリリースの `SHA256SUMS` の値で書き直して push する (formula は depup の tap と同じく、OS と CPU ごとにリリースのアーカイブを指し、`bin.install "noslop"` と `prefix.install "THIRD_PARTY_NOTICES.md"` で入れる。LICENSE は Homebrew が自動で入れる。bottle は作らない。書いた formula は `ruby -c` で確かめてから push する)。tap への push は GitHub App のトークンで行い、Variables の `APP_CLIENT_ID` と Secrets の `PRIVATE_KEY` が要る。どちらかがなければ警告を出してこのジョブだけを飛ばす (リリースは落とさない)。添付の名前 (`noslop-<ターゲット>.tar.gz`) を変えるときは、このジョブの formula のテンプレートと README のインストールの表もそろえる。
+公開の後、`update-homebrew` のジョブが Homebrew の tap (`owayo/homebrew-noslop`) の `Formula/noslop.rb` を、公開したリリースの `SHA256SUMS` の値で書き直して push する (formula は depup の tap と同じく、OS と CPU ごとにリリースのアーカイブを指し、`bin.install "noslop"` と `prefix.install "THIRD_PARTY_NOTICES.md"` で入れる。LICENSE は Homebrew が自動で入れる。bottle は作らない。書いた formula は `ruby -c` で確かめてから push する)。tap への push は GitHub App のトークンで行い、Variables の `APP_CLIENT_ID` と Secrets の `PRIVATE_KEY` が要る。どちらかがなければ警告を出してこのジョブだけを飛ばす (リリースは落とさない)。添付の名前 (`noslop-<ターゲット>.tar.gz`) を変えるときは、このジョブの formula のテンプレートと README のインストールの表も作り直す。
 
 Release のワークフローは、先に `dictionary-catalog` のジョブ (読み取りの権限だけ) で `make dict-catalog` を回し、配布辞書の目録を hasami の最新のリリースに合わせる。目録が変わったときだけ、このジョブで `make ci` と `make dict-check` を通し、`prepare-release` が版の更新と同じコミットに `dict/catalog.json` を入れる。`GITHUB_TOKEN` で push したコミットでは ci.yml が走らないので、目録の検査はこのジョブで完結させている。dry_run でも目録のジョブは回り、差分の表示に `dict/catalog.json` が入る。
 
-mise 自身の版は `ci.yml` と `release.yml` の `MISE_VERSION` で固定している (公開から 14 日以上たった版を選ぶ)。上げるときは 2 つのファイルを同時に書き換える。
+mise 自身は `ci.yml` と `release.yml` の mise-action が、公開から 14 日以上たった版を選ぶ (`minimum_release_age: 14d`)。mise-action のキャッシュは無効にし (`cache: false`)、CI のビルドのキャッシュだけを rust-cache に任せる。リリースではキャッシュを使わない。

@@ -6,7 +6,7 @@
 # 付ける (その場合、版の再現性は保証しない)。
 #
 # CI (.github/workflows/ci.yml) の Linux と macOS のジョブは make setup と make ci だけを
-# 呼ぶ。検査を足すときは ci に足し、workflow に検査のコマンドを並べない。Windows のジョブ
+# 呼ぶ。検査を足すときは ci に足し、workflow に検査のコマンドを並べない。Windows の build ジョブ
 # だけはランナーの make (mingw32-make) を避けて、ci と同じコマンドを直接呼んでいる。
 #
 # ターゲットの説明 (## の後ろ) は make help がそのまま表示し、README の「開発」の表にも同じ文を
@@ -55,7 +55,7 @@ endif
 
 ## セットアップ
 
-setup: ## ツールチェーン (mise.toml) を入れ、依存を取得する
+setup: ## ツールチェーン (mise) と依存を取得する
 	@if [ -n "$(MISE)" ]; then "$(MISE)" install; fi
 	$(RUN) cargo fetch $(CARGO_FLAGS)
 
@@ -78,7 +78,7 @@ run: ## デバッグ版を実行する (引数は ARGS="...")
 # 食い違って新しいバイナリが起動直後に SIGKILL される (exit 137)。
 # 一時ファイルは rename が inode の差し替えになるよう、同じディレクトリに置く。
 # スキル (skills/SKILL.md) は入れたばかりのバイナリで書き出すので、バイナリと版がそろう。
-install: release ## リリース版をビルドし、バイナリとスキル (claude・codex) を入れる
+install: release ## リリース版を INSTALL_PATH (既定 /usr/local/bin) に入れる (スキルも入れる)
 	@mkdir -p "$(INSTALL_PATH)"
 	cp "target/release/$(BINARY_NAME)" "$(INSTALL_PATH)/$(BINARY_NAME).new"
 	mv -f "$(INSTALL_PATH)/$(BINARY_NAME).new" "$(INSTALL_PATH)/$(BINARY_NAME)"
@@ -88,7 +88,7 @@ install: release ## リリース版をビルドし、バイナリとスキル (c
 
 # バイナリだけを消し、スキルは消さない。スキルの置き場所はエージェントごとに違い、
 # 別の版で入れたものまで消してしまうため
-uninstall: ## 入れたバイナリを取り除く (スキルは残す)
+uninstall: ## INSTALL_PATH から取り除く (スキルは残す)
 	rm -f "$(INSTALL_PATH)/$(BINARY_NAME)"
 
 ## 開発
@@ -103,7 +103,7 @@ test: ## テストを実行する
 test-no-default-features: ## 辞書を同梱しないビルドでテストする (--no-default-features)
 	$(RUN) cargo test $(CARGO_FLAGS) --no-default-features
 
-lint: ## clippy を実行する (警告はエラー)
+lint: ## clippy を警告ゼロで通す
 	$(RUN) cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
 
 clippy: lint ## lint の別名
@@ -114,7 +114,7 @@ fmt: ## コードを整形する (書き換える)
 fmt-check: ## 整形済みかを確かめる (書き換えない)
 	$(RUN) cargo fmt --all -- --check
 
-check: fmt-check lint ## 整形の確認と clippy (書き換えない)
+check: fmt-check lint ## 整形と静的検査 (書き換えない)
 
 # 手元の noslop.toml の有効・無効が一覧に混ざらないよう、設定ファイルは読まない
 docs: ## 組み込みのルールから docs/rules.md を作り直す
@@ -131,9 +131,9 @@ docs-check: ## docs/rules.md が最新かを確かめる (書き換えない)
 # CI の Linux と macOS のジョブはこれを呼ぶ。書き換えを含めない。
 # 同梱しないビルドのテストを先に回し、既定の feature の test と docs-check を後に置く。
 # こうすると make ci の後の target/debug/noslop が既定の版 (辞書を同梱) になる
-ci: check test-no-default-features test docs-check ## CI と同じ検査 (整形・clippy・テスト・docs/rules.md)
+ci: check test-no-default-features test docs-check ## CI と同じ検査 (書き換えない)
 
-clean: ## ビルドの成果物を消す
+clean: ## ビルド成果物を消す
 	$(RUN) cargo clean
 
 ## 配布辞書の目録
