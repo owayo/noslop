@@ -300,10 +300,14 @@ mod tests {
             }
             let agreement = assert_measures_agree(|| rule_by_id(id), &docs);
             assert!(agreement.fired > 0, "{id}: 指摘する例がありません");
-            assert!(
-                agreement.quiet > 0,
-                "{id}: 値を測れて指摘しない例がありません"
-            );
+            // R18 の既定値は許される最小値なので、測定対象はすべて発火する。
+            // 閾値を上げたときの非発火は、辞書ありのルール別テストで確かめる。
+            if id != "R18" {
+                assert!(
+                    agreement.quiet > 0,
+                    "{id}: 値を測れて指摘しない例がありません"
+                );
+            }
             // 重大度の切り替えを決める閾値を持つのは R05 の error_above だけ
             let switches: &[Severity] = if id == "R05" { &[Severity::Error] } else { &[] };
             assert_eq!(agreement.switches, switches, "{id}");
