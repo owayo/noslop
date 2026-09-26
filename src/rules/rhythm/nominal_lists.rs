@@ -163,7 +163,8 @@ impl Rule for RepeatedNominalList {
     }
     fn measure(&self, ctx: &RuleContext<'_>) -> Vec<Measure> {
         let n = lists(ctx).len();
-        if n == 0 {
+        // 単発は反復ではない。許される閾値は 2 以上なので、掃引にも含めない。
+        if n < 2 {
             Vec::new()
         } else {
             vec![Measure::new(
