@@ -4,6 +4,7 @@
 //! 地の文 ([`crate::document::Document::prose_sentences`]) で、校正に使った条件
 //! (見出し・リスト・引用・表を除いた本文) に合わせている。
 
+mod action_closer;
 mod antithesis;
 mod buried_list;
 mod burstiness;
@@ -48,6 +49,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(triads::RepeatedEvaluativeTriad::default()),
         Box::new(guide_density::GuideClicheDensity::default()),
         Box::new(nominal_lists::RepeatedNominalList::default()),
+        Box::new(action_closer::ClosingCallToAction),
     ]
 }
 
@@ -112,7 +114,7 @@ mod tests {
     use crate::rules::RuleContext;
     use crate::rules::testing::{self, assert_measures_agree};
 
-    /// measure を実装しているルール。R10・R11・R15 は閾値を持たない。
+    /// measure を実装しているルール。R10・R11・R15・R19 は閾値を持たない。
     const MEASURED: [&str; 15] = [
         "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13", "R14", "R16",
         "R17", "R18",
@@ -325,7 +327,7 @@ mod tests {
     #[test]
     fn rule_ids_are_in_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=18).map(|n| format!("R{n:02}")).collect();
+        let expected: Vec<String> = (1..=19).map(|n| format!("R{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -335,7 +337,7 @@ mod tests {
             let m = rule.meta();
             if !matches!(
                 m.id,
-                "R11" | "R12" | "R13" | "R14" | "R15" | "R16" | "R17" | "R18"
+                "R11" | "R12" | "R13" | "R14" | "R15" | "R16" | "R17" | "R18" | "R19"
             ) {
                 continue;
             }

@@ -32,6 +32,56 @@ const DOC_WITH_TERM: &str =
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
 #[test]
+fn closing_call_to_action_respects_opt_in_genre_and_document_kind() {
+    for (filename, genre, flags, expected) in [
+        ("draft.md", "general", vec![], 0),
+        ("draft.md", "general", vec!["--experimental"], 1),
+        (
+            "draft.md",
+            "tech",
+            vec!["--experimental", "--no-readability"],
+            1,
+        ),
+        ("draft.md", "business", vec!["--experimental"], 0),
+        ("draft.md", "essay", vec!["--experimental"], 0),
+        ("draft.md", "essay", vec!["--only-rules", "R19"], 1),
+        ("sample.rs", "general", vec!["--only-rules", "R19"], 0),
+    ] {
+        let text = if filename.ends_with(".rs") {
+            "// まずは身近な方法から試してみましょう。\nfn main() {}\n"
+        } else {
+            "まずは身近な方法から試してみましょう。\n"
+        };
+        let output = noslop()
+            .args([
+                "check",
+                "-",
+                "--stdin-filename",
+                filename,
+                "--no-config",
+                "--no-dict",
+                "--genre",
+                genre,
+                "--format",
+                "json",
+            ])
+            .args(&flags)
+            .write_stdin(text)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&output);
+        assert_eq!(
+            rule_count(&report, "R19"),
+            expected,
+            "{filename} {genre} {flags:?}"
+        );
+    }
+}
+
+#[test]
 fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
     let guide = "すべて変える必要はありません。手順の確認が大切です。誤りを見つけやすくなります。"
         .repeat(50);

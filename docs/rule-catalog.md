@@ -59,6 +59,7 @@
 | R16 | `REPEATED_EVALUATIVE_TRIAD` | 短い評価語・抽象語の三項列挙の反復 | slop | experimental |
 | R17 | `GUIDE_CLICHE_DENSITY` | 解説の定型句の密集（複数系統の語句と本文量で判定） | slop | experimental |
 | R18 | `REPEATED_NOMINAL_LIST` | 名詞句を三つ以上並べる体言止めの反復 | slop | experimental |
+| R19 | `CLOSING_CALL_TO_ACTION` | 文書末尾で実践を促す定型の呼びかけ | slop | experimental |
 | S01 | `BOLD_DENSITY` | 太字の多用 | slop | experimental |
 | S02 | `BULLET_RATIO` | 箇条書きへの偏り | slop | experimental |
 | S03 | `BOILERPLATE_HEADING` | 「まとめ」「おわりに」などの定型見出し | slop | experimental |
