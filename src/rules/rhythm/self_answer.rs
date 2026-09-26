@@ -5,12 +5,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
-use crate::document::Sentence;
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleContext, RuleMeta};
 use crate::text;
 
-use super::strip_sentence_end;
+use super::{adjacent_prose_pairs, strip_sentence_end};
 
 static META: RuleMeta = RuleMeta {
     id: "R11",
@@ -28,7 +27,8 @@ const EXPLANATION: &str = "\
 
 地の文で隣り合う 2 文のうち、前の文が問い (「？」「?」「でしょうか」「だろうか」「のか」で終わる) で、\
 次の文が「それは」「答えは」「理由は」「結論は」「実は」で始まるものを指します。段落をまたいでも\
-数えます。
+数えます。ただし、見出し・リスト・引用・表・コード・HTML・区切り線や、日本語を含まない文を\
+間に挟む組は数えません。
 
 ### なぜ問題か
 
@@ -38,8 +38,8 @@ const EXPLANATION: &str = "\
 
 ### 直し方
 
-問いの文を消し、答えを先に書いてください。問いを残すなら、読み手が本当に抱く疑問に言い換え、\
-答えの書き出しの「それは」を外します。
+問いを削っても説明が通じるなら、答えを先に書きます。問いが読み手の疑問を示したり、\
+考える順序を伝えたりしているなら残してかまいません。問いと自答の形だけで削除を決めないでください。
 
 ### 例
 
@@ -85,9 +85,7 @@ impl Rule for SelfAnswer {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
-        let sentences: Vec<&Sentence> = doc.prose_sentences().collect();
-        for pair in sentences.windows(2) {
-            let (first, second) = (pair[0], pair[1]);
+        for (first, second) in adjacent_prose_pairs(doc) {
             if !is_question(doc.sentence_text(first)) {
                 continue;
             }
@@ -102,7 +100,7 @@ impl Rule for SelfAnswer {
                         lead.as_str()
                     ),
                 )
-                .with_hint("問いの文を消して答えを先に書くか、読み手が本当に抱く疑問に言い換えてください")
+                .with_hint("問いを削っても説明が通じるなら答えを先に書いてください。読み手の疑問や考える順序を示す問いは残してかまいません")
                 .with_context(Span::new(first.span.start, second.span.end))
                 .with_related(vec![second.span]),
             );
