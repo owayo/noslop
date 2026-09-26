@@ -71,6 +71,14 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
   <img src="https://img.shields.io/badge/TOML-9C4121?logo=toml&amp;logoColor=white" alt="TOML">
 </p>
 
+## フックによる修正例
+
+Claude Code が書いたコードのコメントを noslop のフックで検査し、指摘を受けた Claude Code が文章を修正している様子です。
+
+![noslop のフックによる 5 件の指摘を受け、Claude Code がコメントの予告文や強調表現を書き直している画面](docs/images/hook.png)
+
+設定手順は [AI エージェントへの導入](docs/agent-setup.md) を参照してください。
+
 ## 動作環境
 
 - **OS**: macOS、Linux、Windows
