@@ -24,7 +24,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["bundled-dict"]
-# 形態素解析の辞書 (dict/ipadic.hsd、約 18MB) をバイナリに埋め込む。外すと、辞書は --dict・設定の
+# 形態素解析の辞書 (dict/ipadic.hsd) をバイナリに埋め込む。外すと、辞書は --dict・設定の
 # dictionary・HASAMI_DICT・~/.local/share/hasami から探し、なければ辞書なしの近似で判定する
 bundled-dict = []
 
@@ -39,7 +39,7 @@ globset = "0.4.20"
 # (download。noslop dict download が使う。HTTP は ureq の rustls で、社内の CA を入れた環境でも通るよう
 # OS の証明書ストアで検証する。圧縮版の展開は ruzstd)。crates.io の同名クレートは別物なので、git の
 # タグで入れる。既定の feature (cli) は辞書の構築と CLI の依存を引くので切る
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.107", default-features = false, features = ["analyzer", "download"] }
 ignore = "0.4.33"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rayon = "1.12.0"
@@ -83,7 +83,7 @@ unicode-width = "0.2.2"
 [dev-dependencies]
 assert_cmd = "2.2.2"
 # テストで小さな辞書を組み立てる (build)。CI に辞書を置かずに、辞書ありの判定を確かめるため
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.105", default-features = false, features = ["analyzer", "build", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.9.107", default-features = false, features = ["analyzer", "build", "download"] }
 predicates = "3.1.4"
 tempfile = "3.27.0"
 
