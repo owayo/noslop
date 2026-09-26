@@ -428,28 +428,7 @@ impl Document {
             SourceFormat::PlainText => crate::plaintext::parse(&source),
             SourceFormat::Code(language) => crate::code::parse(&source, language),
         };
-        let mut sentences = Vec::new();
-        for (idx, block) in blocks.iter_mut().enumerate() {
-            let begin = sentences.len();
-            for piece in segment::split(
-                &block.text,
-                &block.line_breaks,
-                &block.sentence_breaks,
-                options.line_breaks,
-            ) {
-                let span = block.to_source(piece.range.clone());
-                let body = &block.text[piece.range.clone()];
-                sentences.push(Sentence {
-                    block: idx,
-                    length: text::reading_length(body),
-                    japanese: text::contains_japanese(body),
-                    embedded_enders: piece.embedded_enders,
-                    range: piece.range,
-                    span,
-                });
-            }
-            block.sentences = begin..sentences.len();
-        }
+        let sentences = split_sentences(&mut blocks, options);
         let lines = LineIndex::new(&source);
         Self {
             name: name.into(),
@@ -523,6 +502,34 @@ impl Document {
     pub fn file_offset(&self, offset: usize) -> usize {
         offset + self.bom_len
     }
+}
+
+/// ブロックを文に分け、原文上の位置と文の属性を求める。
+/// 各ブロックの `sentences` は、返す文の列を参照する範囲に更新する。
+pub(crate) fn split_sentences(blocks: &mut [Block], options: &ParseOptions) -> Vec<Sentence> {
+    let mut sentences = Vec::new();
+    for (idx, block) in blocks.iter_mut().enumerate() {
+        let begin = sentences.len();
+        for piece in segment::split(
+            &block.text,
+            &block.line_breaks,
+            &block.sentence_breaks,
+            options.line_breaks,
+        ) {
+            let span = block.to_source(piece.range.clone());
+            let body = &block.text[piece.range.clone()];
+            sentences.push(Sentence {
+                block: idx,
+                length: text::reading_length(body),
+                japanese: text::contains_japanese(body),
+                embedded_enders: piece.embedded_enders,
+                range: piece.range,
+                span,
+            });
+        }
+        block.sentences = begin..sentences.len();
+    }
+    sentences
 }
 
 #[cfg(test)]
@@ -605,6 +612,51 @@ mod tests {
         let quoted = doc.prose_sentences().nth(1).unwrap();
         assert!(quoted.embedded_enders);
         assert_eq!(doc.slice(quoted.span), "「会話。」と言った。");
+    }
+
+    #[test]
+    fn sentence_ranges_and_attributes_stay_aligned_across_empty_blocks() {
+        let source = "**一行目**で\n折り返す。\n\n「はい。」と答える。OK!\n";
+        let (mut blocks, _) = crate::markdown::parse(source);
+        assert_eq!(blocks.len(), 2);
+        let mut empty = blocks[0].clone();
+        empty.text.clear();
+        empty.line_breaks.clear();
+        empty.sentence_breaks.clear();
+        blocks.insert(1, empty);
+
+        for (mode, first_count) in [(LineBreakMode::Space, 1), (LineBreakMode::Sentence, 2)] {
+            let sentences = split_sentences(&mut blocks, &ParseOptions { line_breaks: mode });
+            assert_eq!(blocks[0].sentences, 0..first_count);
+            assert_eq!(blocks[1].sentences, first_count..first_count);
+            assert_eq!(blocks[2].sentences, first_count..first_count + 2);
+            assert_eq!(sentences.len(), first_count + 2);
+            for (idx, block) in blocks.iter().enumerate() {
+                for sentence in &sentences[block.sentences.clone()] {
+                    assert_eq!(sentence.block, idx);
+                }
+            }
+            let first = &sentences[0];
+            assert_eq!(first.range.start, 0);
+            assert_eq!(first.span.start, "**".len());
+            assert_eq!(first.length, if first_count == 1 { 8 } else { 4 });
+            assert!(first.japanese);
+            assert!(!first.embedded_enders);
+
+            let quoted = &sentences[first_count];
+            assert_eq!(&source[quoted.span.range()], "「はい。」と答える。");
+            assert_eq!(
+                &blocks[2].text[quoted.range.clone()],
+                "「はい。」と答える。"
+            );
+            assert!(quoted.japanese);
+            assert!(quoted.embedded_enders);
+            let english = &sentences[first_count + 1];
+            assert_eq!(&source[english.span.range()], "OK!");
+            assert_eq!(english.length, 2);
+            assert!(!english.japanese);
+            assert!(!english.embedded_enders);
+        }
     }
 
     #[test]

@@ -35,12 +35,12 @@ use super::{CONTEXT_BUDGET_CHARS, Reviewer, truncate_lines};
 use crate::cli::{self, HookArgs};
 use crate::diagnostic::{Severity, Span};
 use crate::document::{
-    Block, BlockKind, Document, DocumentKind, LineIndex, ParseOptions, Sentence, SourceFormat,
-    TextMap,
+    Block, BlockKind, Document, DocumentKind, LineIndex, ParseOptions, SourceFormat, TextMap,
+    split_sentences,
 };
 use crate::engine::FileReport;
 use crate::gws::{self, ValueKind, Write};
-use crate::{segment, text};
+use crate::text;
 
 /// 止めた書き込みを、同じ内容でもう一度実行したときに通す期間 (秒)。
 const RETRY_WINDOW_SECS: u64 = 30 * 60;
@@ -426,28 +426,7 @@ fn fragments_document(
         .iter()
         .filter_map(|(span, _)| fragment_block(&source, *span))
         .collect();
-    // 文に分ける (Document::parse と同じ)
-    let mut sentences = Vec::new();
-    for (idx, block) in blocks.iter_mut().enumerate() {
-        let begin = sentences.len();
-        for piece in segment::split(
-            &block.text,
-            &block.line_breaks,
-            &block.sentence_breaks,
-            options.line_breaks,
-        ) {
-            let body = &block.text[piece.range.clone()];
-            sentences.push(Sentence {
-                block: idx,
-                span: block.to_source(piece.range.clone()),
-                length: text::reading_length(body),
-                japanese: text::contains_japanese(body),
-                embedded_enders: piece.embedded_enders,
-                range: piece.range,
-            });
-        }
-        block.sentences = begin..sentences.len();
-    }
+    let sentences = split_sentences(&mut blocks, options);
     let doc = Document {
         name,
         format: SourceFormat::PlainText,
@@ -1252,15 +1231,26 @@ severity = "info"
             },
         ];
         let refs: Vec<&gws::Value> = values.iter().collect();
-        let (doc, places) = fragments_document("断片".to_string(), &refs, &ParseOptions::default());
-        assert_eq!(doc.kind, DocumentKind::Fragments);
-        assert_eq!(doc.source, "一行目\n\u{3000}二行目 \n  \nabc\ndef");
-        assert_eq!(places.len(), 3);
-        // 空の値は段落にしない。値の中の改行は文の区切り
-        let texts: Vec<&str> = doc.blocks.iter().map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, vec!["一行目二行目", "abc def"]);
-        let sentences: Vec<&str> = doc.sentences.iter().map(|s| doc.slice(s.span)).collect();
-        assert_eq!(sentences, vec!["一行目", "二行目", "abc", "def"]);
-        assert!(doc.blocks.iter().all(|b| b.kind == BlockKind::Paragraph));
+        use crate::segment::LineBreakMode;
+        for mode in [LineBreakMode::Space, LineBreakMode::Sentence] {
+            let (doc, places) = fragments_document(
+                "断片".to_string(),
+                &refs,
+                &ParseOptions { line_breaks: mode },
+            );
+            assert_eq!(doc.kind, DocumentKind::Fragments);
+            assert_eq!(doc.source, "一行目\n\u{3000}二行目 \n  \nabc\ndef");
+            assert_eq!(places.len(), 3);
+            // 空の値は段落にしない。値の中の改行は、設定によらず文の区切り
+            let texts: Vec<&str> = doc.blocks.iter().map(|b| b.text.as_str()).collect();
+            assert_eq!(texts, vec!["一行目二行目", "abc def"]);
+            let sentences: Vec<&str> = doc.sentences.iter().map(|s| doc.slice(s.span)).collect();
+            assert_eq!(sentences, vec!["一行目", "二行目", "abc", "def"]);
+            assert!(doc.blocks.iter().all(|b| b.kind == BlockKind::Paragraph));
+            assert_eq!(doc.blocks[0].sentences, 0..2);
+            assert_eq!(doc.blocks[1].sentences, 2..4);
+            let owners: Vec<_> = doc.sentences.iter().map(|s| s.block).collect();
+            assert_eq!(owners, vec![0, 0, 1, 1]);
+        }
     }
 }
