@@ -56,7 +56,29 @@ exclude = [
 # 集めない)。直接指定したコードのファイルは、ここに書かなくてもコメントを検査する。
 # コメントは互いに独立した短い断片なので、1 文ずつ判定するルール (語句・文の長さなど) だけを当てる。
 # コードの拡張子でないもの (読める言語は README の「コードのコメント」) を書くと誤りになる。
-extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
+# 次は読める拡張子すべて。使うものだけを残す。
+extensions = [
+  "rs",                                    # Rust
+  "js", "mjs", "cjs", "jsx",               # JavaScript
+  "ts", "mts", "cts",                      # TypeScript
+  "tsx",                                   # TSX
+  "py", "pyi",                             # Python
+  "go",                                    # Go
+  "java",                                  # Java
+  "c", "h",                                # C
+  "cc", "cpp", "cxx", "hh", "hpp", "hxx",  # C++
+  "cs",                                    # C#
+  "rb",                                    # Ruby
+  "php",                                   # PHP
+  "swift",                                 # Swift
+  "kt", "kts",                             # Kotlin
+  "sh", "bash", "zsh",                     # Bash
+  "yaml", "yml",                           # YAML
+  "toml",                                  # TOML
+  "html", "htm",                           # HTML
+  "css",                                   # CSS
+  "lua",                                   # Lua
+]
 
 [scope]
 # 語句パターン系ルール (P) がどのブロックを見るか。
