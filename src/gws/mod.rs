@@ -45,6 +45,11 @@ pub struct Write {
     pub method: String,
     /// `--dry-run` (書き込まずに確かめるだけ) か。
     pub dry_run: bool,
+    /// 呼び出しの形 (サービス・リソース・メソッド・フラグ・`--dry-run`) が、実行しなくても決まるか。
+    /// 値の決まらない語が、値を取るフラグの値の位置に 1 語 (`--document "$DOC"`) でしかなければ真。
+    /// 消えたり分かれたりする語 (`$EXTRA`) やフラグの位置の値の決まらない語があれば偽 (実行時に
+    /// `--text` や `--dry-run` が加わるかもしれない)。
+    pub exact: bool,
     /// 書き込み先 (`--document`・`--spreadsheet` と、`--params` の `documentId`・`spreadsheetId`・
     /// `range`)。値が決まらないものは `None`。
     pub destination: Vec<(String, Option<String>)>,
@@ -197,7 +202,7 @@ const SWITCHES: [&str; 5] = [
 const SHORT_WITH_VALUE: [&str; 1] = ["-o"];
 
 /// gws の呼び出しの引数を、位置引数とフラグに分けたもの。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Call<'a> {
     /// 値の決まる位置引数 (サービス・リソース・メソッド)。値の決まらない語は、空になって消えることも
     /// フラグになることもあるので入れない (`$EXTRA` を足しただけで書き込みを見逃さないように)。
@@ -206,15 +211,24 @@ struct Call<'a> {
     flags: Vec<(&'a str, Option<&'a str>)>,
     dry_run: bool,
     help: bool,
+    /// 呼び出しの形が実行しなくても決まるか ([`Write::exact`])。
+    exact: bool,
 }
 
 impl<'a> Call<'a> {
     fn parse(args: &'a [Arg]) -> Self {
-        let mut call = Call::default();
+        let mut call = Call {
+            positional: Vec::new(),
+            flags: Vec::new(),
+            dry_run: false,
+            help: false,
+            exact: true,
+        };
         let mut rest = args.iter();
         let mut options_done = false;
         while let Some(arg) = rest.next() {
             let Some(s) = arg.as_static() else {
+                call.exact = false;
                 continue;
             };
             if options_done || !s.starts_with('-') || s == "-" {
@@ -229,7 +243,10 @@ impl<'a> Call<'a> {
                 call.dry_run |= s == "--dry-run";
                 call.help |= s == "--help" || s == "-h";
             } else {
-                call.flags.push((s, rest.next().and_then(Arg::as_static)));
+                let value = rest.next();
+                // フラグの値の位置の 1 語は、値が決まらなくても呼び出しの形を変えない
+                call.exact &= matches!(value, Some(Arg::Static(_) | Arg::Unknown));
+                call.flags.push((s, value.and_then(Arg::as_static)));
             }
         }
         call
@@ -268,6 +285,7 @@ pub fn write(args: &[Arg]) -> Option<Write> {
     Some(Write {
         method: method.path.join(" "),
         dry_run: call.dry_run,
+        exact: call.exact,
         destination: destination(&call),
         values,
     })
@@ -418,6 +436,7 @@ mod tests {
         let w = one("gws docs +write --document D1 --text '本文です。'");
         assert_eq!(w.method, "docs +write");
         assert!(!w.dry_run);
+        assert!(w.exact);
         assert_eq!(
             labels(&w),
             vec![("--text", "本文です。", ValueKind::Prose, false)]
@@ -648,6 +667,8 @@ mod tests {
             let w = one(command);
             assert_eq!(w.method, "docs +write", "{command}");
             assert_eq!(w.values[0].text, "本文", "{command}");
+            // 実行時に `--text` や `--dry-run` が加わるかもしれない
+            assert!(!w.exact, "{command}");
         }
     }
 
@@ -655,10 +676,29 @@ mod tests {
     fn dynamic_destinations_are_kept_as_unknown() {
         let w = one("gws docs +write --document \"$DOC\" --text '本文'");
         assert_eq!(w.destination, vec![("--document".to_string(), None)]);
+        // フラグの値の位置の 1 語は、呼び出しの形を変えない
+        assert!(w.exact);
         let w = one(
             "gws docs documents batchUpdate --params \"$P\" --json '{\"requests\":[{\"insertText\":{\"text\":\"本文\"}}]}'",
         );
         assert_eq!(w.destination, vec![("--params".to_string(), None)]);
+        assert!(w.exact);
+    }
+
+    #[test]
+    fn unknown_words_outside_flag_values_make_the_call_inexact() {
+        for command in [
+            // クォートしても、フラグの位置なら `--dry-run` や `--text=...` かもしれない
+            "gws docs +write --document D --text '本文' \"$FLAG\"",
+            "gws docs \"$SUB\" +write --text '本文'",
+            // クォートしない値は、消えると次の語をフラグの値にしてしまう
+            "gws docs +write --document $DOC --text '本文'",
+            "gws docs +write --document D --text '本文' *.txt",
+        ] {
+            let w = one(command);
+            assert_eq!(w.values[0].text, "本文", "{command}");
+            assert!(!w.exact, "{command}");
+        }
     }
 
     #[test]

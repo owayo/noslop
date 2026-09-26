@@ -51,7 +51,7 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 - **括弧を考慮した文分割**: 形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割を使う。「」や（）の内側の句点では文を切らず、閉じ忘れた括弧があっても後続の文を巻き込まない。`Yahoo!ニュース` のように文末記号を含む語の途中でも切らない
 - **判断を記録できる**: `<!-- noslop-disable-next-line P01 -- 引用のため -->` のように、残す理由を文書に書ける
 - **CI 向けの出力**: text（色付き）・JSON（安定したスキーマ）・GitHub Actions の注釈に対応する。既定ではジョブを落とさない
-- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`。書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたとき）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる
+- **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`。書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたとき）、claw-hooks から呼ぶ入口（`noslop hook command` など）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる
 - **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
 - **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ
 
@@ -143,8 +143,10 @@ Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使いま
 | `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
 | `noslop init` | プロジェクトの設定ファイル `noslop.toml` の雛形を作る。`--user` ならユーザーの設定 `~/.config/noslop/config.toml` の雛形を作る |
 | `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
-| `noslop hook claude-code` | Claude Code の PostToolUse フックとして、書き換えたファイルの指摘を返す |
+| `noslop hook claude-code` | Claude Code のフックとして、書き換えたファイル（PostToolUse）・gws で書き込む値（PreToolUse）・コミットしていない変更（Stop）の指摘を返す |
+| `noslop hook command` | claw-hooks のコマンドフックの判定器として、gws で Google ドキュメント・スプレッドシートに書き込む値を書き込む前に検査する |
 | `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み（claw-hooks など）から呼び、コミットしていない変更に重なる指摘をテキストで返す |
+| `noslop hook git-diff` | フックの入力を渡せない Stop の仕組み（claw-hooks など）から呼び、リポジトリのコミットしていない変更の指摘をテキストで返す |
 | `noslop skill-install <claude\|codex>` | Claude Code・Codex CLI に noslop のスキルを入れる |
 | `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。既定では圧縮版を取って展開し、大きさと SHA-256 を確かめてから置く。取得した辞書は、辞書を指定しないとき（`auto`）に使われる |
 | `noslop dict list` | 配布辞書と取得済みかを表示し、辞書を指定しないときに使う辞書を示す（通信しない） |
@@ -231,7 +233,9 @@ noslop explain R01
 | `noslop init` | `--user` / `--force` | `noslop.toml` のひな形をカレントディレクトリに作る。`--user` ならユーザーの設定のひな形を `~/.config/noslop/config.toml` に作る（ディレクトリがなければ作る）。既にあれば `--force` で上書き |
 | `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](docs/integrations.md) |
+| `noslop hook command` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。claw-hooks の出力の上限（既定 1000 文字）に合わせるなら 900。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](docs/integrations.md) |
+| `noslop hook git-diff` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000）。指摘があれば終了コード 1。詳細は [docs/integrations.md](docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
 | `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--uncompressed` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、圧縮版を使わずに展開前の辞書を取るか（圧縮版を置いていないミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](#別の辞書を使う) |
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
@@ -246,6 +250,8 @@ noslop explain R01
 | `2` | 引数・設定・入出力のエラー（読めないファイルがあった場合も、読めたファイルの結果を出したうえで 2） |
 
 既定の `--fail-on never` では、指摘があっても終了コードは 0 です。noslop は疑いを示す道具で、件数でビルドを止める設計にはしていません。
+
+フック（`noslop hook ...`）の終了コードは、呼び出す側の約束に合わせてあり、上の表と違います。Claude Code と claw-hooks は 2 を「止める」合図として読むので、フックの誤りは引数の誤りも含めて 1 です。2 を返すのは、`hook command` が書き込みを止めるときと、`hook git-diff` の誤りのときだけです（`hook git-diff` は指摘があれば 1）。詳細は [docs/integrations.md](docs/integrations.md) にあります。
 
 ## ルール
 
@@ -404,7 +410,7 @@ noslop check src/
 extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
 ```
 
-- **読める言語**: Rust・C・C++・Python・JavaScript・TypeScript・TSX・Go・PHP・Java・Kotlin・Swift・C#・Bash・Ruby・Lua・HTML・CSS・YAML・TOML です。どのバイナリ（Homebrew・Releases・ソースからのビルド）でも、すべての言語を読めます。`[code] extensions` にコードの拡張子でないものを書くと、設定の誤りになります
+- **読める言語**: Rust・C・C++・Python・JavaScript・TypeScript・TSX・Go・PHP・Java・Kotlin・Swift・C#・Bash・Ruby・Lua・HTML・CSS・YAML・TOML です。どのバイナリ（Homebrew・Releases・ソースからのビルド）でも、すべての言語を読めます。`[code] extensions` にコードの拡張子でないものを書くと、設定の誤りになります。`noslop init`（`--user` も）で作るひな形の `[code]` には、読める拡張子すべてを言語ごとに並べてあります（コメントにしてあるので、使うものだけを残して行頭の `#` を外します）
 - **取り出し方**: tree-sitter でコメントを読むので、文字列の中の `//`、正規表現、ヒアドキュメントをコメントと取り違えません。隣り合う行の同じ種類のコメント（同じ記号・同じ列）は 1 つにまとめ、コードの後ろのコメントは単独で読みます。記号（`//`・`#`・`/*`・行頭の `*` など）を外した本文を段落にし、指摘の位置は元のファイルの行・列で示します。コメントは句点を打たずに 1 行に 1 つのことを書くことが多いので、行の終わりは文の区切りとして読みます。前の行が読点・助詞・開き括弧で終わるときと、次の行が閉じ括弧・読点で始まるときだけ、1 つの文につなぎます
 - **ドキュメントのコメント**: `///`・`/** */`・Python の docstring は Markdown として読み、インラインコードやコードブロックは検査しません。Javadoc と C# の XML ドキュメントは、タグを外して読みます
 - **検査しないコメント**: 日本語を含まないもの、shebang、ツールへの指示（`eslint-disable`・`noqa` など）、著作権・ライセンスの表記
@@ -672,6 +678,7 @@ jobs:
 | `noslop skill-install <claude\|codex>` | エージェントに、日本語の文章を書いた・直した後に noslop で見直す手順（スキル）を覚えさせる |
 | `noslop mcp` | Claude Code・Codex CLI などのエージェントが、自分で検査（`check`）・改稿の前後の比較（`diff`）・ルールの説明（`explain`）・一覧（`rules`）を呼ぶ。`check` は改稿指示を Markdown（既定）・JSON・TOON で返す |
 | `noslop hook claude-code` | Claude Code がファイルを書いた直後（変わった行）、gws で Google ドキュメント・スプレッドシートに書き込む前（書き込む値）、応答を終えたとき（リポジトリのコミットしていない変更）に、指摘を自動で渡す |
+| `noslop hook command` | claw-hooks のコマンドフックから、gws で書き込む値を書き込む前に検査する。claw-hooks が解析するので、`bash -c`・`sudo` の中の gws も読め、Codex CLI などほかのエージェントでも止められる |
 | `noslop hook file <PATH>`・`noslop hook git-diff` | フックの入力を渡せない仕組み（claw-hooks の extension_hooks・stop_hooks など）から、同じ指摘をテキストで渡す |
 
 ```bash
@@ -711,7 +718,7 @@ codex mcp add noslop -- noslop mcp
 ```
 
 - **PostToolUse**: 書き換えたファイルのうち、今回変わった行に重なる指摘だけを返します
-- **PreToolUse (Bash)**: gws で Google ドキュメント・スプレッドシートに書き込む値を、書き込む前に検査します。ドキュメントの本文に指摘があれば 1 度だけ書き込みを止め、直すか、残すと決めて同じコマンドを打ち直すかを Claude に任せます。セルのような短い値は止めずに、指摘を添えます
+- **PreToolUse (Bash)**: gws で Google ドキュメント・スプレッドシートに書き込む値を、書き込む前に検査します。ドキュメントの本文に指摘があれば 1 度だけ書き込みを止め、直すか、残すと決めて同じコマンドを打ち直すかを Claude に任せます。セルのような短い値は止めずに、指摘を添えます。[claw-hooks](https://github.com/owayo/claw-hooks) を使っているなら、この PreToolUse の代わりに claw-hooks のコマンドフック（`noslop hook command`）で同じ検査ができます（両方に登録すると同じ書き込みを 2 回検査するので、どちらか一方にします）
 - **Stop**: 作業ディレクトリを含む git の作業ツリーの、コミットしていない変更（HEAD との差分と追跡していないファイル）の変わった行に重なる指摘を返します。Bash で書き換えたファイルのように、PostToolUse を通らなかった変更も拾えます
 
 対応する MCP の版、フックが返す範囲と上限、claw-hooks から呼ぶ設定などの詳細は [docs/integrations.md](docs/integrations.md) にあります。
