@@ -132,6 +132,18 @@ make install
 
 ソースからの導入では、Claude Code と Codex CLI のスキルも `~/.claude/skills/noslop/` と `~/.codex/skills/noslop/` に入ります。`make uninstall` はスキルを残します。
 
+### 辞書のダウンロード（推奨）
+
+インストール後は、同梱の IPAdic より語彙の多い辞書を取得することを推奨します。
+
+```bash
+noslop dict download
+```
+
+名前を省くと、hasami が推奨する `ipadic-neologd-sudachi`（IPAdic + NEologd + SudachiDict）を取得します。辞書を指定しない既定の `auto` では、次の実行から取得した辞書を使います。取得状況と使う辞書は `noslop dict list` で確認できます。
+
+辞書の選び方や、同梱の辞書で校正した条件に合わせる設定は [形態素解析の辞書](docs/dictionaries.md) を参照してください。
+
 ## 使い方
 
 ファイルを指定して検査します。ディレクトリを渡すと、その配下の Markdown とテキストをまとめて検査します（`.gitignore`・`.ignore`・`.noslopignore` を尊重します）。
