@@ -110,19 +110,22 @@ fn file_name(path: &Path) -> String {
 }
 
 #[test]
-fn a_write_with_findings_is_denied_and_the_identical_retry_passes_once() {
+fn a_write_with_findings_is_denied_and_identical_retries_pass() {
     let ws = Workspace::new();
     let first = ws.run(Some("session-1"), WRITE).expect("止める");
     let o = hook_output(&first);
     assert_eq!(o["permissionDecision"], "deny", "{first}");
     let reason = o["permissionDecisionReason"].as_str().unwrap();
-    assert!(reason.contains("この書き込みを止めました"), "{reason}");
+    assert!(
+        reason.starts_with("noslop: gws で書き込む文章に指摘があるので、コマンドを止めました"),
+        "{reason}"
+    );
     assert!(
         reason.contains("同じコマンドをそのままもう一度実行してください"),
         "{reason}"
     );
     assert!(
-        reason.contains("noslop が gws docs +write の --text に"),
+        reason.contains("noslop が gws docs +write (--document DOC1) の --text に"),
         "{reason}"
     );
     assert!(
@@ -144,12 +147,11 @@ fn a_write_with_findings_is_denied_and_the_identical_retry_passes_once() {
         "{content}"
     );
 
-    // 同じコマンドをもう一度実行すると、何も出さずに通す (記録は消える)
+    // 同じコマンドをもう一度実行すると、何も出さずに通す。記録は止めてから 30 分のあいだ残り、
+    // そのあいだは何度でも通す
     assert_eq!(ws.run(Some("session-1"), WRITE), None);
-    assert!(ws.records().is_empty());
-    // 次の同じ書き込みは、また検査する
-    let third = ws.run(Some("session-1"), WRITE).expect("また止める");
-    assert_eq!(hook_output(&third)["permissionDecision"], "deny");
+    assert_eq!(ws.run(Some("session-1"), WRITE), None);
+    assert_eq!(ws.records().len(), 1);
 
     // 別のセッションの同じ書き込みは、記録を使わない
     let other = ws.run(Some("session-2"), WRITE).expect("止める");
@@ -178,7 +180,7 @@ fn cells_and_dry_runs_are_reported_without_denying() {
     assert!(o.get("permissionDecision").is_none(), "{out}");
     let context = o["additionalContext"].as_str().unwrap();
     assert!(
-        context.contains("noslop が gws sheets +append の --values に"),
+        context.contains("noslop が gws sheets +append (--spreadsheet SHEET1) の --values に"),
         "{context}"
     );
     assert!(

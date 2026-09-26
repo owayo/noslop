@@ -275,6 +275,14 @@ pub enum HookCommand {
     /// PostToolUse (Write / Edit / MultiEdit) は書き換えたファイルの変わった行を、PreToolUse (Bash) は gws で Google ドキュメント・スプレッドシートに書き込む値を、Stop はリポジトリの差分 (HEAD との差分と追跡していないファイル) の変わった行を見る。
     /// 対象外のイベント・ツール・ファイルや指摘がないときは何も書かない。設定ファイルは入力の cwd から親へ探す。
     ClaudeCode(HookArgs),
+    /// claw-hooks のコマンドフック (`[[command_hooks]]`) の判定器。gws で Google ドキュメント・スプレッドシートに書き込む値を、書き込む前に検査する
+    ///
+    /// 標準入力で、claw-hooks が解析した gws の呼び出し 1 つの引数 (JSON。プロトコルの版 1) を受け取る。検査は claude-code の PreToolUse と同じ。
+    /// ドキュメントの本文に警告以上の指摘があれば、理由を標準エラーに書いて終了コード 2 で終わる (claw-hooks がコマンドを止める)。止めた書き込みと同じものは、止めてから 30 分のあいだ検査せずに通す。
+    /// 止めない指摘 (セルなどの短い値・情報だけ・--dry-run・呼び出しを確定できないもの) は標準出力に書いて 0 で終わる (claw-hooks がエージェントに渡す)。対象外や指摘がないときは何も書かずに 0。
+    /// 入力や設定の誤りは、標準エラーに書いて 1 で終わる (claw-hooks の on_error に従う)。
+    /// 設定ファイルは入力の cwd から親へ探す。
+    Command(CommandHookArgs),
     /// 編集したファイルのパスだけを渡すフックから呼ぶ (claw-hooks の extension_hooks のように、フックの入力を渡せない仕組み向け)
     ///
     /// 指摘があれば、claude-code と同じ短い改稿指示をテキストで標準出力に書く。
@@ -289,6 +297,16 @@ pub enum HookCommand {
     /// 指摘があれば終了コード 1、なければ何も書かずに 0 で終わる (git の外でも 0)。設定の誤りや git の失敗は、標準エラーに書いて 2 で終わる。
     /// 設定ファイルはカレントディレクトリから親へ探す。
     GitDiff(GitDiffHookArgs),
+}
+
+/// `hook command` の引数。
+#[derive(Debug, Clone, Args)]
+pub struct CommandHookArgs {
+    /// 出力の文字数の上限。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
+    #[arg(long, default_value_t = 9_000, value_parser = parse_limit, value_name = "N")]
+    pub max_chars: usize,
+    #[command(flatten)]
+    pub hook: HookArgs,
 }
 
 /// `hook git-diff` の引数。
@@ -578,7 +596,14 @@ const OUTPUT_BUFFER_BYTES: usize = 64 * 1024;
 
 /// コマンドラインを解釈して実行する。
 pub fn run() -> ExitCode {
-    let cli = Cli::parse();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(e) => {
+            let _ = e.print();
+            return ExitCode::from(parse_error_code(&args, &e));
+        }
+    };
     let code = match cli.command {
         Command::Check(args) => check(args),
         Command::Diff(args) => diff(args),
@@ -588,6 +613,7 @@ pub fn run() -> ExitCode {
         Command::Init(args) => init(args),
         Command::Mcp(args) => mcp(args),
         Command::Hook(HookCommand::ClaudeCode(args)) => crate::hook::claude_code(&args),
+        Command::Hook(HookCommand::Command(args)) => crate::hook::command(&args),
         Command::Hook(HookCommand::File(args)) => crate::hook::file(&args),
         Command::Hook(HookCommand::GitDiff(args)) => crate::hook::git_diff(&args),
         Command::SkillInstall(args) => skill_install(args),
@@ -595,6 +621,22 @@ pub fn run() -> ExitCode {
         Command::Dict(DictCommand::List(args)) => dict_list(args),
     };
     ExitCode::from(code)
+}
+
+/// 引数を解釈できなかったときの終了コード (clap の既定。引数の誤りは 2、`--help` と `--version` は 0)。
+///
+/// フックの引数の誤りは 1 にする。Claude Code はフックの終了コード 2 を「ツールの呼び出しを止める」
+/// (Stop なら「会話を続ける」)、claw-hooks はコマンドフックの判定器の 2 を「コマンドを止める」と読むので、
+/// 2 のままでは、設定の書き誤りで作業を止めてしまう (1 なら止めない誤りとして扱われる)。誤りを 2 で
+/// 知らせる約束の `hook git-diff` は、そのままにする。
+fn parse_error_code(args: &[std::ffi::OsString], error: &clap::Error) -> u8 {
+    let hook =
+        args.get(1).is_some_and(|a| a == "hook") && !args.get(2).is_some_and(|a| a == "git-diff");
+    if hook && error.use_stderr() {
+        1
+    } else {
+        u8::try_from(error.exit_code()).unwrap_or(EXIT_ERROR)
+    }
 }
 
 fn error(message: impl std::fmt::Display) -> u8 {
@@ -1428,11 +1470,11 @@ fn init(args: InitArgs) -> u8 {
                 "ホームディレクトリが分かりません。ユーザーの設定の置き場所 (~/.config/noslop/config.toml) を決められません",
             );
         };
-        (config::user_config_path(&home), config::USER_TEMPLATE)
+        (config::user_config_path(&home), config::user_template())
     } else {
         (
             PathBuf::from(config::CONFIG_FILE_NAMES[0]),
-            config::TEMPLATE,
+            config::template(),
         )
     };
     let shown = display_path(&path);

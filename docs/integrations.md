@@ -1,6 +1,6 @@
 # AI エージェントとの連携
 
-noslop の指摘を、文章を書いた AI エージェント (または人間の編集者) に渡す方法は 6 つあります。
+noslop の指摘を、文章を書いた AI エージェント (または人間の編集者) に渡す方法は 7 つあります。
 
 | 方法 | 使いどころ | 渡すもの |
 |---|---|---|
@@ -8,6 +8,7 @@ noslop の指摘を、文章を書いた AI エージェント (または人間�
 | `noslop skill-install` | エージェントに、日本語の文章を書いた・直した後の見直しの手順を覚えさせる | スキル (`SKILL.md`) |
 | `noslop mcp` | エージェントが自分で検査・改稿の前後の比較を呼ぶ (Claude Code・Codex CLI など) | 改稿指示・確認事項 (Markdown・JSON・TOON) |
 | `noslop hook claude-code` | Claude Code がファイルを書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたときに、自動で指摘を渡す | 短い改稿指示 |
+| `noslop hook command` | claw-hooks のコマンドフックから、gws で書き込む値を書き込む前に検査する (Claude Code・Codex CLI など) | 止める理由・短い改稿指示 (テキスト) |
 | `noslop hook file <PATH>` | 編集したファイルのパスだけを渡すフックの仕組み (claw-hooks の extension_hooks など) から、同じ指摘を渡す | 短い改稿指示 (テキスト) |
 | `noslop hook git-diff` | フックの入力を渡せない Stop の仕組み (claw-hooks の stop_hooks など) から、リポジトリのコミットしていない変更の指摘を渡す | 短い改稿指示 (テキスト) |
 
@@ -203,7 +204,7 @@ Claude Code のフックとして、次の 3 つのイベントを検査しま�
 - 既定では読みやすさのルールを止めて検査し、AI 臭さ (校正済み) と独自ルールの指摘があるときだけ返します。`--experimental` で実験的なルールを、`--include-readability` で読みやすさの指摘を加えます (設定ファイルで `experimental = true` にしていれば、実験的なルールも既定で動きます)
 - 1 ルールあたりの箇所は `--brief-limit` 件 (既定 3) までです
 - Claude Code は 10,000 文字を超える文字列をファイルに逃がして先頭しか見せないので、それより短く (9,000 文字まで) 行単位で切ります
-- 入力が JSON として読めない・32 MiB を超える・設定ファイルが壊れているなどの誤りは、標準エラーに書いて終了コード 1 で終わります。Claude Code はこれを処理を止めないエラーとして扱います
+- 入力が JSON として読めない・32 MiB を超える・設定ファイルが壊れているなどの誤りは、標準エラーに書いて終了コード 1 で終わります。Claude Code はこれを処理を止めないエラーとして扱います。フックのコマンドの引数の誤り (`--brief-limt` のような書き誤り) も 1 で終わります (ほかのサブコマンドの引数の誤りは 2 ですが、Claude Code は 2 をツールの呼び出しを止める合図として読むため)
 
 ### 書き換えたファイル (PostToolUse)
 
@@ -226,7 +227,7 @@ Stop の入力には、そのターンに編集したファイルが含まれま
 
 Bash の呼び出しのうち、[gws](https://github.com/googleworkspace/cli) (Google Workspace CLI) で Google ドキュメント・スプレッドシートに書き込むものを、書き込む前に検査します。
 
-- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。変数やコマンド置換で決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`&&`・`;`・パイプ・サブシェルでつないだ gws と、`env`・`command` を前に付けた gws は読み、`bash -c '...'`・`sudo`・スクリプトの中の gws は読みません。`gws` を含まないコマンドは、設定も読まずに素通しします
+- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。変数やコマンド置換で決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`&&`・`;`・パイプ・サブシェルでつないだ gws と、`env`・`command` を前に付けた gws は読み、`bash -c '...'`・`sudo`・スクリプトの中の gws は読みません (`bash -c` と `sudo` の中まで読むなら、claw-hooks のコマンドフック [`noslop hook command`](#claw-hooks-のコマンドフック-noslop-hook-command) を使います)。`gws` を含まないコマンドは、設定も読まずに素通しします
 - 検査する値は次のとおりです。日本語を含まない値と、`=` で始まるセル (数式) は見ません
 
   | コマンド | 値 | 扱い |
@@ -240,9 +241,11 @@ Bash の呼び出しのうち、[gws](https://github.com/googleworkspace/cli) (G
   | `gws sheets spreadsheets values batchUpdate` / `batchUpdateByDataFilter` | `data[].values` | 短い値 (セルごと) |
   | `gws sheets spreadsheets batchUpdate` | `updateCells`・`appendCells`・`repeatCell` の `userEnteredValue.stringValue` | 短い値 (セルごと) |
 
-- ドキュメントの本文に警告以上の指摘があれば、1 度目は書き込みを止め (`deny`)、理由に改稿指示を載せます。Claude は直してから書き込み直すか、残すと決めたら同じコマンドをもう一度実行します。同じセッションで、同じ宛先に同じ値を書き込む打ち直しは、30 分以内に 1 回だけそのまま通します
+- ドキュメントの本文に警告以上の指摘があれば、1 度目は書き込みを止め (`deny`)、理由に改稿指示を載せます。Claude は直してから書き込み直すか、残すと決めたら同じコマンドをもう一度実行します。止めた書き込みと同じもの (同じセッションで、同じコマンド・宛先・値のもの) は、止めてから 30 分のあいだ、検査せずにそのまま通します。何度実行しても通り、通しても期間は延びません。この記録は書き込みの許可ではなく、一度示した指摘を繰り返さないためのものです
+- 改稿指示の文書の名前には、コマンドと、値の決まる宛先を入れます (`gws docs +write (--document D1) の --text` など)。1 つのコマンドに同じ種類の書き込みが並んでも見分けられます
 - セル・タイトルのような短い値の指摘、情報の指摘だけのとき、`--dry-run` のときは止めずに、改稿指示をツールの結果の横に添えます (`additionalContext`。Claude には書き込みの後に届きます)。短い値は、1 文ずつ判定するルールだけを当てた未校正の判定だからです。短い値は 1 行に 1 つ並べて検査し、改稿指示の後ろに行と値の対応 (`L2 = values[0][1]` など) を添えます
-- 「1 回だけ通す」ための記録はキャッシュのディレクトリ (`$XDG_CACHE_HOME/noslop/hook-state`、なければ macOS は `~/Library/Caches/noslop/hook-state`、Linux は `~/.cache/noslop/hook-state`、Windows は `%LOCALAPPDATA%\noslop\cache\hook-state`) に置きます。置くのはハッシュと時刻だけで、書き込む値やコマンドは保存しません。記録を残せないとき (入力にセッションの ID がない・キャッシュのディレクトリに書けない) は、打ち直しても通せないので止めずに知らせます
+- 実行時に決まる語で書き込みの形が変わりうるときも、止めずに知らせます。クォートしていない変数・グロブ (`$EXTRA`・`*.txt`。消えることも分かれることもある) と、フラグの値の位置の外にある値の決まらない語 (`"$FLAG"`。`--dry-run` や `--text` かもしれない) がこれに当たります。宛先のようなフラグの値に 1 語だけ入る変数 (`--document "$DOC"`) は、書き込みの形を変えないので止めます
+- 止めた記録はキャッシュのディレクトリ (`$XDG_CACHE_HOME/noslop/hook-state`、なければ macOS は `~/Library/Caches/noslop/hook-state`、Linux は `~/.cache/noslop/hook-state`、Windows は `%LOCALAPPDATA%\noslop\cache\hook-state`) に、書き込みごとに置きます。置くのはハッシュと時刻だけで、書き込む値やコマンドは保存しません。記録を残せないとき (入力にセッションの ID がない・キャッシュのディレクトリに書けない) は、打ち直しても通せないので止めずに知らせます
 
 ### 手で試す
 
@@ -310,10 +313,59 @@ report = true  # 終了コードが 0 でなければ、出力をエージェン
 noslop hook git-diff; echo "exit=$?"
 ```
 
+## claw-hooks のコマンドフック (`noslop hook command`)
+
+[claw-hooks](https://github.com/owayo/claw-hooks) のコマンドフック (`[[command_hooks]]`) の判定器です。claw-hooks はエージェントのシェルコマンドを解析し、gws の呼び出し 1 つにつき 1 回この判定器を起動して、呼び出しの引数 (クォートを外したもの) を JSON で渡します。検査の中身は `noslop hook claude-code` の [gws の書き込み (PreToolUse)](#gws-の書き込み-pretooluse) と同じです。
+
+Claude Code の PreToolUse に直接登録するのと比べて、次の点が違います。
+
+- `sudo`・`env`・`bash -c '...'`・`xargs` の中の gws も、claw-hooks が見つけて渡します
+- Claude Code のほか、Codex CLI・Cursor・Windsurf など、claw-hooks が対応するエージェントで書き込みを止められます (止めずに知らせる指摘が届くのは、Claude Code と Codex CLI の PreToolUse だけです)
+- noslop にはコマンド行そのものは渡らず、gws の呼び出しの引数だけが渡ります
+
+```toml
+# ~/.config/claw-hooks/config.toml (グローバルの設定にだけ書けます。プロジェクトの .claw-hooks.toml に書いたものは無視されます)
+[[command_hooks]]
+command = "gws"
+run = "noslop hook command --max-chars 900"
+timeout = 10
+on_error = "allow"
+```
+
+Claude Code の settings.json に `noslop hook claude-code` の PreToolUse を登録しているなら、それは外してください。両方にあると、同じ書き込みを 2 回検査します。PostToolUse と Stop の登録はそのまま使えます。
+
+### 動き
+
+- ドキュメントの本文に警告以上の指摘があれば、止める理由 (改稿指示) を標準エラーに書き、終了コード 2 で終わります。claw-hooks はコマンドを止め、理由の頭に `[noslop] ` を付けてエージェントに返します (noslop 自身は名乗りを付けません)
+- 止めない指摘 (セルなどの短い値・情報の指摘だけ・`--dry-run`) は標準出力に書き、0 で終わります。claw-hooks は、補足が届くエージェント (入力の `context_delivery` が真) にだけ渡します。補足が届かないとき (`context_delivery` が偽のときと、Codex CLI の `PermissionRequest`) は、止めるとき以外は何も書きません
+- claw-hooks が呼び出しを確定できないとき (入力の `analysis` が `uncertain`。`bash -c "gws docs $ARGS"` のように、静的でない文字列の中から見つけたものなど) は止めず、知らせるだけにします。0 個以上の引数になる語 (`cardinality` が `zero_or_more`) を含むときや、フラグの値の外に値の決まらない語があるときも同じです
+- 止めた書き込みと同じものは、止めてから 30 分のあいだ検査せずに通します。claw-hooks は呼び出しごとに判定器を動かし、最初に止めたところでコマンドを止めます。そのため、止める書き込みが 2 つあるコマンドは、1 つずつ止めて示したあとに通ります。記録は `noslop hook claude-code` と共通です。Codex CLI で `PreToolUse` と `PermissionRequest` の両方が届いても、同じ記録を使います
+- 入力の誤り (JSON でない・版が 1 でない・`argv` が空など) と設定ファイルの誤り、`run` に書いた引数の誤りは標準エラーに書き、1 で終わります。claw-hooks は `on_error` に従います (`allow` ならコマンドを通して、デバッグログに警告を残します)。2 で終わるのは、止めるときだけです
+- 設定ファイルは入力の `cwd` から親へ探します。gws には値を標準入力から渡す書き方がないので、入力の `stdin` は見ません
+- 出力は `--max-chars` 文字 (既定 9,000) に収めます。claw-hooks は出力の頭に `[noslop] ` を付け、全体を `output_max_length` (既定 1,000 文字) で切るので、それより短くしてください。止める理由は、書き込んでいないことと打ち直せば通ることを頭に置いてあるので、後ろが切れても伝わります
+- claw-hooks は、判定器を 1 回のイベントで 32 回までしか動かさず、解析しきれないコマンド (長すぎる・入れ子が深すぎる) では動かしません。`on_error = "allow"` なら、そうしたコマンドは検査せずに通ります
+
+### 手で試す
+
+```bash
+printf '%s' '{"version":1,"agent":"claude-code","event":"PreToolUse","tool_name":"Bash","session_id":"manual","cwd":"'"$PWD"'","analysis":"complete","context_delivery":true,"stdin":null,"argv":[
+  {"value":"gws","static":true,"cardinality":"one"},
+  {"value":"docs","static":true,"cardinality":"one"},
+  {"value":"+write","static":true,"cardinality":"one"},
+  {"value":"--document","static":true,"cardinality":"one"},
+  {"value":"D1","static":true,"cardinality":"one"},
+  {"value":"--text","static":true,"cardinality":"one"},
+  {"value":"まとめると、とても便利です。","static":true,"cardinality":"one"}]}' \
+  | noslop hook command; echo "exit=$?"
+```
+
+止めれば、理由が標準エラーに出て `exit=2` になります。同じ入力を 30 分以内にもう一度流すと、止めた記録で通ります (`session_id` を変えると検査し直します)。
+
 ## 参考
 
 - MCP の版と `_meta`: <https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning>
 - `server/discover`: <https://modelcontextprotocol.io/specification/2026-07-28/server/discover>
 - `initialize` による版の決定 (2025-11-25): <https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle>
 - Claude Code のフック: <https://code.claude.com/docs/en/hooks>
+- claw-hooks のコマンドフックのプロトコル: <https://github.com/owayo/claw-hooks/blob/main/docs/cli-reference.ja.md#コマンドフックのプロトコル>
 - Claude Code の MCP: <https://code.claude.com/docs/en/mcp>

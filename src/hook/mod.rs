@@ -1,23 +1,29 @@
-//! エージェントのフック (`noslop hook claude-code` / `noslop hook file` / `noslop hook git-diff`)。
+//! エージェントのフック (`noslop hook claude-code` / `noslop hook command` / `noslop hook file` /
+//! `noslop hook git-diff`)。
 //!
 //! - `claude-code` ([`claude_code`]): Claude Code のフックの入力 (JSON) を受け、イベントごとに検査する。
 //!   PostToolUse (Write / Edit / MultiEdit) は書き換えたファイル、PreToolUse (Bash) は gws で Google
 //!   ドキュメント・スプレッドシートに書き込む値、Stop はリポジトリの差分を見る。
+//! - `command` ([`command()`]): claw-hooks のコマンドフックの判定器。claw-hooks が解析した gws の呼び出し
+//!   1 つの引数を受け取り、書き込む値を検査する (検査は claude-code の PreToolUse と同じ)。
 //! - `file` ([`file`]): 編集したファイルのパスだけを渡すフックの仕組み (claw-hooks の extension_hooks
 //!   など) から呼ぶ。変わった行は git の差分 (HEAD との比較) から求め、結果をテキストで返す。
 //! - `git-diff` ([`git_diff`]): フックの入力を渡せない Stop の仕組み (claw-hooks の stop_hooks など) から
 //!   呼ぶ。リポジトリの差分を検査し、指摘があれば終了コード 1 にする。
 //!
-//! どれも、変わった行に重なる指摘だけを短い改稿指示 (brief) で返す (編集のたびに同じ指摘を繰り返し
-//! 渡して、残すと決めた箇所まで直させないため)。指摘がないとき・対象外のときは何も出力しない。
+//! ファイルと差分のフックは、変わった行に重なる指摘だけを短い改稿指示 (brief) で返す (編集のたびに同じ
+//! 指摘を繰り返し渡して、残すと決めた箇所まで直させないため)。指摘がないとき・対象外のときは何も
+//! 出力しない。
 
 mod claude_code;
+mod command;
 mod file;
 mod git;
 mod gws;
 mod stop;
 
 pub use claude_code::{claude_code, respond};
+pub use command::command;
 pub use file::file;
 pub use stop::git_diff;
 
