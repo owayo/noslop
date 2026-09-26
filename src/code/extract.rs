@@ -48,60 +48,37 @@ pub(super) struct RawComment {
     pub marker: &'static str,
 }
 
-/// この言語の文法 (このビルドに入っていなければ `None`)。
-fn grammar(language: CodeLanguage) -> Option<tree_sitter::Language> {
-    let grammar: tree_sitter::Language = match language {
-        #[cfg(feature = "lang-rust")]
+/// この言語の文法。
+fn grammar(language: CodeLanguage) -> tree_sitter::Language {
+    match language {
         CodeLanguage::Rust => tree_sitter_rust::LANGUAGE.into(),
-        #[cfg(feature = "lang-javascript")]
         CodeLanguage::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-        #[cfg(feature = "lang-typescript")]
         CodeLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        #[cfg(feature = "lang-typescript")]
         CodeLanguage::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        #[cfg(feature = "lang-python")]
         CodeLanguage::Python => tree_sitter_python::LANGUAGE.into(),
-        #[cfg(feature = "lang-go")]
         CodeLanguage::Go => tree_sitter_go::LANGUAGE.into(),
-        #[cfg(feature = "lang-java")]
         CodeLanguage::Java => tree_sitter_java::LANGUAGE.into(),
-        #[cfg(feature = "lang-c")]
         CodeLanguage::C => tree_sitter_c::LANGUAGE.into(),
-        #[cfg(feature = "lang-cpp")]
         CodeLanguage::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-        #[cfg(feature = "lang-csharp")]
         CodeLanguage::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
-        #[cfg(feature = "lang-ruby")]
         CodeLanguage::Ruby => tree_sitter_ruby::LANGUAGE.into(),
-        #[cfg(feature = "lang-php")]
         CodeLanguage::Php => tree_sitter_php::LANGUAGE_PHP.into(),
-        #[cfg(feature = "lang-swift")]
         CodeLanguage::Swift => tree_sitter_swift::LANGUAGE.into(),
-        #[cfg(feature = "lang-kotlin")]
         CodeLanguage::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
         CodeLanguage::Bash => tree_sitter_bash::LANGUAGE.into(),
-        #[cfg(feature = "lang-yaml")]
         CodeLanguage::Yaml => tree_sitter_yaml::LANGUAGE.into(),
-        #[cfg(feature = "lang-toml")]
         CodeLanguage::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
-        #[cfg(feature = "lang-html")]
         CodeLanguage::Html => tree_sitter_html::LANGUAGE.into(),
-        #[cfg(feature = "lang-css")]
         CodeLanguage::Css => tree_sitter_css::LANGUAGE.into(),
-        #[cfg(feature = "lang-lua")]
         CodeLanguage::Lua => tree_sitter_lua::LANGUAGE.into(),
-        // 文法を入れていない言語 (すべての feature を入れたビルドでは当たらない)
-        #[allow(unreachable_patterns)]
-        _ => return None,
-    };
-    Some(grammar)
+    }
 }
 
-/// `source` をこの言語の文法で読み、コメントを原文の順に返す。文法がこのビルドになければ `None`。
+/// `source` をこの言語の文法で読み、コメントを原文の順に返す。構文木を作れなければ `None`。
 ///
 /// 構文の誤りがあっても、読めたところのコメントは返す (tree-sitter は誤りを含む木も作る)。
 pub(super) fn comments(source: &str, language: CodeLanguage) -> Option<Vec<RawComment>> {
-    let grammar = grammar(language)?;
+    let grammar = grammar(language);
     let mut parser = Parser::new();
     parser
         .set_language(&grammar)

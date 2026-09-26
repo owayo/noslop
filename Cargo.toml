@@ -20,54 +20,10 @@ name = "noslop"
 path = "src/lib.rs"
 
 [features]
-default = ["bundled-dict", "code"]
+default = ["bundled-dict"]
 # 形態素解析の辞書 (dict/ipadic.hsd、約 18MB) をバイナリに埋め込む。外すと、辞書は --dict・設定の
 # dictionary・HASAMI_DICT・~/.local/share/hasami から探し、なければ辞書なしの近似で判定する
 bundled-dict = []
-# コードのコメントを読む文法 (tree-sitter)。code は軽い文法 (合わせて約 7.6MiB) をまとめたもので、
-# 既定で入れる。重い文法 (1 つで 2〜5MiB) は code-all か言語ごとの feature で足す。Bash の文法は
-# gws のコマンドの解析にも使うので、feature によらず常に入れる
-code = [
-    "lang-rust",
-    "lang-javascript",
-    "lang-typescript",
-    "lang-python",
-    "lang-go",
-    "lang-java",
-    "lang-c",
-    "lang-yaml",
-    "lang-toml",
-    "lang-html",
-    "lang-css",
-    "lang-lua",
-]
-code-all = [
-    "code",
-    "lang-cpp",
-    "lang-csharp",
-    "lang-ruby",
-    "lang-php",
-    "lang-swift",
-    "lang-kotlin",
-]
-lang-rust = ["dep:tree-sitter-rust"]
-lang-javascript = ["dep:tree-sitter-javascript"]
-lang-typescript = ["dep:tree-sitter-typescript"]
-lang-python = ["dep:tree-sitter-python"]
-lang-go = ["dep:tree-sitter-go"]
-lang-java = ["dep:tree-sitter-java"]
-lang-c = ["dep:tree-sitter-c"]
-lang-yaml = ["dep:tree-sitter-yaml"]
-lang-toml = ["dep:tree-sitter-toml-ng"]
-lang-html = ["dep:tree-sitter-html"]
-lang-css = ["dep:tree-sitter-css"]
-lang-lua = ["dep:tree-sitter-lua"]
-lang-cpp = ["dep:tree-sitter-cpp"]
-lang-csharp = ["dep:tree-sitter-c-sharp"]
-lang-ruby = ["dep:tree-sitter-ruby"]
-lang-php = ["dep:tree-sitter-php"]
-lang-swift = ["dep:tree-sitter-swift"]
-lang-kotlin = ["dep:tree-sitter-kotlin-ng"]
 
 [dependencies]
 aho-corasick = "1.1.5"
@@ -94,30 +50,31 @@ thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
 toon-format = { version = "0.5.0", default-features = false }
 toml = "1.1.6"
-# コードのコメントの取り出し (code) と、gws のコマンドの解析 (Bash)。文法の crate は tree-sitter 0.27 で
-# 読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の対応を確かめる)
+# コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。文法はすべて常に入れる (feature で分けない)。
+# 文法の crate は tree-sitter 0.27 で読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の
+# 対応を確かめる)
 tree-sitter = "0.27.0"
 tree-sitter-bash = "=0.25.1"
-tree-sitter-c = { version = "=0.24.2", optional = true }
-tree-sitter-c-sharp = { version = "=0.23.5", optional = true }
-tree-sitter-cpp = { version = "=0.23.4", optional = true }
-tree-sitter-css = { version = "=0.25.0", optional = true }
-tree-sitter-go = { version = "=0.25.0", optional = true }
-tree-sitter-html = { version = "=0.23.2", optional = true }
-tree-sitter-java = { version = "=0.23.5", optional = true }
-tree-sitter-javascript = { version = "=0.25.0", optional = true }
-tree-sitter-kotlin-ng = { version = "=1.1.0", optional = true }
-tree-sitter-lua = { version = "=0.5.0", optional = true }
-tree-sitter-php = { version = "=0.24.2", optional = true }
-tree-sitter-python = { version = "=0.25.0", optional = true }
+tree-sitter-c = "=0.24.2"
+tree-sitter-c-sharp = "=0.23.5"
+tree-sitter-cpp = "=0.23.4"
+tree-sitter-css = "=0.25.0"
+tree-sitter-go = "=0.25.0"
+tree-sitter-html = "=0.23.2"
+tree-sitter-java = "=0.23.5"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-kotlin-ng = "=1.1.0"
+tree-sitter-lua = "=0.5.0"
+tree-sitter-php = "=0.24.2"
+tree-sitter-python = "=0.25.0"
 # astro-sight と同じく owayo のフォークを使う
-tree-sitter-ruby = { git = "https://github.com/owayo/tree-sitter-ruby.git", branch = "master", optional = true }
-tree-sitter-rust = { version = "=0.24.2", optional = true }
+tree-sitter-ruby = { git = "https://github.com/owayo/tree-sitter-ruby.git", branch = "master" }
+tree-sitter-rust = "=0.24.2"
 # SQL (tree-sitter-sequel) は入れない: cc を ~1.2 に固定させ、ring が引く新しい cc とぶつかるため
-tree-sitter-swift = { version = "=0.7.3", optional = true }
-tree-sitter-toml-ng = { version = "=0.7.0", optional = true }
-tree-sitter-typescript = { version = "=0.23.2", optional = true }
-tree-sitter-yaml = { version = "=0.7.2", optional = true }
+tree-sitter-swift = "=0.7.3"
+tree-sitter-toml-ng = "=0.7.0"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-yaml = "=0.7.2"
 unicode-width = "0.2.2"
 
 [dev-dependencies]

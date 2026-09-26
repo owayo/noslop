@@ -43,7 +43,7 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 
 ## 特徴
 
-- **辞書を同梱**: 形態素解析器 hasami の IPAdic の辞書をバイナリに同梱し、「の」の連鎖（P16）と連続漢字（P15）を品詞で判定する。インストールも設定も要らない（[形態素解析の辞書](#形態素解析の辞書)）
+- **辞書を同梱**: 形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdic の辞書をバイナリに同梱し、「の」の連鎖（P16）と連続漢字（P15）を品詞で判定する。インストールも設定も要らない（[形態素解析の辞書](#形態素解析の辞書)）
 - **校正済みの閾値**: 人間とモデル 7 種の文書で誤検知率を確かめた語句と閾値だけを既定で有効にする。未校正のものは実験的ルールとして明示的に有効にしたときだけ動く
 - **2 つのレーン**: AI 臭さ（`slop`）と読みやすさ（`readability`）の指摘を分けて出す。文書全体の点数は出さず、指摘とその件数だけを並べる
 - **Markdown を理解する**: コードブロック・インラインコード・URL・文書の先頭の front matter（YAML の `---`・TOML の `+++`）を除き、見出し・リスト・表・引用を区別して解析する。文書の途中の `---` は区切り線か見出しの下線として読み、本文を捨てない
@@ -55,32 +55,29 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 - **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
 - **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ
 
-コメントを読めるコードの言語（拡張子と設定は [コードのコメント](#コードのコメント) にあります。`code-all` の付いた言語は、feature の `code-all` を付けたビルドで読めます）:
+コメントを読めるコードの言語（拡張子と設定は [コードのコメント](#コードのコメント) にあります）:
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-000000?logo=rust&amp;logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/C-A8B9CC?logo=c&amp;logoColor=white" alt="C">
+  <img src="https://img.shields.io/badge/C++-00599C?logo=cplusplus&amp;logoColor=white" alt="C++">
+  <img src="https://img.shields.io/badge/Python-3776AB?logo=python&amp;logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&amp;logoColor=black" alt="JavaScript">
   <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&amp;logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/TSX-61DAFB?logo=react&amp;logoColor=black" alt="TSX">
-  <img src="https://img.shields.io/badge/Python-3776AB?logo=python&amp;logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Go-00ADD8?logo=go&amp;logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/PHP-777BB4?logo=php&amp;logoColor=white" alt="PHP">
   <img src="https://img.shields.io/badge/Java-ED8B00?logo=openjdk&amp;logoColor=white" alt="Java">
-  <img src="https://img.shields.io/badge/C-A8B9CC?logo=c&amp;logoColor=white" alt="C">
+  <img src="https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&amp;logoColor=white" alt="Kotlin">
+  <img src="https://img.shields.io/badge/Swift-F05138?logo=swift&amp;logoColor=white" alt="Swift">
+  <img src="https://img.shields.io/badge/C%23-512BD4?logo=dotnet&amp;logoColor=white" alt="C#">
   <img src="https://img.shields.io/badge/Bash-4EAA25?logo=gnubash&amp;logoColor=white" alt="Bash">
-  <img src="https://img.shields.io/badge/YAML-CB171E?logo=yaml&amp;logoColor=white" alt="YAML">
-  <img src="https://img.shields.io/badge/TOML-9C4121?logo=toml&amp;logoColor=white" alt="TOML">
+  <img src="https://img.shields.io/badge/Ruby-CC342D?logo=ruby&amp;logoColor=white" alt="Ruby">
+  <img src="https://img.shields.io/badge/Lua-2C2D72?logo=lua&amp;logoColor=white" alt="Lua">
   <img src="https://img.shields.io/badge/HTML-E34F26?logo=html5&amp;logoColor=white" alt="HTML">
   <img src="https://img.shields.io/badge/CSS-663399?logo=css&amp;logoColor=white" alt="CSS">
-  <img src="https://img.shields.io/badge/Lua-2C2D72?logo=lua&amp;logoColor=white" alt="Lua">
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/C++-code--all-555555?logo=cplusplus&amp;logoColor=white&amp;labelColor=00599C" alt="C++ (code-all)">
-  <img src="https://img.shields.io/badge/C%23-code--all-555555?logo=dotnet&amp;logoColor=white&amp;labelColor=512BD4" alt="C# (code-all)">
-  <img src="https://img.shields.io/badge/Ruby-code--all-555555?logo=ruby&amp;logoColor=white&amp;labelColor=CC342D" alt="Ruby (code-all)">
-  <img src="https://img.shields.io/badge/PHP-code--all-555555?logo=php&amp;logoColor=white&amp;labelColor=777BB4" alt="PHP (code-all)">
-  <img src="https://img.shields.io/badge/Swift-code--all-555555?logo=swift&amp;logoColor=white&amp;labelColor=F05138" alt="Swift (code-all)">
-  <img src="https://img.shields.io/badge/Kotlin-code--all-555555?logo=kotlin&amp;logoColor=white&amp;labelColor=7F52FF" alt="Kotlin (code-all)">
+  <img src="https://img.shields.io/badge/YAML-CB171E?logo=yaml&amp;logoColor=white" alt="YAML">
+  <img src="https://img.shields.io/badge/TOML-9C4121?logo=toml&amp;logoColor=white" alt="TOML">
 </p>
 
 ## 動作環境
@@ -129,8 +126,6 @@ make install   # /usr/local/bin にインストール（INSTALL_PATH で変更�
 ```
 
 Makefile は [mise](https://mise.jdx.dev/) で `mise.toml` の Rust を使います。mise を使わない場合は `make install SYSTEM_TOOLS=1` で、`PATH` 上の cargo でビルドします。
-
-コードのコメントを読む文法は、既定では軽い言語（Rust・JavaScript・TypeScript・TSX・Python・Go・Java・C・Bash・YAML・TOML・HTML・CSS・Lua）の分だけ入ります。C++・C#・Ruby・PHP・Swift・Kotlin も読むなら、feature の `code-all` を付けてビルドします（`cargo install --git https://github.com/owayo/noslop --locked --features code-all`、`make install CARGO_FLAGS="--locked --features code-all"`）。バイナリは 20MB ほど大きくなります。
 
 `make install` は、バイナリを入れたあと、そのバイナリで Claude Code と Codex CLI のスキル（`~/.claude/skills/noslop/SKILL.md`・`~/.codex/skills/noslop/SKILL.md`）も入れます（[AI エージェントと使う](#ai-エージェントと使う)）。入れる先は `SKILL_TARGETS` で選べます（`make install SKILL_TARGETS=claude`、入れないなら `make install SKILL_TARGETS=`）。`make uninstall` はバイナリだけを取り除き、スキルは残します。
 
@@ -407,7 +402,7 @@ noslop check src/
 extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
 ```
 
-- **読める言語**: 既定のビルドは Rust・JavaScript・TypeScript・TSX・Python・Go・Java・C・Bash・YAML・TOML・HTML・CSS・Lua です。C++・C#・Ruby・PHP・Swift・Kotlin は、`code-all` を付けたビルドで読めます（[ソースから](#ソースから)）。読めない言語のファイルを直接渡すと、言語ごとに 1 行の警告を出し、指摘なしで終わります。`[code] extensions` に読めない言語の拡張子を書くと、設定の誤りになります
+- **読める言語**: Rust・C・C++・Python・JavaScript・TypeScript・TSX・Go・PHP・Java・Kotlin・Swift・C#・Bash・Ruby・Lua・HTML・CSS・YAML・TOML です。どのバイナリ（Homebrew・Releases・ソースからのビルド）でも、すべての言語を読めます。`[code] extensions` にコードの拡張子でないものを書くと、設定の誤りになります
 - **取り出し方**: tree-sitter でコメントを読むので、文字列の中の `//`、正規表現、ヒアドキュメントをコメントと取り違えません。隣り合う行の同じ種類のコメント（同じ記号・同じ列）は 1 つにまとめ、コードの後ろのコメントは単独で読みます。記号（`//`・`#`・`/*`・行頭の `*` など）を外した本文を段落にし、指摘の位置は元のファイルの行・列で示します。コメントは句点を打たずに 1 行に 1 つのことを書くことが多いので、行の終わりは文の区切りとして読みます。前の行が読点・助詞・開き括弧で終わるときと、次の行が閉じ括弧・読点で始まるときだけ、1 つの文につなぎます
 - **ドキュメントのコメント**: `///`・`/** */`・Python の docstring は Markdown として読み、インラインコードやコードブロックは検査しません。Javadoc と C# の XML ドキュメントは、タグを外して読みます
 - **検査しないコメント**: 日本語を含まないもの、shebang、ツールへの指示（`eslint-disable`・`noqa` など）、著作権・ライセンスの表記
@@ -876,9 +871,7 @@ make ci      # CI と同じ検査
 | `make uninstall` | 入れたバイナリを取り除く (スキルは残す) |
 | `make test` | テストを実行する |
 | `make test-no-default-features` | 辞書を同梱しないビルドでテストする (--no-default-features) |
-| `make test-code-all` | すべての文法を入れたビルドでテストする (--features code-all) |
 | `make lint` | clippy を実行する (警告はエラー) |
-| `make lint-code-all` | すべての文法を入れたビルドで clippy を実行する (--features code-all、警告はエラー) |
 | `make clippy` | lint の別名 |
 | `make fmt` | コードを整形する (書き換える) |
 | `make fmt-check` | 整形済みかを確かめる (書き換えない) |
@@ -891,7 +884,7 @@ make ci      # CI と同じ検査
 | `make dict-check` | 目録の辞書を実際に取得し、大きさ・SHA-256・読めることを確かめる (通信が要る) |
 | `make help` | このヘルプを表示する |
 
-`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテスト、すべての文法を入れたビルド（`--features code-all`）の clippy とテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
+`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
 
 cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに依存を解決します。依存を足した直後など、`Cargo.lock` を更新したいときは `CARGO_FLAGS=` を付けます。mise を使わない場合は `SYSTEM_TOOLS=1` を付けると、`PATH` 上のツールで動きます（ツールの版はそろいません）。
 

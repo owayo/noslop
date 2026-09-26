@@ -231,7 +231,6 @@ fn directives_in_code_comments_suppress_findings() {
     assert_eq!(diagnostics[0]["suppressed"]["reason"], "引用なので残す");
 }
 
-#[cfg(feature = "lang-rust")]
 #[test]
 fn rust_sources_read_doc_comments_as_markdown() {
     let dir = workspace("");
@@ -303,11 +302,13 @@ fn mcp_check_reads_comments_for_a_code_filename() {
     assert_eq!(custom, [2]);
 }
 
+/// 文法はすべてバイナリに入っているので、どの言語も設定やビルドの指定なしで読める。
 #[test]
-fn languages_without_a_grammar_in_this_build_warn_once() {
+fn every_language_is_read_without_build_options() {
     let dir = workspace("");
     fs::write(dir.path().join("a.cpp"), "// ユーザー様の設定です。\n").unwrap();
-    fs::write(dir.path().join("b.hpp"), "// ユーザー様の値です。\n").unwrap();
+    fs::write(dir.path().join("b.swift"), "// ユーザー様の値です。\n").unwrap();
+    fs::write(dir.path().join("c.kt"), "// ユーザー様の画面です。\n").unwrap();
     let out = noslop()
         .current_dir(dir.path())
         .args([
@@ -317,24 +318,14 @@ fn languages_without_a_grammar_in_this_build_warn_once() {
             "--only-rules",
             "X01",
             "a.cpp",
-            "b.hpp",
+            "b.swift",
+            "c.kt",
         ])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.is_empty(), "{stderr}");
     let report = json(&out.stdout);
-    let found = report["summary"]["diagnostics"].as_u64().unwrap();
-    if cfg!(feature = "lang-cpp") {
-        assert!(stderr.is_empty(), "{stderr}");
-        assert_eq!(found, 2);
-    } else {
-        // 言語ごとに 1 行で知らせ、そのファイルは指摘なしで終わる
-        assert_eq!(
-            stderr,
-            "警告: C++ のコメントは、このビルドでは読めません (feature `lang-cpp` を付けてビルドしてください): a.cpp, b.hpp\n"
-        );
-        assert!(out.status.success());
-        assert_eq!(found, 0);
-        assert_eq!(report["files"][0]["format"], "code");
-    }
+    assert_eq!(report["summary"]["diagnostics"], 3);
+    assert_eq!(report["files"][0]["format"], "code");
 }

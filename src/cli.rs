@@ -871,22 +871,12 @@ pub(crate) fn walk_options(cfg: &ConfigLayers) -> Result<WalkOptions, ConfigErro
     if let Some(ext) = cfg.pick(|f| f.code.extensions.clone()) {
         options.code_extensions = normalize(&ext);
         for ext in &options.code_extensions {
-            match CodeLanguage::from_extension(ext) {
-                Some(lang) if lang.is_available() => {}
-                Some(lang) => {
-                    return Err(ConfigError::Invalid(format!(
-                        "[code] extensions の `{ext}` ({}) は、このビルドでは読めません (feature `{}` を付けてビルドしてください)",
-                        lang.name(),
-                        lang.feature()
-                    )));
-                }
-                None => {
-                    let known: Vec<&str> = CodeLanguage::available_extensions().collect();
-                    return Err(ConfigError::Invalid(format!(
-                        "[code] extensions の `{ext}` はコードの拡張子として読めません (読めるのは {})",
-                        known.join("・")
-                    )));
-                }
+            if CodeLanguage::from_extension(ext).is_none() {
+                let known: Vec<&str> = CodeLanguage::known_extensions().collect();
+                return Err(ConfigError::Invalid(format!(
+                    "[code] extensions の `{ext}` はコードの拡張子として読めません (読めるのは {})",
+                    known.join("・")
+                )));
             }
         }
     }
@@ -961,15 +951,6 @@ fn check(args: CheckArgs) -> u8 {
             }
         }
     }
-    let mut direct: Vec<String> = paths
-        .iter()
-        .filter(|p| p.is_file())
-        .map(|p| walk::display(p))
-        .collect();
-    if stdin_used && let Some(name) = &args.stdin_filename {
-        direct.push(name.clone());
-    }
-    warn_unreadable_code(&direct);
     let collected = walk::collect(&paths, &walk_opts);
     for dir in &collected.empty_dirs {
         eprintln!(
@@ -1019,29 +1000,6 @@ fn check(args: CheckArgs) -> u8 {
 
 fn is_stdin(path: &Path) -> bool {
     path.as_os_str() == "-"
-}
-
-/// 直接指定したファイル (標準入力は `--stdin-filename` の名前) のうち、コメントを読む文法がこの
-/// ビルドに入っていない言語のコードを、言語ごとに 1 行で知らせる。そのファイルは指摘なしで終わる。
-fn warn_unreadable_code(names: &[String]) {
-    let mut by_language: std::collections::BTreeMap<CodeLanguage, Vec<&str>> =
-        std::collections::BTreeMap::new();
-    for name in names {
-        if let SourceFormat::Code(language) = SourceFormat::from_path(Path::new(name))
-            && !language.is_available()
-        {
-            by_language.entry(language).or_default().push(name);
-        }
-    }
-    for (language, mut files) in by_language {
-        files.dedup();
-        eprintln!(
-            "警告: {} のコメントは、このビルドでは読めません (feature `{}` を付けてビルドしてください): {}",
-            language.name(),
-            language.feature(),
-            files.join(", ")
-        );
-    }
 }
 
 /// 標準入力を 1 つの入力として読む。形式は表示名の拡張子で決める (なければ Markdown)。
@@ -1121,17 +1079,6 @@ fn diff(args: DiffArgs) -> u8 {
         (Ok(before), Ok(after)) => (before, after),
         (Err(e), _) | (_, Err(e)) => return error(e),
     };
-    let direct: Vec<String> = [&args.before, &args.after]
-        .into_iter()
-        .filter_map(|path| {
-            if is_stdin(path) {
-                args.stdin_filename.clone()
-            } else {
-                Some(walk::display(path))
-            }
-        })
-        .collect();
-    warn_unreadable_code(&direct);
     let (before, after) = match crate::diff::lint_pair(&engine, before, after) {
         Ok(pair) => pair,
         Err(errors) => {
