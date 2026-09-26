@@ -1634,8 +1634,8 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
         .code(2)
         .stderr(predicate::str::contains(RECOMMENDED));
 
-    // 取得元にない辞書 (サーバーは目録の先頭の辞書の、展開前のファイルだけを配る)。圧縮版がなければ、
-    // 展開前の辞書を取る指定 (--uncompressed) を案内する
+    // 圧縮版が 404 なら非圧縮版も試し、どちらもなければ非圧縮版の URL で誤りを伝える。
+    // サーバーは目録の先頭の辞書の、展開前のファイルだけを配る。
     let [first, second] = [&DICTIONARIES[0], &DICTIONARIES[1]];
     let (url, requests) = serve_file(&first.file_name(), Vec::new());
     let dir = tempfile::tempdir().unwrap();
@@ -1646,7 +1646,12 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("HTTP 404"))
-        .stderr(predicate::str::contains("--uncompressed"));
+        .stderr(predicate::str::contains(format!(
+            "{url}/{} を取得できません",
+            second.file_name()
+        )))
+        .stderr(predicate::str::contains("--uncompressed").not());
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
     // --uncompressed なら展開前の辞書を取る。中身の違うものは置かない (大きさが合わない)
     noslop_offline()
         .args(["dict", "download", first.name, "--uncompressed", "--dir"])
@@ -1664,7 +1669,7 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
             first.file_name()
         )))
         .stderr(predicate::str::contains("--uncompressed").not());
-    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
     assert!(!dir.path().join(second.file_name()).exists());
     assert!(!dir.path().join(first.file_name()).exists());
     assert!(partial_files(dir.path()).is_empty());
