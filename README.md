@@ -95,19 +95,21 @@ brew install owayo/noslop/noslop
 
 tap ([owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)) を足して、Releases のビルド済みのバイナリを入れます。更新は `brew upgrade noslop` です。Claude Code・Codex CLI のスキルは入らないので、使うなら `noslop skill-install claude` (Codex CLI なら `codex`) を実行します ([AI エージェントと使う](#ai-エージェントと使う))。
 
-### バイナリ
+### GitHub Releases から
 
-[Releases](https://github.com/owayo/noslop/releases) から OS に合うファイルを取得します。
+[Releases](https://github.com/owayo/noslop/releases/latest) から自分の環境のアーカイブを取得して展開し、`noslop` を `PATH` の通った場所に置きます。各リリースには、取得したファイルを確かめるための `SHA256SUMS` も添付しています。
 
-| OS | ファイル名 |
-|----|-----------|
-| Linux (x86_64) | `noslop-linux-amd64` |
-| Linux (arm64) | `noslop-linux-arm64` |
-| macOS (Apple Silicon) | `noslop-darwin-arm64` |
-| macOS (Intel) | `noslop-darwin-amd64` |
-| Windows (x86_64) | `noslop-windows-amd64.exe` |
+| プラットフォーム | ファイル |
+|---|---|
+| Linux (x86_64) | `noslop-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (ARM64) | `noslop-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS (Intel) | `noslop-x86_64-apple-darwin.tar.gz` |
+| macOS (Apple Silicon) | `noslop-aarch64-apple-darwin.tar.gz` |
+| Windows (x86_64) | `noslop-x86_64-pc-windows-msvc.zip` |
 
-各リリースに `SHA256SUMS` を添付しています。取得したファイルの検証に使ってください。
+macOS でブラウザから取得した場合は、実行の前に隔離属性を外します: `xattr -d com.apple.quarantine noslop`。
+
+アーカイブには、バイナリのほかに `LICENSE` と `THIRD_PARTY_NOTICES.md`（同梱の辞書と、コードのコメントを読む文法のライセンスの表示）が入っています。
 
 ### cargo
 
@@ -644,19 +646,21 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install noslop
         env:
-          NOSLOP_VERSION: v26.9.100   # 使うリリースのタグに置き換える
+          NOSLOP_VERSION: v26.9.106   # 使うリリースのタグに置き換える
         run: |
           base="https://github.com/owayo/noslop/releases/download/${NOSLOP_VERSION}"
-          curl -fsSL -o noslop-linux-amd64 "${base}/noslop-linux-amd64"
+          asset="noslop-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL -o "${asset}" "${base}/${asset}"
           curl -fsSL -o SHA256SUMS "${base}/SHA256SUMS"
-          grep ' noslop-linux-amd64$' SHA256SUMS | sha256sum --check --strict -
-          install -D -m 0755 noslop-linux-amd64 "$HOME/.local/bin/noslop"
+          grep " ${asset}\$" SHA256SUMS | sha256sum --check --strict -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "${asset}" -C "$HOME/.local/bin" noslop
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Lint Japanese prose
         run: noslop check docs --format github
 ```
 
-リリースのタグを固定し、チェックサムを確かめてから使ってください。`releases/latest` から取る形にすると、使う版が知らないうちに変わります。
+リリースのタグを固定し、チェックサムを確かめてから使ってください。`releases/latest` から取る形にすると、使う版が知らないうちに変わります。v26.9.105 までのリリースの添付は、生のバイナリ（`noslop-linux-amd64` など）です。
 
 ## AI エージェントと使う
 
@@ -768,7 +772,7 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 
 ほかのルールは辞書の有無で変わりません。文分割も辞書を使いません。体言止め（R06）は、文書単位の判定が辞書なし・ありで変わらなかったため、辞書なしの推定のままです。
 
-同梱の辞書はバイナリを約 18MB 大きくします（バイナリは約 23MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を探しも読みもしません。share ディレクトリやファイルの辞書は mmap で読むので、200MB を超える辞書でも、メモリに載るのは解析で触れた部分だけです。
+同梱の辞書はバイナリを約 18MB 大きくします（バイナリは、コードのコメントを読む 20 言語の文法も含めて約 53MB）。辞書はバイナリに埋め込んだまま複製せずに読むので、読み込みにはほとんど時間がかからず、メモリに載るのも解析で触れた部分だけです。手元の計測（Apple Silicon の macOS）で辞書なし（`--no-dict`）と比べると、短い文書 1 本の検査で増えたのは実時間 1ms 未満・最大 RSS 1MB 未満でした。約 50KB の文書では、実時間が約 4ms、最大 RSS が約 11MB 増えました。辞書を使うルールが動かない実行（`--no-readability` や、`--only-rules` で P15・P16 を外したとき）では、辞書を探しも読みもしません。share ディレクトリやファイルの辞書は mmap で読むので、200MB を超える辞書でも、メモリに載るのは解析で触れた部分だけです。
 
 ### 使い方の指定
 
@@ -890,7 +894,7 @@ cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに�
 
 ## リリース
 
-GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64 / arm64、macOS x86_64 / arm64、Windows x86_64 のバイナリと、`SHA256SUMS`・`LICENSE`・`THIRD_PARTY_NOTICES.md` が付きます。
+GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、次の版を計算して `Cargo.toml` の変更を表示するだけで、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64 / arm64、macOS x86_64 / arm64、Windows x86_64 のアーカイブ（`noslop-<ターゲット>.tar.gz`、Windows は `.zip`。中身はバイナリと `LICENSE`・`THIRD_PARTY_NOTICES.md`）と、`SHA256SUMS` が付きます。
 
 公開の後、Homebrew の tap（[owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)）の formula を、新しい版の URL と SHA-256 に書き換えて push します。tap への push には GitHub App のトークンを使うので、リポジトリの Variables に `APP_CLIENT_ID`（App の Client ID）、Secrets に `PRIVATE_KEY`（App の秘密鍵）が要ります。どちらかがなければ、警告を出して tap の更新だけを飛ばします。
 

@@ -22,8 +22,8 @@ pub enum SourceFormat {
 }
 
 impl SourceFormat {
-    /// 拡張子から形式を推定する。Markdown 系の拡張子は Markdown、コードの拡張子はコード (このビルドで
-    /// 読めない言語も含む。読めない言語はコメントを取り出さない)、ほかはテキストとして扱う。
+    /// 拡張子から形式を推定する。Markdown 系の拡張子は Markdown、コードの拡張子はコード (コメントだけを
+    /// 読む)、ほかはテキストとして扱う。
     pub fn from_path(path: &Path) -> Self {
         let Some(ext) = path
             .extension()

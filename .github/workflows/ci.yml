@@ -50,7 +50,7 @@ jobs:
           cargo clippy --version
 
       # 検査の中身は Makefile の ci が定義する (fmt-check・clippy・test・docs/rules.md の差分・
-      # 辞書を同梱しないビルドのテスト・すべての文法を入れたビルドの clippy とテスト)。
+      # 辞書を同梱しないビルドのテスト)。
       # 検査を足すときは Makefile の ci に足す
       - name: Set up
         if: runner.os != 'Windows'

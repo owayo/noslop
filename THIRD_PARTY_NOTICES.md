@@ -431,6 +431,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
+## tree-sitter と言語の文法（MIT License）
+
+noslop は、コードのファイルのコメントの取り出しと gws のコマンドの解析に、[tree-sitter](https://github.com/tree-sitter/tree-sitter) と次の言語の文法を使っています。どれも MIT License で、配布するバイナリに静的にリンクされています（文法の構文解析の表は、それぞれのリポジトリの文法から生成されたものです）。条文は上の「日本語の文章作法に関する知見」にある MIT License と同じで、著作権の表示だけが違います。
+
+noslop uses tree-sitter and the following grammars to extract comments from source files and to parse gws commands. All of them are under the MIT License and are statically linked into the distributed binaries (each grammar's parse tables are generated from the grammar in its repository). The license text is the same as the MIT License above; only the copyright notices differ.
+
+| 部品 | 版 | 著作権の表示 | 取得元 |
+|---|---|---|---|
+| tree-sitter（`tree-sitter`・`tree-sitter-language`） | 0.27.0・0.1.8 | Copyright (c) 2018 Max Brunsfeld | [tree-sitter/tree-sitter](https://github.com/tree-sitter/tree-sitter) |
+| Bash | 0.25.1 | Copyright (c) 2017 Max Brunsfeld | [tree-sitter/tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash) |
+| C | 0.24.2 | Copyright (c) 2014 Max Brunsfeld | [tree-sitter/tree-sitter-c](https://github.com/tree-sitter/tree-sitter-c) |
+| C# | 0.23.5 | Copyright (c) 2014-2023 Max Brunsfeld, Damien Guard, Amaan Qureshi, and contributors. | [tree-sitter/tree-sitter-c-sharp](https://github.com/tree-sitter/tree-sitter-c-sharp) |
+| C++ | 0.23.4 | Copyright (c) 2014 Max Brunsfeld | [tree-sitter/tree-sitter-cpp](https://github.com/tree-sitter/tree-sitter-cpp) |
+| CSS | 0.25.0 | Copyright (c) 2018 Max Brunsfeld | [tree-sitter/tree-sitter-css](https://github.com/tree-sitter/tree-sitter-css) |
+| Go | 0.25.0 | Copyright (c) 2014 Max Brunsfeld | [tree-sitter/tree-sitter-go](https://github.com/tree-sitter/tree-sitter-go) |
+| HTML | 0.23.2 | Copyright (c) 2014 Max Brunsfeld | [tree-sitter/tree-sitter-html](https://github.com/tree-sitter/tree-sitter-html) |
+| Java | 0.23.5 | Copyright (c) 2017 Ayman Nadeem | [tree-sitter/tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java) |
+| JavaScript | 0.25.0 | Copyright (c) 2014 Max Brunsfeld | [tree-sitter/tree-sitter-javascript](https://github.com/tree-sitter/tree-sitter-javascript) |
+| Kotlin（`tree-sitter-kotlin-ng`） | 1.1.0 | Copyright (c) 2024 Amaan Qureshi | [tree-sitter-grammars/tree-sitter-kotlin](https://github.com/tree-sitter-grammars/tree-sitter-kotlin) |
+| Lua | 0.5.0 | Copyright (c) 2021 Munif Tanjim | [tree-sitter-grammars/tree-sitter-lua](https://github.com/tree-sitter-grammars/tree-sitter-lua) |
+| PHP | 0.24.2 | Copyright (c) 2017 Josh Vera, GitHub / Copyright (c) 2019 Max Brunsfeld, Amaan Qureshi, Christian Frøystad, Caleb White | [tree-sitter/tree-sitter-php](https://github.com/tree-sitter/tree-sitter-php) |
+| Python | 0.25.0 | Copyright (c) 2016 Max Brunsfeld | [tree-sitter/tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python) |
+| Ruby | コミット 710bc56 | Copyright (c) 2016 Rob Rix | [owayo/tree-sitter-ruby](https://github.com/owayo/tree-sitter-ruby)（[tree-sitter/tree-sitter-ruby](https://github.com/tree-sitter/tree-sitter-ruby) のフォーク） |
+| Rust | 0.24.2 | Copyright (c) 2017 Maxim Sokolov | [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust) |
+| Swift | 0.7.3 | Copyright (c) 2021 alex-pinkus | [alex-pinkus/tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) |
+| TOML（`tree-sitter-toml-ng`） | 0.7.0 | Copyright (c) Ika | [tree-sitter-grammars/tree-sitter-toml](https://github.com/tree-sitter-grammars/tree-sitter-toml) |
+| TypeScript・TSX | 0.23.2 | Copyright (c) 2017 Max Brunsfeld | [tree-sitter/tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) |
+| YAML | 0.7.2 | Copyright (c) 2024 tree-sitter-grammars contributors / Copyright (c) 2019-2021 Ika | [tree-sitter-grammars/tree-sitter-yaml](https://github.com/tree-sitter-grammars/tree-sitter-yaml) |
+
 ## 参考にしたもの（コードは含まない）
 
 - [textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)（MIT）— AI が書いた文章に出やすい癖を textlint のルールとして集めたプリセットです。チャット応答の名残・誇張表現・コロンでの列挙の導入・見出しの装飾など、観点の洗い出しの参考にしました。noslop のルールと語句は独自に選び直したもので、プリセットのコードと語句の一覧は含みません。
