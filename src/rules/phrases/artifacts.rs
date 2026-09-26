@@ -82,6 +82,11 @@ mod tests {
         }
         // 日本語を含まない単独の記号も拾う。
         assert_eq!(run(&PhraseRule::new(&P22), "[cite_start]").len(), 1);
+        let escaped = r"根拠です [cite\_start]。";
+        assert_eq!(
+            matched(escaped, &run(&PhraseRule::new(&P22), escaped)),
+            [r"[cite\_start]"]
+        );
         assert_eq!(PhraseRule::new(&P22).unit(), RuleUnit::Sentence);
     }
 

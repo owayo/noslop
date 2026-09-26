@@ -23,7 +23,7 @@ static META: RuleMeta = RuleMeta {
 
 地の文が 1500 字以上 (min_chars) あり、解説の定型句が 1000 字あたり 2 件以上 (min_per_1000_chars) 現れる文書を指します。安心させる言葉、重要性の強調、効果の説明、解説の予告、個人への勧め、成功の比喩の 6 系統のうち、3 系統以上があることも条件です。
 
-例えば「必要はありません」「が大切です」「やすくなります」「ここでは〜紹介します」「自分に合った」「第一歩」を数えます。同じ箇所を重複して数えません。字数には見出し・リスト・表・引用ブロックを含めず、空白と文末記号も除きます。括弧・引用符・コードや URL のプレースホルダを含む文は、字数には含めますが定型句を数えません。
+例えば「必要はありません」「が大切です」「やすくなります」「ここでは〜紹介します」「自分に合った」「第一歩」を数えます。安心・重要性・効果・予告を言い切る型は文末に限り、「重要だった」「やすくなるかどうか」「につながる道」は数えません。「大切なのは、」のような書き出しは別に数えます。同じ箇所を重複して数えません。字数には見出し・リスト・表・引用ブロックを含めず、空白と文末記号も除きます。括弧・引用符・コードや URL のプレースホルダを含む文は、字数には含めますが定型句を数えません。
 
 general と tech で有効です。最初の該当箇所に 1 件を出し、残りを関連箇所として添えます。
 
@@ -46,17 +46,16 @@ general と tech で有効です。最初の該当箇所に 1 件を出し、残
 };
 
 // 1 系統だけの反復と、複数の定型的な働きかけが重なる文書とを分ける。
-static FAMILIES: LazyLock<Vec<Regex>> =
-    LazyLock::new(|| {
-        [
-        r"必要は(?:ありません|ない)|(?:ても|でも)(?:大丈夫|構いません|かまいません|問題ありません)",
-        r"が(?:大切|大事|重要)(?:です|だ|である)|(?:大切|大事|重要|肝心)なのは[、，]",
-        r"につなが(?:ります|る)|やすくな(?:ります|る)|可能にな(?:ります|る)|を防げ(?:ます|る)",
-        r"(?:ここ|本記事|この記事)では[、，]?[^。！？\n]{0,40}(?:紹介|解説|説明|整理)します",
+static FAMILIES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?P<m>必要は(?:ありません|ない)|(?:ても|でも)(?:大丈夫(?:です)?|構いません|かまいません|問題ありません))(?:[。！!]|$)",
+        r"(?P<m>が(?:大切|大事|重要)(?:です|だ|である))(?:[。！!]|$)|(?:大切|大事|重要|肝心)なのは[、，]",
+        r"(?P<m>につなが(?:ります|る)|やすくな(?:ります|る)|可能にな(?:ります|る)|を防げ(?:ます|る))(?:[。！!]|$)",
+        r"(?P<m>(?:ここ|本記事|この記事)では[、，]?[^。！？\n]{0,40}(?:紹介|解説|説明|整理)します)(?:[。！!]|$)",
         r"無理(?:なく|のない)|自分に合(?:った|う)",
         r"第一歩|秘訣|(?:鍵|カギ)(?:に|と)な(?:ります|る)",
     ].iter().map(|s| Regex::new(s).expect("guide phrase regex")).collect()
-    });
+});
 
 struct Profile {
     chars: usize,
@@ -102,11 +101,10 @@ impl GuideClicheDensity {
             }
             let mut matches = Vec::new();
             for (family, pattern) in FAMILIES.iter().enumerate() {
-                matches.extend(
-                    pattern
-                        .find_iter(value)
-                        .map(|m| (m.start(), m.end(), family)),
-                );
+                matches.extend(pattern.captures_iter(value).filter_map(|captures| {
+                    let m = captures.name("m").or_else(|| captures.get(0))?;
+                    Some((m.start(), m.end(), family))
+                }));
             }
             matches.sort_by_key(|&(start, end, _)| (start, std::cmp::Reverse(end)));
             let mut previous_end = 0;
@@ -200,6 +198,19 @@ mod tests {
         assert!(run(&rule, &format!("{GUIDE}{}", "記録を読んだ。".repeat(300))).is_empty());
         let md = dense.replacen("必要はありません", "**必要はありません**", 1);
         assert_eq!(matched(&md, &run(&rule, &md)), ["必要はありません"]);
+    }
+
+    #[test]
+    fn excludes_past_tense_questions_and_relative_clauses() {
+        let rule = GuideClicheDensity::default();
+        let record = "当時は現場の判断が重要だった。担当者は変える必要はないかを会議で確認した。作業が見やすくなるかどうかは未確認だ。港につながる道を調べた。事故を防げるかを尋ねた。".repeat(30);
+        assert!(run(&rule, &record).is_empty());
+        let guide =
+            "その方法でも大丈夫です。大切なのは、記録を残すことです。誤りを見つけやすくなります。"
+                .repeat(50);
+        let d = run(&rule, &guide);
+        assert_eq!(matched(&guide, &d), ["でも大丈夫です"]);
+        assert_eq!(&guide[d[0].related[0].range()], "大切なのは、");
     }
 
     #[test]
