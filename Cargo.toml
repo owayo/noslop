@@ -11,6 +11,9 @@ readme = "README.md"
 keywords = ["linter", "japanese", "writing", "markdown", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 
+[package.metadata.project-standard]
+readme-languages = ["ja"]
+
 [[bin]]
 name = "noslop"
 path = "src/main.rs"
