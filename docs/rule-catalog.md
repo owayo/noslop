@@ -40,6 +40,7 @@
 | P19 | `HYPE` | 根拠のない誇張表現 | slop | experimental |
 | P20 | `COLON_CONTINUATION` | 「以下の通りです：」のような述語とコロンでの列挙の導入 | slop | experimental |
 | P21 | `VAGUE_ATTRIBUTION` | 「専門家は〜と指摘しています」などの出典をぼかした権威付け | slop | experimental |
+| P22 | `CITATION_ARTIFACT` | 出典のリンクに変換されず残った生成ツールの引用マーカー | slop | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
 | R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |
@@ -56,6 +57,8 @@
 | R14 | `DUPLICATE_PASSAGE` | 同じ文・段落の再登場（初出の行・列も表示） | readability | experimental |
 | R15 | `FORMULAIC_FUTURE_CLOSER` | 文書末尾の「課題は残る → 今後に期待する」という結び | slop | experimental |
 | R16 | `REPEATED_EVALUATIVE_TRIAD` | 短い評価語・抽象語の三項列挙の反復 | slop | experimental |
+| R17 | `GUIDE_CLICHE_DENSITY` | 解説の定型句の密集（複数系統の語句と本文量で判定） | slop | experimental |
+| R18 | `REPEATED_NOMINAL_LIST` | 名詞句を三つ以上並べる体言止めの反復 | slop | experimental |
 | S01 | `BOLD_DENSITY` | 太字の多用 | slop | experimental |
 | S02 | `BULLET_RATIO` | 箇条書きへの偏り | slop | experimental |
 | S03 | `BOILERPLATE_HEADING` | 「まとめ」「おわりに」などの定型見出し | slop | experimental |

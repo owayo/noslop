@@ -6,7 +6,7 @@
 
 noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust 製の Linter。判定器ではなく、疑わしい箇所を決定的に並べ、直すかどうかは書き手に委ねる。
 
-- 文字種・語句パターン・文長の統計で判定する。品詞で数えるルール (P15・P16) は hasami の辞書で判定する (`morph.rs`)。既定 (`dictionary = "auto"`) では、share ディレクトリに取得した配布辞書を hasami の推奨順で選び、なければバイナリに同梱した IPAdic の辞書 (`dict/ipadic.hsd`) を使う。元の校正は同梱の IPAdic で行ったので、その条件で判定するなら `dictionary = "bundled"`。`--no-dict` や、同梱しないビルドで辞書が見つからないときは辞書なしの近似で動く
+- 文字種・語句パターン・文長の統計で判定する。品詞で数えるルール (P15・P16・R18) は hasami の辞書で判定する (`morph.rs`)。既定 (`dictionary = "auto"`) では、share ディレクトリに取得した配布辞書を hasami の推奨順で選び、なければバイナリに同梱した IPAdic の辞書 (`dict/ipadic.hsd`) を使う。元の校正は同梱の IPAdic で行ったので、その条件で判定するなら `dictionary = "bundled"`。`--no-dict` や、同梱しないビルドで辞書が見つからないときは辞書なしの近似で動く
 - 設定はユーザーの設定 (`~/.config/noslop/config.toml`) とプロジェクトの設定 (`noslop.toml`) の 2 層で、既定値 < ユーザー < プロジェクト < CLI の順に項目ごとに重ねる (`config.rs`)
 - 文書 (Markdown・テキスト) のほかに、コードのファイルのコメント (tree-sitter で取り出す。`code/`) を検査できる。コメントや表計算のセルのような互いに独立した短い断片の集まり (`DocumentKind::Fragments`) には、1 文ずつ判定するルール (`RuleUnit::Sentence`) だけを当てる。文書・段落をまたいで数えるルールは、ひと続きの地の文で校正したため
 - 既定で有効にするのは、コーパスで誤検知率を確かめた語句と閾値だけ。未校正のものは experimental にする
@@ -91,8 +91,8 @@ flowchart TD
 | `src/genre.rs` | ジャンルと別名 |
 | `src/diagnostic.rs` | 診断・重大度・レーン・ステータス・原文上の範囲 |
 | `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、判定の単位 (`RuleUnit`。1 文ずつか、文書・段落をまたぐか)、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |
-| `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/attribution.rs` が出典をぼかした権威付け (P21)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
-| `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas・duplicates・future_closer・triads) |
+| `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/attribution.rs` が出典をぼかした権威付け (P21)、`phrases/artifacts.rs` が引用マーカーの残骸 (P22)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
+| `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas・duplicates・future_closer・triads・guide_density・nominal_lists) |
 | `src/rules/structure.rs` | 構造系 (`S01`〜`S10`) |
 | `src/rules/custom.rs` | 設定ファイルの独自ルール (`[[custom]]`) |
 | `src/rules/testing.rs` | ルールのテスト用の近道 (`run` / `run_with` / `matched`) と、`measure` と `check` の一致の確認 (`assert_measures_agree`) |

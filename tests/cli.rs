@@ -32,6 +32,89 @@ const DOC_WITH_TERM: &str =
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
 #[test]
+fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
+    let guide = "すべて変える必要はありません。手順の確認が大切です。誤りを見つけやすくなります。"
+        .repeat(50);
+    let nominal = "早朝の冷気、駅の階段、店の看板。".repeat(2);
+    let text = format!("引用元 [cite: 7]。\n\n{guide}\n\n{nominal}");
+    for enabled in [false, true] {
+        let mut cmd = noslop();
+        cmd.args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "draft.md",
+            "--no-config",
+            "--no-dict",
+            "--format",
+            "json",
+        ]);
+        if enabled {
+            cmd.arg("--experimental");
+        }
+        let output = cmd
+            .write_stdin(text.as_str())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&output);
+        for (id, count) in [("P22", 1), ("R17", 1), ("R18", 2)] {
+            assert_eq!(
+                rule_count(&report, id),
+                if enabled { count } else { 0 },
+                "{id}"
+            );
+        }
+        if enabled {
+            for d in report["files"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| ["P22", "R17", "R18"].contains(&d["ruleId"].as_str().unwrap()))
+            {
+                assert_eq!(d["status"], "experimental");
+                assert_eq!(d["lane"], "slop");
+                assert_eq!(
+                    d["severity"],
+                    if d["ruleId"] == "P22" {
+                        "warning"
+                    } else {
+                        "info"
+                    }
+                );
+            }
+        }
+    }
+    // コメントを集めた文書には文書単位の集計を当てず、引用マーカーだけ拾う。
+    let code = format!("// 引用元 [cite: 7]。\n// {guide}\n// {nominal}\nfn main() {{}}\n");
+    let output = noslop()
+        .args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "sample.rs",
+            "--no-config",
+            "--no-dict",
+            "--only-rules",
+            "P22,R17,R18",
+            "--format",
+            "json",
+        ])
+        .write_stdin(code)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report = json(&output);
+    assert_eq!(rule_count(&report, "P22"), 1);
+    assert_eq!(rule_count(&report, "R17"), 0);
+    assert_eq!(rule_count(&report, "R18"), 0);
+}
+
+#[test]
 fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
     let dir = tempfile::tempdir().unwrap();
     let text = "おっしゃる通りです。必要であれば表も作成できます。\n\n専門家は有効だと指摘しています。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n操作は速く、柔軟で、直感的です。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。\n\n運用には課題が残ります。しかし、今後の普及が期待されます。\n";

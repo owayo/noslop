@@ -12,8 +12,10 @@ mod commas;
 mod duplicates;
 mod endings;
 mod future_closer;
+mod guide_density;
 mod leads;
 mod length;
+mod nominal_lists;
 mod overcorrection;
 mod paragraphs;
 mod self_answer;
@@ -44,6 +46,8 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(duplicates::DuplicatePassage::default()),
         Box::new(future_closer::FormulaicFutureCloser),
         Box::new(triads::RepeatedEvaluativeTriad::default()),
+        Box::new(guide_density::GuideClicheDensity::default()),
+        Box::new(nominal_lists::RepeatedNominalList::default()),
     ]
 }
 
@@ -109,8 +113,9 @@ mod tests {
     use crate::rules::testing::{self, assert_measures_agree};
 
     /// measure を実装しているルール。R10・R11・R15 は閾値を持たない。
-    const MEASURED: [&str; 13] = [
+    const MEASURED: [&str; 15] = [
         "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13", "R14", "R16",
+        "R17", "R18",
     ];
 
     fn rule_by_id(id: &str) -> Box<dyn Rule> {
@@ -271,6 +276,12 @@ mod tests {
             // R16 (三項列挙の反復と単発)
             "操作は速く、柔軟で、直感的です。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。\n".into(),
             "操作は速く、柔軟で、直感的です。\n".into(),
+            // R18 (辞書なしでも拾える名詞句の反復と単発)
+            "早朝の冷気、駅の階段、店の看板。".repeat(2),
+            "早朝の冷気、駅の階段、店の看板。".into(),
+            // R17 (密集と、字数を満たすが密度の低い本文)
+            "すべて変える必要はありません。手順の確認が大切です。誤りを見つけやすくなります。".repeat(50),
+            format!("すべて変える必要はありません。手順の確認が大切です。誤りを見つけやすくなります。{}", "記録を読んだ。".repeat(300)),
         ]
     }
 
@@ -310,7 +321,7 @@ mod tests {
     #[test]
     fn rule_ids_are_in_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=16).map(|n| format!("R{n:02}")).collect();
+        let expected: Vec<String> = (1..=18).map(|n| format!("R{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -318,7 +329,10 @@ mod tests {
     fn new_rules_are_experimental_slop_rules_with_the_explanation_template() {
         for rule in rules(Genre::General) {
             let m = rule.meta();
-            if !matches!(m.id, "R11" | "R12" | "R13" | "R14" | "R15" | "R16") {
+            if !matches!(
+                m.id,
+                "R11" | "R12" | "R13" | "R14" | "R15" | "R16" | "R17" | "R18"
+            ) {
                 continue;
             }
             let lane = if m.id == "R14" {
