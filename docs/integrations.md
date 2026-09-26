@@ -262,16 +262,20 @@ printf '{"hook_event_name":"Stop","cwd":"%s","stop_hook_active":false}' "$PWD" |
 
 ## パスだけを渡すフック (`noslop hook file`)
 
-フックの入力 (JSON) を渡せず、編集したファイルのパスだけを渡す仕組みから呼ぶためのものです。たとえば [claw-hooks](https://github.com/owayo/claw-hooks) の `extension_hooks` は、拡張子ごとのコマンドにファイルのパスを `{file}` で渡し、コマンドの出力を Claude Code に返します。
+フックの入力 (JSON) を渡せず、編集したファイルのパスだけを渡す仕組みから呼ぶためのものです。たとえば [claw-hooks](https://github.com/owayo/claw-hooks) の `extension_hooks` は、編集したファイルのパスを `{file}` でコマンドに渡し、コマンドの出力をエージェントに返します。
+
+検査するかどうかは noslop が決める (対象外のファイルでは何も出さずにすぐ終わる) ので、編集したすべてのファイルを渡せば足ります。claw-hooks v26.9.103 以上なら、すべてのファイルに当てるキー `"*"` の 1 行で済みます。`"*"` のコマンドは、拡張子のキーのコマンド (整形など) の後に動きます。
 
 ```toml
 # ~/.config/claw-hooks/config.toml
 [extension_hooks]
-".md" = ["noslop hook file --max-chars 900 {file}"]
-".markdown" = ["noslop hook file --max-chars 900 {file}"]
-# コードのコメントも見るなら、noslop の設定の [code] extensions にも拡張子を書く
-".rs" = ["rustfmt {file}", "noslop hook file --max-chars 900 {file}"]
+".rs" = ["rustfmt {file}"]
+"*" = ["noslop hook file --max-chars 900 {file}"]
 ```
+
+- 拡張子のキーにも noslop を書くと、そのファイルでは 2 回動きます (`claw-hooks check` が警告します)
+- `"*"` は claw-hooks v26.9.103 以上で書けます。古い版は設定の誤りとして扱い、シェルのコマンドをすべて止めるので、入っている claw-hooks をすべて上げてから書いてください。古い版では、拡張子ごとのキー (`".md" = ["noslop hook file --max-chars 900 {file}"]` など) に並べます
+- コードのコメントも見るなら、noslop の設定の `[code] extensions` にコードの拡張子を書きます (`noslop init` のひな形に、読める拡張子すべてを並べてあります)
 
 ### 動き
 
