@@ -55,6 +55,34 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 - **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
 - **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ
 
+コメントを読めるコードの言語（拡張子と設定は [コードのコメント](#コードのコメント) にあります。`code-all` の付いた言語は、feature の `code-all` を付けたビルドで読めます）:
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-000000?logo=rust&amp;logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&amp;logoColor=black" alt="JavaScript">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&amp;logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/TSX-61DAFB?logo=react&amp;logoColor=black" alt="TSX">
+  <img src="https://img.shields.io/badge/Python-3776AB?logo=python&amp;logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Go-00ADD8?logo=go&amp;logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/Java-ED8B00?logo=openjdk&amp;logoColor=white" alt="Java">
+  <img src="https://img.shields.io/badge/C-A8B9CC?logo=c&amp;logoColor=white" alt="C">
+  <img src="https://img.shields.io/badge/Bash-4EAA25?logo=gnubash&amp;logoColor=white" alt="Bash">
+  <img src="https://img.shields.io/badge/YAML-CB171E?logo=yaml&amp;logoColor=white" alt="YAML">
+  <img src="https://img.shields.io/badge/TOML-9C4121?logo=toml&amp;logoColor=white" alt="TOML">
+  <img src="https://img.shields.io/badge/HTML-E34F26?logo=html5&amp;logoColor=white" alt="HTML">
+  <img src="https://img.shields.io/badge/CSS-663399?logo=css&amp;logoColor=white" alt="CSS">
+  <img src="https://img.shields.io/badge/Lua-2C2D72?logo=lua&amp;logoColor=white" alt="Lua">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/C++-code--all-555555?logo=cplusplus&amp;logoColor=white&amp;labelColor=00599C" alt="C++ (code-all)">
+  <img src="https://img.shields.io/badge/C%23-code--all-555555?logo=dotnet&amp;logoColor=white&amp;labelColor=512BD4" alt="C# (code-all)">
+  <img src="https://img.shields.io/badge/Ruby-code--all-555555?logo=ruby&amp;logoColor=white&amp;labelColor=CC342D" alt="Ruby (code-all)">
+  <img src="https://img.shields.io/badge/PHP-code--all-555555?logo=php&amp;logoColor=white&amp;labelColor=777BB4" alt="PHP (code-all)">
+  <img src="https://img.shields.io/badge/Swift-code--all-555555?logo=swift&amp;logoColor=white&amp;labelColor=F05138" alt="Swift (code-all)">
+  <img src="https://img.shields.io/badge/Kotlin-code--all-555555?logo=kotlin&amp;logoColor=white&amp;labelColor=7F52FF" alt="Kotlin (code-all)">
+</p>
+
 ## 動作環境
 
 - **OS**: macOS、Linux、Windows
