@@ -599,7 +599,7 @@ impl Approvals {
             let _ = fs::remove_file(&tmp);
             // 同じ書き込みを同時に止めたフックが先に記録を置いた (置き換えられない環境がある) なら、
             // その記録で実行し直しを通せるので、置けたのと同じに扱う
-            if target.is_file() {
+            if self.fresh(key, now) {
                 return Ok(());
             }
         }
@@ -1182,6 +1182,26 @@ severity = "info"
         // 期限を過ぎれば、記録も一時ファイルも消す
         store.sweep(now + RETRY_WINDOW_SECS + 60);
         assert_eq!(names(), vec!["unrelated.txt".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_stale_record_does_not_count_as_a_saved_retry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cache = tempfile::tempdir().unwrap();
+        let store = Approvals::new(cache.path());
+        fs::create_dir_all(&store.dir).unwrap();
+        let key = "a".repeat(64);
+        fs::write(store.dir.join(&key), "0").unwrap();
+        let mut permissions = fs::metadata(&store.dir).unwrap().permissions();
+        permissions.set_mode(0o500);
+        fs::set_permissions(&store.dir, permissions).unwrap();
+        let result = store.put(&key, RETRY_WINDOW_SECS + 1);
+        let mut permissions = fs::metadata(&store.dir).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&store.dir, permissions).unwrap();
+        assert!(result.is_err(), "期限切れの記録では再実行を通せない");
     }
 
     #[test]

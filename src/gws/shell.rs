@@ -8,7 +8,8 @@
 //!   `$'...'`、それらをつないだもの
 //! - ダブルクォートの中の、ヒアドキュメントを `cat` で出すだけのコマンド置換 (`"$(cat <<'EOF' … EOF)"`)。
 //!   区切りの語をクォートしていないヒアドキュメントは、本文に `$` とバッククォートがないときだけ。
-//!   コマンド行の中で `cat` を関数やエイリアスとして定義し直していれば読まない
+//!   コマンド行の中で `cat` を関数やエイリアスとして定義し直していれば読まない。
+//!   パスを指定する場合は `/bin/cat` と `/usr/bin/cat` だけを読む
 //!
 //! 変数・コマンド置換・算術式・パス名やブレースの展開を含む引数は、値が決まらないものにする。クォートの
 //! 中の展開だけなら 1 語になる ([`Arg::Unknown`])。クォートしていない展開は、単語分割とパス名の展開を
@@ -301,7 +302,10 @@ impl<'a> Reader<'a> {
                 child
                     .named_child(0)
                     .and_then(|n| self.value(n, true))
-                    .is_some_and(|name| program_name(&name) == Some("cat"))
+                    // 任意のパスの同名プログラムは、ヒアドキュメントをそのまま出すとは限らない
+                    .is_some_and(|name| {
+                        matches!(name.as_str(), "cat" | "/bin/cat" | "/usr/bin/cat")
+                    })
             } else {
                 self.value(child, true).as_deref() == Some("-")
             }
@@ -734,6 +738,8 @@ mod tests {
             "gws a --b \"$(cat -n <<'EOF'\nx\nEOF\n)\"",
             "gws a --b \"$(printf '%s' x)\"",
             "gws a --b \"$(sed s/a/b/ <<'EOF'\nx\nEOF\n)\"",
+            // 任意の実行ファイルは、名前が cat でも本文をそのまま出すとは限らない
+            "gws a --b \"$(/tmp/cat <<'EOF'\nx\nEOF\n)\"",
         ] {
             assert_eq!(only(command)[2], Arg::Unknown, "{command}");
         }
@@ -759,6 +765,10 @@ mod tests {
         assert_eq!(only("gws a --b \"$(cat - <<'EOF'\nx\nEOF\n)\"")[2], s("x"));
         assert_eq!(
             only("gws a --b \"$(/bin/cat <<'EOF'\nx\nEOF\n)\"")[2],
+            s("x")
+        );
+        assert_eq!(
+            only("gws a --b \"$(/usr/bin/cat <<'EOF'\nx\nEOF\n)\"")[2],
             s("x")
         );
     }

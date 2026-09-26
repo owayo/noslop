@@ -227,7 +227,7 @@ Stop の入力には、そのターンに編集したファイルが含まれま
 
 Bash の呼び出しのうち、[gws](https://github.com/googleworkspace/cli) (Google Workspace CLI) で Google ドキュメント・スプレッドシートに書き込むものを、書き込む前に検査します。
 
-- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。変数やコマンド置換で決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`&&`・`;`・パイプ・サブシェルでつないだ gws と、`env`・`command` を前に付けた gws は読み、`bash -c '...'`・`sudo`・スクリプトの中の gws は読みません (`bash -c` と `sudo` の中まで読むなら、claw-hooks のコマンドフック [`noslop hook command`](#claw-hooks-のコマンドフック-noslop-hook-command) を使います)。`gws` を含まないコマンドは、設定も読まずに素通しします
+- コマンドは tree-sitter-bash で解析し、静的に決まる値 (クォートした文字列と、`--json "$(cat <<'EOF' ... EOF)"` のようなヒアドキュメント) だけを読みます。ヒアドキュメントをそのまま出すコマンドとして扱うのは `cat`・`/bin/cat`・`/usr/bin/cat` です。ほかのパスにある同名の実行ファイルの出力や、変数などで決まる値は読みません。コマンドを実行したり、コマンドが読むファイルを開いたりはしません。`&&`・`;`・パイプ・サブシェルでつないだ gws と、`env`・`command` を前に付けた gws は読み、`bash -c '...'`・`sudo`・スクリプトの中の gws は読みません (`bash -c` と `sudo` の中まで読むなら、claw-hooks のコマンドフック [`noslop hook command`](#claw-hooks-のコマンドフック-noslop-hook-command) を使います)。`gws` を含まないコマンドは、設定も読まずに素通しします
 - 検査する値は次のとおりです。日本語を含まない値と、`=` で始まるセル (数式) は見ません
 
   | コマンド | 値 | 扱い |
