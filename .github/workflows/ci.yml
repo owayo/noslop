@@ -15,33 +15,28 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # mise 自身の版の正はここ (mise.toml には mise 自身を書けない)。
-  # 公開から 14 日以上たった版を選び、release.yml と同じ値にそろえる。
-  MISE_VERSION: "2026.9.4"
 
 jobs:
-  check:
-    name: Check (${{ matrix.os }})
+  quality:
+    name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
 
     steps:
-      # Windows のランナーは既定で LF を CRLF に変えて checkout する。
-      # テストの期待値 (行・列・バイト位置) は LF 前提なので、改行を変換させない。
-      - name: Keep LF line endings
-        run: git config --global core.autocrlf false
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Rust の版は mise.toml が正 (clippy / rustfmt もそこで入る)
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: jdx/mise-action@v4
         with:
-          version: ${{ env.MISE_VERSION }}
+          minimum_release_age: 14d
+          cache: false
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2
 
       - name: Show toolchain
         run: |
@@ -53,12 +48,50 @@ jobs:
       # 辞書を同梱しないビルドのテスト)。
       # 検査を足すときは Makefile の ci に足す
       - name: Set up
-        if: runner.os != 'Windows'
         run: make setup
 
       - name: Run checks (make ci)
-        if: runner.os != 'Windows'
         run: make ci
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: quality
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@v4
+        with:
+          minimum_release_age: 14d
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # mise が入れた (mise.toml の版の) ツールチェーンにターゲットを足す
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
 
       # Windows のランナーの make は MinGW の mingw32-make の写しで、レシピの POSIX シェル前提の
       # 解釈に癖があるため make を使わない。make ci と同じ cargo のコマンドを直接呼ぶ
@@ -73,46 +106,11 @@ jobs:
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --locked
+        run: cargo test --locked --no-fail-fast
 
       - name: Run tests without the bundled dictionary (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --locked --no-default-features
-
-  build:
-    name: Build (${{ matrix.target }})
-    needs: check
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-
-    steps:
-      - name: Keep LF line endings
-        run: git config --global core.autocrlf false
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          version: ${{ env.MISE_VERSION }}
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: ${{ matrix.target }}
-
-      # mise が入れた (mise.toml の版の) ツールチェーンにターゲットを足す
-      - name: Add Rust target
-        run: rustup target add ${{ matrix.target }}
+        run: cargo test --locked --no-default-features --no-fail-fast
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
