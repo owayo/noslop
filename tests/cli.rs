@@ -115,6 +115,50 @@ fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
 }
 
 #[test]
+fn nominal_list_calibration_does_not_suggest_a_forbidden_single_occurrence() {
+    let dir = tempfile::tempdir().unwrap();
+    let human = dir.path().join("human");
+    let ai = dir.path().join("ai");
+    fs::create_dir_all(&human).unwrap();
+    fs::create_dir_all(&ai).unwrap();
+    let sentence = "早朝の冷気、駅の階段、店の看板。";
+    fs::write(human.join("ordinary.md"), "朝の電車で学校に向かった。").unwrap();
+    fs::write(ai.join("single.md"), sentence).unwrap();
+    fs::write(ai.join("repeated.md"), sentence.repeat(2)).unwrap();
+    let config = dir.path().join("noslop.toml");
+    fs::write(&config, "[morphology]\nmode = \"off\"\n").unwrap();
+    let output = noslop()
+        .args(["calibrate", "--human"])
+        .arg(&human)
+        .arg("--ai")
+        .arg(&ai)
+        .args([
+            "--holdout",
+            "0",
+            "--genre",
+            "essay",
+            "--format",
+            "json",
+            "--config",
+        ])
+        .arg(config)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report = json(&output);
+    let sweep = report["thresholds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ruleId"] == "R18")
+        .unwrap();
+    assert_eq!(sweep["suggested"]["threshold"], 2.0);
+    assert_eq!(sweep["suggested"]["all"]["aiFired"], 1);
+}
+
+#[test]
 fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
     let dir = tempfile::tempdir().unwrap();
     let text = "おっしゃる通りです。必要であれば表も作成できます。\n\n専門家は有効だと指摘しています。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n操作は速く、柔軟で、直感的です。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。\n\n運用には課題が残ります。しかし、今後の普及が期待されます。\n";
