@@ -5,11 +5,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
-use crate::document::Sentence;
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleContext, RuleMeta};
 
-use super::strip_sentence_end;
+use super::{adjacent_prose_pairs, strip_sentence_end};
 
 static META: RuleMeta = RuleMeta {
     id: "R10",
@@ -26,7 +25,8 @@ const EXPLANATION: &str = "\
 ### 何を見るか
 
 「それは〜である。」「これは〜だ。」の直後に、「なぜなら」「というのも」で始まる文が続く 2 文を\
-指します。
+指します。空行だけを挟む段落間も対象ですが、見出し・リスト・引用・表・コード・HTML・区切り線や、\
+日本語を含まない文を間に挟む組は数えません。
 
 ### なぜ問題か
 
@@ -72,9 +72,7 @@ impl Rule for CleftBecause {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
-        let sentences: Vec<&Sentence> = doc.prose_sentences().collect();
-        for pair in sentences.windows(2) {
-            let (first, second) = (pair[0], pair[1]);
+        for (first, second) in adjacent_prose_pairs(doc) {
             let head = strip_sentence_end(doc.sentence_text(first).trim_start());
             let next = doc.sentence_text(second).trim_start();
             if !HEAD_RE.is_match(head) || !BECAUSE_RE.is_match(next) {

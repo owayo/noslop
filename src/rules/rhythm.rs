@@ -19,6 +19,7 @@ mod paragraphs;
 mod self_answer;
 mod triads;
 
+use crate::document::{Document, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleMeta, option_f64};
 // 各ルールは `super::` から使う (文末と体言止めの判定は `noslop diff` と共有する)
@@ -44,6 +45,24 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(future_closer::FormulaicFutureCloser),
         Box::new(triads::RepeatedEvaluativeTriad::default()),
     ]
+}
+
+/// 間に別の内容を挟まない、日本語の地の文の組。
+///
+/// 対象外の文を先に除くと英文や見出しを飛び越すため、全文の隣接を先に見る。
+/// コードや HTML などブロックに残らない内容は、ブロック間の原文で確かめる。
+fn adjacent_prose_pairs(doc: &Document) -> impl Iterator<Item = (&Sentence, &Sentence)> {
+    doc.sentences.windows(2).filter_map(|pair| {
+        let (first, second) = (&pair[0], &pair[1]);
+        let (previous, next) = (&doc.blocks[first.block], &doc.blocks[second.block]);
+        let adjacent = first.block == second.block
+            || (first.block + 1 == second.block
+                && doc.source[previous.span.end..next.span.start]
+                    .trim()
+                    .is_empty());
+        (first.japanese && second.japanese && previous.is_prose() && next.is_prose() && adjacent)
+            .then_some((first, second))
+    })
 }
 
 /// 平均と母標準偏差。空なら `None`。
@@ -87,7 +106,7 @@ mod tests {
     use crate::diagnostic::{Lane, RuleStatus, Severity};
     use crate::document::Document;
     use crate::rules::RuleContext;
-    use crate::rules::testing::assert_measures_agree;
+    use crate::rules::testing::{self, assert_measures_agree};
 
     /// measure を実装しているルール。R10・R11・R15 は閾値を持たない。
     const MEASURED: [&str; 13] = [
@@ -99,6 +118,50 @@ mod tests {
             .into_iter()
             .find(|r| r.meta().id == id)
             .unwrap_or_else(|| panic!("{id} がありません"))
+    }
+
+    #[test]
+    fn sentence_pair_rules_do_not_skip_intervening_content() {
+        for (id, first, second) in [
+            (
+                "R10",
+                "これは運用上の問題だ。",
+                "なぜなら、記録が残らないからだ。",
+            ),
+            (
+                "R11",
+                "なぜ記録が残らないのか？",
+                "理由は、保存先を指定していないからだ。",
+            ),
+        ] {
+            let rule = rule_by_id(id);
+            for separator in [
+                "\n\n## 別の話題\n\n",
+                "\n\n- 点検を終えた。\n\n",
+                "\n\n> 点検を終えた。\n\n",
+                "\n\n| 項目 |\n| --- |\n| 点検 |\n\n",
+                "\n\n```text\n点検を終えた。\n```\n\n",
+                "\n\n<div>別の話題</div>\n\n",
+                "\n\n<!-- 注記 -->\n\n",
+                "\n\n![図](figure.png)\n\n",
+                "\n\n---\n\n",
+                "\n\nNo records were found.\n\n",
+                "No records were found. ",
+            ] {
+                let md = format!("{first}{separator}{second}\n");
+                assert!(testing::run(rule.as_ref(), &md).is_empty(), "{id}: {md}");
+            }
+            // 空白だけの段落間と、装飾された文の間は隣接とみなす。
+            for md in [
+                format!("{first}\n\n{second}\n"),
+                format!("**{first}**\n\n**{second}**\n"),
+                format!("{first}\r\n\r\n{second}\r\n"),
+                format!("{first}\n\n\n\n{second}\n"),
+                format!("{first}\n{second}\n"),
+            ] {
+                assert_eq!(testing::run(rule.as_ref(), &md).len(), 1, "{id}: {md}");
+            }
+        }
     }
 
     /// 同じ長さの文を並べた段落。
