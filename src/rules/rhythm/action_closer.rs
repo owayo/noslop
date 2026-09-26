@@ -44,9 +44,14 @@ general と tech で有効です。本文の途中、リスト・表・引用・
 候補の選定にも使った資料なので、独立した評価ではありません。人の資料で指摘がなくても、誤検知率の片側 95% 上限は一般記事で 9.4%、技術記事で 5.7% です。読者への勧めが必要な記事にも出るため、情報として見直しを促します。辞書は使いません。",
 };
 
+static LEAD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"まずは|さっそく|早速|今日から|あなたも|皆さんも|ぜひ|是非|一緒に")
+        .expect("action lead regex")
+});
+
 static CLOSER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?P<m>(?:まずは|さっそく|早速|今日から|あなたも|皆さんも|ぜひ|是非|一緒に)[^。！？!?\n]{0,90}(?:(?:(?:始め|はじめ|試し|ためし|実践し|取り入れ|挑戦し|踏み出し)て|取り組んで)み(?:てください|ましょう|ませんか)|(?:始め|はじめ|試し|ためし|実践し|取り入れ|挑戦し|踏み出し)ま(?:しょう|せんか)))[。！？!?]?\s*$",
+        r"^(?P<m>[^。！？!?\n]{0,90}(?:(?:(?:始め|はじめ|試し|ためし|実践し|取り入れ|挑戦し|踏み出し)て|取り組んで)み(?:てください|ましょう|ませんか)|(?:始め|はじめ|試し|ためし|実践し|取り入れ|挑戦し|踏み出し)ま(?:しょう|せんか)))[。！？!?]?\s*$",
     )
     .expect("action closer regex")
 });
@@ -94,10 +99,26 @@ impl Rule for ClosingCallToAction {
         {
             return;
         }
-        let Some(m) = CLOSER.captures(value).and_then(|c| c.name("m")) else {
+        let range = LEAD.find_iter(value).find_map(|lead| {
+            let before = value[..lead.start()].trim_end();
+            let after = &value[lead.end()..];
+            // 同行者を表す「と一緒に」と、名詞の「是非」は呼びかけに数えない。
+            if (lead.as_str() == "一緒に" && before.ends_with('と'))
+                || (lead.as_str() == "是非"
+                    && after
+                        .trim_start()
+                        .starts_with(['は', 'が', 'を', 'も', 'の']))
+            {
+                return None;
+            }
+            CLOSER
+                .captures(after)
+                .and_then(|c| c.name("m").map(|m| lead.start()..lead.end() + m.end()))
+        });
+        let Some(range) = range else {
             return;
         };
-        let span = block.to_source(last.range.start + m.start()..last.range.start + m.end());
+        let span = block.to_source(last.range.start + range.start..last.range.start + range.end);
         out.push(
             META.diagnostic(span, "文書の末尾に、実践を促す定型の呼びかけがあります")
                 .with_hint("人の解説にもある表現です。行うことが具体的か、本文に沿った助言かを確認し、必要なら残してください")
@@ -139,6 +160,14 @@ mod tests {
                 "まずは一つ試してみてください。",
                 "まずは一つ試してみてください",
             ),
+            (
+                "導入の是非はさておき、まずは小さく試してみてください。",
+                "まずは小さく試してみてください",
+            ),
+            (
+                "是非とも身近な方法から試してみてください。",
+                "是非とも身近な方法から試してみてください",
+            ),
         ] {
             let d = run(&ClosingCallToAction, md);
             assert_eq!(matched(md, &d), [expected], "{md}");
@@ -166,6 +195,9 @@ mod tests {
             "設定後、次のコマンドを実行してください。",
             "まずは身近な方法から試してみるつもりです。",
             "まずは身近な方法から試してみましょうか。",
+            "子どもと一緒に試してみてください。",
+            "是非はともかく、身近な方法から試してみてください。",
+            "ぜひご参加ください。",
         ] {
             assert!(run(&ClosingCallToAction, md).is_empty(), "{md}");
         }
