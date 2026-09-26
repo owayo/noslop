@@ -79,13 +79,18 @@ fn extensions_map_to_one_language() {
 }
 
 #[test]
-fn bash_is_always_available() {
-    assert!(CodeLanguage::Bash.is_available());
-    assert!(CodeLanguage::available_extensions().any(|e| e == "sh"));
+fn every_language_is_readable() {
+    let known: Vec<&str> = CodeLanguage::known_extensions().collect();
+    for lang in CodeLanguage::ALL {
+        for ext in lang.extensions() {
+            assert!(known.contains(ext), "{ext}");
+        }
+    }
+    assert!(known.contains(&"sh") && known.contains(&"swift"));
 }
 
 #[test]
-fn every_available_grammar_loads_and_reads_a_comment() {
+fn every_grammar_loads_and_reads_a_comment() {
     // 文法の ABI が tree-sitter と合わないと、読み込みで止まる
     let samples = [
         (CodeLanguage::Rust, "// 説明です。\n"),
@@ -111,16 +116,10 @@ fn every_available_grammar_loads_and_reads_a_comment() {
     ];
     assert_eq!(samples.len(), CodeLanguage::ALL.len());
     for (lang, src) in samples {
-        let expected: &[&str] = if lang.is_available() {
-            &["P:説明です。"]
-        } else {
-            &[]
-        };
-        assert_eq!(outline(src, lang), expected, "{lang:?}");
+        assert_eq!(outline(src, lang), ["P:説明です。"], "{lang:?}");
     }
 }
 
-#[cfg(feature = "lang-rust")]
 #[test]
 fn rust_comments_doc_comments_and_strings() {
     let src = r##"//! クレートの説明です。
@@ -173,7 +172,6 @@ struct S;
     );
 }
 
-#[cfg(feature = "lang-javascript")]
 #[test]
 fn javascript_jsdoc_regex_and_template_literals() {
     let src = "#!/usr/bin/env node
@@ -211,7 +209,6 @@ function double(a) {
     );
 }
 
-#[cfg(feature = "lang-typescript")]
 #[test]
 fn typescript_and_tsx_comments() {
     // 参照の指示は外し、`/*!` の `!` は記号として外す
@@ -231,7 +228,6 @@ fn typescript_and_tsx_comments() {
     );
 }
 
-#[cfg(feature = "lang-python")]
 #[test]
 fn python_comments_and_docstrings() {
     let src = r##"#!/usr/bin/env python3
@@ -274,7 +270,6 @@ class C:
     );
 }
 
-#[cfg(feature = "lang-go")]
 #[test]
 fn go_comments_and_build_directives() {
     let src = "//go:build linux
@@ -298,7 +293,6 @@ func f() string { return \"// 文字列の中\" } // 行末のコメント。
     );
 }
 
-#[cfg(feature = "lang-java")]
 #[test]
 fn javadoc_is_read_without_html_tags() {
     let src = "/**
@@ -325,7 +319,6 @@ class A {
     assert_eq!(d.slice(d.blocks[1].to_source(pos..pos + 3)), "{@code null}");
 }
 
-#[cfg(feature = "lang-c")]
 #[test]
 fn c_doxygen_and_ordinary_comments_are_separate() {
     let src = "/** 文書のコメントです。 */\n/// 三本の斜線の文書です。\n// 普通のコメントです。\nint main(void) { char *s = \"// 文字列\"; return 0; /* 末尾のコメント。 */ }\n";
@@ -361,7 +354,6 @@ x=${y#pre} # 展開の後ろのコメントです。
     );
 }
 
-#[cfg(all(feature = "lang-yaml", feature = "lang-toml"))]
 #[test]
 fn yaml_and_toml_comments_skip_strings() {
     let src = "# 先頭のコメントです。\nkey: \"# 文字列の中\" # 行末のコメントです。\ntext: |\n  # ブロックの文字列の中\n";
@@ -376,7 +368,6 @@ fn yaml_and_toml_comments_skip_strings() {
     );
 }
 
-#[cfg(all(feature = "lang-html", feature = "lang-css", feature = "lang-lua"))]
 #[test]
 fn html_css_and_lua_comments() {
     let src = "<!-- HTML のコメントです。 -->\n<p>本文は読みません。</p>\n";
@@ -397,7 +388,6 @@ fn html_css_and_lua_comments() {
     );
 }
 
-#[cfg(feature = "lang-cpp")]
 #[test]
 fn cpp_comments() {
     let src = "/// 三本の斜線の文書です。\n// 普通のコメントです。\nauto s = \"// 文字列\"; // 行末のコメントです。\n";
@@ -411,7 +401,6 @@ fn cpp_comments() {
     );
 }
 
-#[cfg(feature = "lang-csharp")]
 #[test]
 fn csharp_xml_documentation_comments() {
     let src = "/// <summary>
@@ -431,7 +420,6 @@ class A { string s = \"// 文字列の中\"; }
     );
 }
 
-#[cfg(feature = "lang-ruby")]
 #[test]
 fn ruby_comments_and_embedded_documents() {
     let src = "#!/usr/bin/env ruby
@@ -457,7 +445,6 @@ y = 1 # 行末のコメントです。
     );
 }
 
-#[cfg(feature = "lang-php")]
 #[test]
 fn php_comments() {
     let src = "<?php\n/** 文書のコメントです。 */\n// 行のコメントです。\n# シャープのコメントです。\n$s = \"// 文字列の中\";\n";
@@ -471,7 +458,6 @@ fn php_comments() {
     );
 }
 
-#[cfg(all(feature = "lang-swift", feature = "lang-kotlin"))]
 #[test]
 fn swift_and_kotlin_comments() {
     let src = "/// 文書のコメントです。\n// 普通のコメントです。\n/* ブロック /* 入れ子 */ の続きです。 */\nlet s = \"// 文字列の中\"\n";
@@ -560,7 +546,6 @@ fn directives_in_comments_suppress_by_line() {
     );
 }
 
-#[cfg(feature = "lang-rust")]
 #[test]
 fn directives_in_doc_comments_use_both_forms() {
     let src = "/// noslop-disable-file R03
@@ -591,7 +576,6 @@ fn main() {}
     );
 }
 
-#[cfg(feature = "lang-rust")]
 #[test]
 fn doc_comments_without_japanese_still_carry_directives() {
     let src = "/// Reads the config. <!-- noslop-disable-file -->\nfn main() {}\n";
@@ -604,7 +588,6 @@ fn doc_comments_without_japanese_still_carry_directives() {
     );
 }
 
-#[cfg(feature = "lang-rust")]
 #[test]
 fn doc_comments_are_markdown() {
     let src = "/// # 例
@@ -690,14 +673,6 @@ fn positions_survive_bom_crlf_and_tabs() {
         src.find("二行目").unwrap()
     );
     assert_eq!(d.line_col(second.span.start), (2, 5));
-}
-
-#[test]
-fn unavailable_grammars_read_nothing() {
-    for lang in CodeLanguage::ALL.into_iter().filter(|l| !l.is_available()) {
-        let (blocks, directives) = parse("// 説明です。\n# 説明です。\n", lang);
-        assert!(blocks.is_empty() && directives.is_empty(), "{lang:?}");
-    }
 }
 
 #[test]
