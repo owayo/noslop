@@ -296,6 +296,123 @@ fn claude_code_hook_reports_bad_input_without_blocking() {
         .stderr(predicate::str::contains("JSON"));
 }
 
+/// claw-hooks の判定器の入力 (gws の呼び出し 1 つ。語はどれも値が決まるもの)。
+fn command_hook_input(dir: &TempDir, argv: &[&str]) -> String {
+    let argv: Vec<Value> = argv
+        .iter()
+        .map(|v| json!({ "value": v, "static": true, "cardinality": "one" }))
+        .collect();
+    json!({
+        "version": 1,
+        "agent": "claude-code",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "abc123",
+        "cwd": dir.path().to_string_lossy(),
+        "analysis": "complete",
+        "context_delivery": true,
+        "argv": argv,
+        "stdin": null,
+    })
+    .to_string()
+}
+
+#[test]
+fn command_hook_denies_with_exit_code_2_and_reports_on_stdout() {
+    let dir = workspace();
+    // 止めた記録の置き場所 (手元のキャッシュに書かない)
+    let cache = tempfile::tempdir().unwrap();
+    let run = |argv: &[&str]| {
+        noslop()
+            .env("XDG_CACHE_HOME", cache.path())
+            .current_dir(dir.path())
+            .args(["hook", "command", "--max-chars", "900"])
+            .write_stdin(command_hook_input(&dir, argv))
+            .output()
+            .unwrap()
+    };
+    let write = [
+        "gws",
+        "docs",
+        "+write",
+        "--document",
+        "D1",
+        "--text",
+        "ユーザー様の声を集めました。",
+    ];
+
+    // 本文の警告: 理由を標準エラーに書いて 2 (名乗りは claw-hooks が付ける)
+    let out = run(&write);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    let reason = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        reason.starts_with("gws で書き込む文章に指摘があるので、コマンドを止めました。"),
+        "{reason}"
+    );
+    assert!(reason.contains("X01"), "{reason}");
+    assert!(reason.chars().count() <= 900);
+
+    // 同じ書き込みを実行し直すと、何も書かずに 0
+    let out = run(&write);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+
+    // 短い値の指摘は、止めずに標準出力で知らせる
+    let out = run(&[
+        "gws",
+        "sheets",
+        "+append",
+        "--spreadsheet",
+        "S1",
+        "--values",
+        "ユーザー様の区分",
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with("gws で書き込んだ値に指摘があります。"),
+        "{text}"
+    );
+
+    // 入力の誤りは 1 (claw-hooks の on_error に従う)
+    noslop()
+        .env("XDG_CACHE_HOME", cache.path())
+        .args(["hook", "command"])
+        .write_stdin("not json")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("JSON"));
+}
+
+/// Claude Code と claw-hooks はフックの終了コード 2 を「止める」と読むので、フックの引数の誤りは 1 で
+/// 終える。誤りを 2 で知らせる約束の `hook git-diff` と、ほかのサブコマンドは 2 のまま。
+#[test]
+fn hook_argument_errors_do_not_look_like_a_block() {
+    for sub in ["command", "claude-code", "file"] {
+        noslop()
+            .args(["hook", sub, "--max-char", "900"])
+            .write_stdin("{}")
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("--max-char"));
+    }
+    noslop().args(["hook", "claude_code"]).assert().code(1);
+    noslop()
+        .args(["hook", "git-diff", "--max-char", "900"])
+        .assert()
+        .code(2);
+    noslop()
+        .args(["check", "--max-char", "900"])
+        .assert()
+        .code(2);
+    noslop()
+        .args(["hook", "command", "--help"])
+        .assert()
+        .code(0);
+}
+
 /// 2026-07-28 版の、リクエストごとに版を名乗る `_meta`。
 fn stateless_meta() -> Value {
     json!({

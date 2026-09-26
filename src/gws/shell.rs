@@ -10,9 +10,10 @@
 //!   区切りの語をクォートしていないヒアドキュメントは、本文に `$` とバッククォートがないときだけ。
 //!   コマンド行の中で `cat` を関数やエイリアスとして定義し直していれば読まない
 //!
-//! 変数・コマンド置換・算術式・パス名やブレースの展開を含む引数と、クォートしていないコマンド置換
-//! (単語分割を受ける) は、値が決まらないもの ([`Arg::Dynamic`]) にする。コマンドは実行せず、コマンドが
-//! 指すファイルも読まない。
+//! 変数・コマンド置換・算術式・パス名やブレースの展開を含む引数は、値が決まらないものにする。クォートの
+//! 中の展開だけなら 1 語になる ([`Arg::Unknown`])。クォートしていない展開は、単語分割とパス名の展開を
+//! 受けて消えることも分かれることもある ([`Arg::Dynamic`])。コマンドは実行せず、コマンドが指すファイルも
+//! 読まない。
 
 use std::sync::LazyLock;
 
@@ -26,8 +27,11 @@ static LANGUAGE: LazyLock<Language> = LazyLock::new(|| tree_sitter_bash::LANGUAG
 pub enum Arg {
     /// 実行しなくても値が決まる引数 (クォートを外し、エスケープを解いたもの)。
     Static(String),
-    /// 変数・コマンド置換・パス名の展開などを含み、実行しないと値が決まらない引数。空になって消える
-    /// ことも、複数の引数に分かれることもある。
+    /// 実行するとちょうど 1 つの引数になるが、値は実行しないと決まらない引数 (`"$DOC"` のように、
+    /// 展開をクォートの中にだけ含むもの)。
+    Unknown,
+    /// クォートしていない変数・コマンド置換・パス名の展開などを含み、実行しないと値が決まらない引数。
+    /// 空になって消えることも、複数の引数に分かれることもある。
     Dynamic,
 }
 
@@ -36,7 +40,7 @@ impl Arg {
     pub fn as_static(&self) -> Option<&str> {
         match self {
             Arg::Static(s) => Some(s),
-            Arg::Dynamic => None,
+            Arg::Unknown | Arg::Dynamic => None,
         }
     }
 }
@@ -144,7 +148,11 @@ impl<'a> Reader<'a> {
         while i < nodes.len() {
             let node = nodes[i];
             let arg = if node.is_named() {
-                self.value(node, true).map_or(Arg::Dynamic, Arg::Static)
+                match self.value(node, true) {
+                    Some(value) => Arg::Static(value),
+                    None if self.is_one_word(node) => Arg::Unknown,
+                    None => Arg::Dynamic,
+                }
             } else {
                 // `$"..."` (翻訳する文字列) は `$` と文字列の 2 つに分かれるので、続く文字列ごと 1 つにする
                 if node.kind() == "$"
@@ -181,6 +189,23 @@ impl<'a> Reader<'a> {
             "concatenation" => self.concatenation(node),
             // クォートしていないコマンド置換は、結果が IFS で単語に分かれ、パス名の展開も受ける
             _ => None,
+        }
+    }
+
+    /// 値の決まらない引数のノードが、実行するとちょうど 1 つの引数になるか (展開をクォートの中にだけ
+    /// 含み、クォートしていない部分にパス名やブレースの展開の記号がない)。
+    fn is_one_word(&self, node: Node) -> bool {
+        match node.kind() {
+            "string" | "raw_string" | "ansi_c_string" => true,
+            "concatenation" => {
+                let mut walker = node.walk();
+                node.children(&mut walker).all(|child| match child.kind() {
+                    "string" | "raw_string" | "ansi_c_string" => true,
+                    "word" => unquoted_word(self.text(child), false).is_some(),
+                    _ => false,
+                })
+            }
+            _ => false,
         }
     }
 
@@ -650,10 +675,20 @@ mod tests {
     }
 
     #[test]
-    fn expansions_are_dynamic() {
-        let args = only(
-            r#"gws x "$HOME" "a${B}c" $C "$(cat file)" `date` $((1+2)) *.md a{b,c} ~/x "価格 $1" --j="$X" $"tr" end"#,
+    fn expansions_in_quotes_are_one_unknown_word() {
+        let args = only(r#"gws x "$HOME" "a${B}c" "$(cat file)" "価格 $1" --j="$X" 'a'"$Y"b end"#);
+        assert_eq!(args[0], s("x"));
+        assert!(
+            args[1..args.len() - 1].iter().all(|a| *a == Arg::Unknown),
+            "{args:?}"
         );
+        assert_eq!(args.last(), Some(&s("end")), "{args:?}");
+    }
+
+    #[test]
+    fn unquoted_expansions_are_dynamic() {
+        // 単語分割・パス名やブレースの展開を受けて、消えることも分かれることもある
+        let args = only(r#"gws x $C `date` $((1+2)) *.md a{b,c} ~/x --j=$X "$Y"* $"tr" end"#);
         assert_eq!(args[0], s("x"));
         assert!(
             args[1..args.len() - 1].iter().all(|a| *a == Arg::Dynamic),
@@ -686,9 +721,9 @@ mod tests {
         let plain = only("gws a --b \"$(cat <<EOF\n本文 \\$5 と \\\\ と \\n\nEOF\n)\"");
         assert_eq!(plain[2], s("本文 $5 と \\ と \\n"));
         let with_var = only("gws a --b \"$(cat <<EOF\n本文 $X\nEOF\n)\"");
-        assert_eq!(with_var[2], Arg::Dynamic);
+        assert_eq!(with_var[2], Arg::Unknown);
         let with_backquote = only("gws a --b \"$(cat <<EOF\n本文 `x`\nEOF\n)\"");
-        assert_eq!(with_backquote[2], Arg::Dynamic);
+        assert_eq!(with_backquote[2], Arg::Unknown);
     }
 
     #[test]
@@ -699,11 +734,14 @@ mod tests {
             "gws a --b \"$(cat -n <<'EOF'\nx\nEOF\n)\"",
             "gws a --b \"$(printf '%s' x)\"",
             "gws a --b \"$(sed s/a/b/ <<'EOF'\nx\nEOF\n)\"",
-            // クォートしないコマンド置換は、結果が IFS で単語に分かれる
-            "gws a --b $(cat <<'EOF'\n一語\nEOF\n)",
         ] {
-            assert_eq!(only(command)[2], Arg::Dynamic, "{command}");
+            assert_eq!(only(command)[2], Arg::Unknown, "{command}");
         }
+        // クォートしないコマンド置換は、結果が IFS で単語に分かれる
+        assert_eq!(
+            only("gws a --b $(cat <<'EOF'\n一語\nEOF\n)")[2],
+            Arg::Dynamic
+        );
         assert_eq!(
             only("gws a --b=$(cat <<'EOF'\n一語\nEOF\n)")[1],
             Arg::Dynamic
@@ -714,7 +752,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                .all(|args| args.get(2).is_none_or(|v| *v == Arg::Dynamic)),
+                .all(|args| args.get(2).is_none_or(|v| v.as_static().is_none())),
             "{found:?}"
         );
         // cat - と、パスを付けた cat は読む
@@ -734,7 +772,7 @@ mod tests {
             "alias cat='tac'\n",
         ] {
             let args = only(&format!("{prefix}{heredoc}"));
-            assert_eq!(args[2], Arg::Dynamic, "{prefix}");
+            assert_eq!(args[2], Arg::Unknown, "{prefix}");
         }
         assert_eq!(only(heredoc)[2], s("本文"));
     }

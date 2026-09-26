@@ -1,18 +1,24 @@
-//! PreToolUse (Bash): gws で Google ドキュメント・スプレッドシートに書き込む値を、書き込む前に検査する。
+//! gws で Google ドキュメント・スプレッドシートに書き込む値を、書き込む前に検査する。
 //!
-//! Bash のコマンド行から gws の書き込みと値を読み ([`crate::gws`])、日本語を含む値を検査する (セルの
-//! 数式は除く)。ドキュメントの本文 (文章) は値 1 つを 1 つの文書にしてすべてのルールを当て、セル・
-//! タイトル・置き換えの文字列 (短い値) は、gws の呼び出しごとに断片の集まりの文書にして 1 文ずつ判定する
-//! ルールだけを当てる。
+//! 入口は 2 つある。Claude Code の PreToolUse (Bash) では、コマンド行から gws の書き込みと値を読む
+//! ([`crate::gws`])。claw-hooks のコマンドフック ([`super::command`]) では、claw-hooks が解析した gws の
+//! 呼び出し 1 つの引数を受け取る。検査と結論 ([`review_writes`]) は共通で、日本語を含む値を検査する
+//! (セルの数式は除く)。ドキュメントの本文 (文章) は値 1 つを 1 つの文書にしてすべてのルールを当て、
+//! セル・タイトル・置き換えの文字列 (短い値) は、gws の呼び出しごとに断片の集まりの文書にして 1 文ずつ
+//! 判定するルールだけを当てる。
 //!
-//! - 本文に警告以上の指摘がある書き込み (`--dry-run` でないもの) は止める (`permissionDecision: "deny"`)。
-//!   理由には改稿指示を入れる。書き手が直さないと決めたときは、同じ書き込みをそのままもう一度実行すれば、
-//!   30 分以内の 1 回だけ検査せずに通す (セッション・書き込み・書き込み先・値・noslop の版が同じもの)。
-//!   止めた記録は、それらのハッシュを名前にしたファイルをキャッシュの置き場所に置き、値やコマンドは
-//!   書かない
-//! - 短い値だけの指摘・情報だけの指摘・`--dry-run` の値の指摘は止めずに、改稿指示を additionalContext で
-//!   渡す (書き込みの後に届く)。セッションの ID やキャッシュの置き場所がなく、通す記録を残せないときも
-//!   止めずに知らせる
+//! - 本文に警告以上の指摘がある書き込み (`--dry-run` でなく、呼び出しの形が実行しなくても決まるもの) は
+//!   止める。理由には改稿指示を入れる。止めたときは、検査した書き込みごとに記録を残し、同じ書き込み
+//!   (セッション・コマンド・`--dry-run` か・書き込み先・値・noslop の版が同じもの) は、止めてから 30 分の
+//!   あいだ検査せずに通す。書き手が直さないと決めたら、同じコマンドをそのまま実行し直せば通る。記録は
+//!   許可ではなく、一度示した指摘を繰り返さないためのもの (claw-hooks は gws の呼び出しごとに判定し、
+//!   最初に止めたところで打ち切るので、通すたびに記録を消すと、止める書き込みが 2 つあるコマンドは
+//!   いつまでも通らない)。記録は、それらのハッシュを名前にしたファイルをキャッシュの置き場所に置き、
+//!   値やコマンドは書かない
+//! - 短い値だけの指摘・情報だけの指摘・`--dry-run` の値の指摘と、呼び出しの形が決まらない書き込み
+//!   (実行時に決まる語が、フラグの値の位置の外にある。`--text` や `--dry-run` が加わるかもしれない) は、
+//!   止めずに改稿指示を知らせる (Claude Code では書き込みの後に届く)。セッションの ID やキャッシュの
+//!   置き場所がなく、記録を残せないときも止めずに知らせる
 //! - 指摘がない・gws の書き込みでないときは何も出力しない。gws を含まない Bash は、解析も設定の読み込みも
 //!   せずに返す
 
@@ -45,18 +51,25 @@ const CLOCK_SKEW_SECS: u64 = 60;
 /// 止めた記録を置くディレクトリ (キャッシュの置き場所の下)。
 const STATE_DIR: &str = "hook-state";
 
+/// 記録の名前の材料の版。記録の意味を変えたら上げて、前の意味の記録を使わないようにする
+/// (2: 書き込みごとの記録にし、通しても消さない)。
+const RECORD_FORMAT: u32 = 2;
+
 /// 短い値の文書で、行と値の対応を示す数の上限。
 const LEGEND_LIMIT: usize = 20;
 
+/// Claude Code に返す文の頭の名乗り (claw-hooks は自分で `[noslop]` を付けるので付けない)。
+const CLAUDE_CODE_PREFIX: &str = "noslop: ";
+
 /// 書き込みを止めたときの理由の頭。
-const DENY_HEAD: &str = "noslop: gws で書き込む文章に指摘があるので、この書き込みを止めました。まだ書き込んでいません。\n\
-直す箇所を直してから、書き込み直してください。直さずにこのまま書き込むと決めたときは、同じコマンドをそのままもう一度実行してください。30 分以内の 1 回だけ、検査せずに通します。\n";
+pub(super) const DENY_HEAD: &str = "gws で書き込む文章に指摘があるので、コマンドを止めました。まだ書き込んでいません。\n\
+直す箇所を直してから、書き込み直してください。直さずにこのまま書き込むと決めたときは、同じコマンドをそのままもう一度実行してください。止めた書き込みと同じものは、30 分のあいだ検査せずに通します。\n";
 
 /// 書き込みを止めずに知らせるときの頭。
-const CONTEXT_HEAD: &str = "noslop: gws で書き込んだ値に指摘があります。書き込みは止めていません。直すときは、書き込んだ先を改めて更新してください。\n";
+pub(super) const CONTEXT_HEAD: &str = "gws で書き込んだ値に指摘があります。書き込みは止めていません。直すときは、書き込んだ先を改めて更新してください。\n";
 
 /// `--dry-run` の書き込みだけのときの頭。
-const DRY_RUN_HEAD: &str = "noslop: gws の --dry-run に渡した値に指摘があります。本番の書き込みの前に、直すかどうかを判断してください。\n";
+pub(super) const DRY_RUN_HEAD: &str = "gws の --dry-run に渡した値に指摘があります。本番の書き込みの前に、直すかどうかを判断してください。\n";
 
 /// 本文の文書の行番号の注記。
 const PROSE_NOTE: &str = "行番号 (L) は、書き込む文章の中の行です。\n";
@@ -90,28 +103,93 @@ fn pre_tool_use_at(
     if !command.contains("gws") {
         return Ok(None);
     }
-    let writes: Vec<Write> = gws::writes(command)
+    let request = Request {
+        writes: gws::writes(command),
+        session: event.get("session_id").and_then(Value::as_str),
+        cwd: event.get("cwd").and_then(Value::as_str).map(Path::new),
+        may_deny: true,
+        reports: true,
+    };
+    let style = Style {
+        prefix: CLAUDE_CODE_PREFIX,
+        budget: CONTEXT_BUDGET_CHARS,
+    };
+    Ok(
+        review_writes(request, args, env, now, &style)?.map(|verdict| match verdict {
+            Verdict::Deny(reason) => deny(&reason),
+            Verdict::Report(text) => context(&text),
+        }),
+    )
+}
+
+/// gws の書き込みの検査の入力 (入口ごとに違うもの)。
+pub(super) struct Request<'a> {
+    /// 書き込み (gws の呼び出しごと)。
+    pub writes: Vec<Write>,
+    /// セッションの ID (止めた記録の名前に使う)。
+    pub session: Option<&'a str>,
+    /// 作業ディレクトリ (設定ファイルを探し始める場所)。
+    pub cwd: Option<&'a Path>,
+    /// 書き込みを止めてよいか (claw-hooks が呼び出しを確定できないときは止めない)。
+    pub may_deny: bool,
+    /// 止めずに知らせる内容を渡せるか。
+    pub reports: bool,
+}
+
+/// 検査の結論。
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Verdict {
+    /// 書き込みを止める。中身は理由。
+    Deny(String),
+    /// 止めずに知らせる。
+    Report(String),
+}
+
+/// 結論の文の形 (入口ごとに違うもの)。
+pub(super) struct Style<'a> {
+    /// 頭に付ける名乗り。
+    pub prefix: &'a str,
+    /// 文字数の上限。
+    pub budget: usize,
+}
+
+/// gws の書き込みを検査し、止めるか知らせるかを決める。何も返さないなら `None`。
+pub(super) fn review_writes(
+    request: Request,
+    args: &HookArgs,
+    env: &cli::Environment,
+    now: SystemTime,
+    style: &Style,
+) -> Result<Option<Verdict>, String> {
+    let now = unix_secs(now);
+    let mut writes: Vec<Write> = request
+        .writes
         .into_iter()
         .filter(|w| w.values.iter().any(checks))
         .collect();
+    // 止めた記録の置き場所と、名前に使うセッション。どちらかがなければ記録を残せないので、止めない
+    let records = request
+        .session
+        .filter(|s| !s.is_empty())
+        .zip(env.cache_dir.as_deref())
+        .map(|(session, dir)| (session, Approvals::new(dir)));
+
+    // 止めた書き込みと同じもの (止めてから 30 分以内) は、検査せずに通す
+    if let Some((session, store)) = &records {
+        writes.retain(|w| !store.fresh(&approval_key(session, w), now));
+    }
     if writes.is_empty() {
         return Ok(None);
     }
-    let now = unix_secs(now);
-
-    // 止めた書き込みをそのまま実行し直したなら、検査せずに 1 回だけ通す
-    let record = retry_record(event, env, &writes);
-    if record
-        .as_ref()
-        .is_some_and(|(store, key)| store.take(key, now))
-    {
+    // 止めることも知らせることもできないなら、設定も読まずに返す
+    let may_deny = request.may_deny && writes.iter().any(may_block);
+    if !request.reports && !(may_deny && records.is_some()) {
         return Ok(None);
     }
 
-    let cwd = event.get("cwd").and_then(Value::as_str).map(Path::new);
-    let reviewer = Reviewer::new(args, cwd, env)?;
+    let reviewer = Reviewer::new(args, request.cwd, env)?;
     let checked: Vec<Checked> = writes.iter().map(|w| check(&reviewer, w)).collect();
-    let blocks = checked.iter().any(Checked::blocks);
+    let blocks = may_deny && checked.iter().any(Checked::blocks);
     let dry_run_only = checked
         .iter()
         .filter(|c| c.has_prose_findings() || c.has_fragment_findings())
@@ -126,27 +204,40 @@ fn pre_tool_use_at(
     };
 
     if blocks {
-        // 止めるのは、実行し直したときに通す記録を残せたときだけ
-        match &record {
-            Some((store, key)) => match store.put(key, now) {
-                Ok(()) => return Ok(Some(deny(&brief, &notes))),
-                Err(e) => eprintln!(
-                    "noslop: 止めた記録を {} に置けないので、gws の書き込みを止めずに知らせます: {e}",
-                    store.dir.display()
-                ),
-            },
-            // 終了コード 0 の標準エラーは Claude Code のデバッグログにだけ残る
+        // 止めるのは、同じ書き込みを通す記録を残せたときだけ。改稿指示に載せた書き込みはすべて記録する
+        // (同じコマンドを実行し直したときに、止めた書き込みと一緒に知らせた指摘を繰り返さない)
+        match &records {
+            Some((session, store)) => {
+                match writes
+                    .iter()
+                    .try_for_each(|w| store.put(&approval_key(session, w), now))
+                {
+                    Ok(()) => {
+                        return Ok(Some(Verdict::Deny(compose(
+                            style, DENY_HEAD, &brief, &notes,
+                        ))));
+                    }
+                    Err(e) => eprintln!(
+                        "noslop: 止めた記録を {} に置けないので、gws の書き込みを止めずに知らせます: {e}",
+                        store.dir.display()
+                    ),
+                }
+            }
+            // 終了コード 0 の標準エラーは、呼び出し側のデバッグログにだけ残る
             None => eprintln!(
                 "noslop: セッションの ID かキャッシュの置き場所がないので、gws の書き込みを止めずに知らせます"
             ),
         }
+    }
+    if !request.reports {
+        return Ok(None);
     }
     let head = if dry_run_only {
         DRY_RUN_HEAD
     } else {
         CONTEXT_HEAD
     };
-    Ok(Some(context(head, &brief, &notes)))
+    Ok(Some(Verdict::Report(compose(style, head, &brief, &notes))))
 }
 
 /// 改稿指示の後ろに添える注記 (行番号の読み方と、短い値の検査の注意)。
@@ -167,9 +258,10 @@ fn checks(value: &gws::Value) -> bool {
     text::contains_japanese(&value.text) && !(value.cell && value.text.starts_with('='))
 }
 
-/// 止めることがありうる書き込みか (`--dry-run` でなく、検査する本文がある)。
+/// 止めることがありうる書き込みか (呼び出しの形が決まり、`--dry-run` でなく、検査する本文がある)。
 fn may_block(write: &Write) -> bool {
-    !write.dry_run
+    write.exact
+        && !write.dry_run
         && write
             .values
             .iter()
@@ -192,9 +284,9 @@ struct Fragments {
 }
 
 impl Checked<'_> {
-    /// 書き込みを止めるか (本文に警告以上の指摘がある、`--dry-run` でない書き込み)。
+    /// 書き込みを止めるか (本文に警告以上の指摘がある、止めることがありうる書き込み)。
     fn blocks(&self) -> bool {
-        !self.write.dry_run
+        may_block(self.write)
             && self
                 .prose
                 .iter()
@@ -256,12 +348,14 @@ impl Checked<'_> {
 /// 書き込み 1 つの値を検査する。
 fn check<'a>(reviewer: &Reviewer, write: &'a Write) -> Checked<'a> {
     let suffix = if write.dry_run { " (--dry-run)" } else { "" };
+    // 同じコマンドで書き込み先だけが違う書き込みを見分けられるよう、書き込み先を名前に入れる
+    let command = format!("gws {}{}", write.method, target(write));
     let values: Vec<&gws::Value> = write.values.iter().filter(|v| checks(v)).collect();
     let prose = values
         .iter()
         .filter(|v| v.kind == ValueKind::Prose)
         .map(|v| {
-            let name = format!("gws {} の {}{suffix}", write.method, v.label);
+            let name = format!("{command} の {}{suffix}", v.label);
             reviewer.lint(Document::parse(
                 name,
                 v.text.clone(),
@@ -282,7 +376,7 @@ fn check<'a>(reviewer: &Reviewer, write: &'a Write) -> Checked<'a> {
                 sources.push(&v.source);
             }
         }
-        let name = format!("gws {} の {}{suffix}", write.method, sources.join("・"));
+        let name = format!("{command} の {}{suffix}", sources.join("・"));
         let (doc, places) = fragments_document(name, &short, reviewer.parse_options());
         Fragments {
             report: reviewer.lint(doc),
@@ -293,6 +387,21 @@ fn check<'a>(reviewer: &Reviewer, write: &'a Write) -> Checked<'a> {
         write,
         prose,
         fragments,
+    }
+}
+
+/// 文書の名前に添える書き込み先 (` (--document D1)`・` (spreadsheetId S, range A1)` など)。値の決まる
+/// ものだけを並べ、1 つもなければ空。
+fn target(write: &Write) -> String {
+    let known: Vec<String> = write
+        .destination
+        .iter()
+        .filter_map(|(key, value)| Some(format!("{key} {}", value.as_deref()?)))
+        .collect();
+    if known.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", known.join(", "))
     }
 }
 
@@ -402,9 +511,8 @@ fn fragment_block(source: &str, span: Span) -> Option<Block> {
     })
 }
 
-/// 書き込みを止める出力。
-fn deny(brief: &str, notes: &[String]) -> String {
-    let reason = compose(DENY_HEAD, brief, notes);
+/// 書き込みを止める出力 (Claude Code)。
+fn deny(reason: &str) -> String {
     json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -415,67 +523,42 @@ fn deny(brief: &str, notes: &[String]) -> String {
     .to_string()
 }
 
-/// 止めずに知らせる出力。
-fn context(head: &str, brief: &str, notes: &[String]) -> String {
+/// 止めずに知らせる出力 (Claude Code)。
+fn context(text: &str) -> String {
     json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "additionalContext": compose(head, brief, notes),
+            "additionalContext": text,
         }
     })
     .to_string()
 }
 
-/// 頭・改稿指示・注記をつなぎ、上限の文字数に収める (頭を先に置き、長いときは後ろを省く)。
-fn compose(head: &str, brief: &str, notes: &[String]) -> String {
-    let mut text = String::from(head);
+/// 名乗り・頭・改稿指示・注記をつなぎ、上限の文字数に収める (頭を先に置き、長いときは後ろを省く)。
+fn compose(style: &Style, head: &str, brief: &str, notes: &[String]) -> String {
+    let mut text = format!("{}{head}", style.prefix);
     text.push_str(brief);
     for note in notes {
         text.push_str(note);
     }
-    truncate_lines(&text, CONTEXT_BUDGET_CHARS)
+    truncate_lines(&text, style.budget)
 }
 
-/// 止めた記録の置き場所と、この書き込みの記録の名前。止めることのない書き込みだけのときと、セッションの
-/// ID かキャッシュの置き場所がないとき (止めずに知らせる) は `None`。
-fn retry_record(
-    event: &Value,
-    env: &cli::Environment,
-    writes: &[Write],
-) -> Option<(Approvals, String)> {
-    if !writes.iter().any(may_block) {
-        return None;
-    }
-    let session = event
-        .get("session_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())?;
-    let store = Approvals::new(env.cache_dir.as_deref()?);
-    Some((store, approval_key(session, writes)))
-}
-
-/// 止めた記録の名前。セッション・noslop の版と、書き込みごとのコマンド (サービス・リソース・メソッド)・
-/// `--dry-run` か・書き込み先・値から作るハッシュ (16 進)。
-fn approval_key(session: &str, writes: &[Write]) -> String {
-    let writes: Vec<Value> = writes
-        .iter()
-        .map(|w| {
-            json!({
-                "method": w.method,
-                "dryRun": w.dry_run,
-                "destination": w.destination,
-                "values": w
-                    .values
-                    .iter()
-                    .map(|v| [v.label.as_str(), v.text.as_str()])
-                    .collect::<Vec<_>>(),
-            })
-        })
-        .collect();
+/// 止めた書き込みの記録の名前。記録の形の版・noslop の版・セッションと、書き込みのコマンド (サービス・
+/// リソース・メソッド)・`--dry-run` か・書き込み先・値から作るハッシュ (16 進)。
+fn approval_key(session: &str, write: &Write) -> String {
     let material = json!({
+        "format": RECORD_FORMAT,
         "noslop": env!("CARGO_PKG_VERSION"),
         "session": session,
-        "writes": writes,
+        "method": write.method,
+        "dryRun": write.dry_run,
+        "destination": write.destination,
+        "values": write
+            .values
+            .iter()
+            .map(|v| [v.label.as_str(), v.text.as_str()])
+            .collect::<Vec<_>>(),
     });
     Sha256::digest(material.to_string().as_bytes())
         .iter()
@@ -498,21 +581,28 @@ impl Approvals {
         }
     }
 
-    /// `key` の記録が期限内にあれば、消して `true` (1 回だけ通す)。期限の切れた記録は消して `false`。
-    fn take(&self, key: &str, now: u64) -> bool {
+    /// `key` の記録が期限内にあるか。通しても消さない (期限まで何度でも通す)。期限の切れた記録と
+    /// 読めない記録は消す。
+    fn fresh(&self, key: &str, now: u64) -> bool {
         let path = self.dir.join(key);
         let Ok(content) = fs::read_to_string(&path) else {
             return false;
         };
-        let fresh = created(&content).is_some_and(|t| is_fresh(t, now));
-        // 消せたときだけ通す (同じ書き込みを同時に 2 回実行しても、通すのは 1 回)
-        fs::remove_file(&path).is_ok() && fresh
+        if created(&content).is_some_and(|t| is_fresh(t, now)) {
+            return true;
+        }
+        let _ = fs::remove_file(&path);
+        false
     }
 
-    /// `key` の記録を作る (一時ファイルに書いてから置き換える)。ついでに期限の切れた記録を消す。
+    /// `key` の記録を作る (一時ファイルに書いてから置き換える)。期限内の記録があれば置き直さない
+    /// (止めてから数える期間を延ばさない)。ついでに期限の切れた記録を消す。
     fn put(&self, key: &str, now: u64) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         self.sweep(now);
+        if self.fresh(key, now) {
+            return Ok(());
+        }
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
@@ -740,16 +830,21 @@ severity = "info"
         UNIX_EPOCH + Duration::from_secs(1_800_000_000)
     }
 
+    /// Claude Code に返す文の頭 (名乗りを付けたもの)。
+    fn head(head: &str) -> String {
+        format!("{CLAUDE_CODE_PREFIX}{head}")
+    }
+
     const WRITE: &str = "gws docs +write --document D1 --text 'ユーザー様の声を集めました。'";
 
     #[test]
-    fn prose_warnings_deny_the_write_and_an_identical_retry_passes_once() {
+    fn prose_warnings_deny_the_write_and_identical_retries_pass() {
         let ws = Workspace::new();
         let event = ws.event(WRITE);
         let reason = ws.run(&event).unwrap().deny();
-        assert!(reason.starts_with(DENY_HEAD), "{reason}");
+        assert!(reason.starts_with(&head(DENY_HEAD)), "{reason}");
         assert!(
-            reason.contains("noslop が gws docs +write の --text に"),
+            reason.contains("noslop が gws docs +write (--document D1) の --text に"),
             "{reason}"
         );
         assert!(
@@ -759,12 +854,11 @@ severity = "info"
         assert!(reason.contains(PROSE_NOTE), "{reason}");
         assert!(!reason.contains(FRAGMENT_NOTE), "{reason}");
 
-        // 同じコマンドをそのまま実行し直すと 1 回だけ通し、記録を消す
+        // 同じコマンドをそのまま実行し直すと通す。記録は通しても消さず、期限内は何度でも通す
         assert_eq!(ws.records().len(), 1);
         assert!(ws.run(&event).is_none());
-        assert!(ws.records().is_empty());
-        // 通した後の同じ書き込みは、また検査する
-        ws.run(&event).unwrap().deny();
+        assert!(ws.run(&event).is_none());
+        assert_eq!(ws.records().len(), 1);
     }
 
     #[test]
@@ -776,22 +870,66 @@ severity = "info"
     }
 
     #[test]
-    fn retries_pass_only_within_thirty_minutes() {
+    fn retries_pass_only_within_thirty_minutes_of_the_denial() {
         let ws = Workspace::new();
         let event = ws.event(WRITE);
         ws.run_at(&event, t0()).unwrap().deny();
         let window = Duration::from_secs(RETRY_WINDOW_SECS);
+        // 通しても期限は延ばさない (止めた時刻から数える)
+        assert!(ws.run_at(&event, t0() + Duration::from_secs(60)).is_none());
         assert!(
             ws.run_at(&event, t0() + window).is_none(),
             "30 分ちょうどは通す"
         );
 
-        ws.run_at(&event, t0()).unwrap().deny();
         let late = t0() + window + Duration::from_secs(1);
         ws.run_at(&event, late).unwrap().deny();
         // 期限の切れた記録は消え、止め直した記録から数え直す
         assert_eq!(ws.records().len(), 1);
-        assert!(ws.run_at(&event, late + Duration::from_secs(60)).is_none());
+        assert!(ws.run_at(&event, late + window).is_none());
+        ws.run_at(&event, late + window + Duration::from_secs(1))
+            .unwrap()
+            .deny();
+    }
+
+    #[test]
+    fn several_writes_are_recorded_one_by_one() {
+        let ws = Workspace::new();
+        let a = "gws docs +write --document D1 --text 'ユーザー様の声を集めました。'";
+        let b = "gws docs +write --document D2 --text 'ユーザー様に届けます。'";
+        let both = format!("{a} && {b}");
+        ws.run(&ws.event(&both)).unwrap().deny();
+        assert_eq!(ws.records().len(), 2);
+        // 実行し直せば通る。止めた書き込みは、1 つずつ実行しても通す
+        assert!(ws.run(&ws.event(&both)).is_none());
+        assert!(ws.run(&ws.event(a)).is_none());
+        assert!(ws.run(&ws.event(b)).is_none());
+        // 止めた書き込みに新しい書き込みを足すと、新しい書き込みだけを検査する
+        let c = "gws docs +write --document D3 --text 'ユーザー様の区分です。'";
+        let reason = ws.run(&ws.event(&format!("{a} && {c}"))).unwrap().deny();
+        assert!(reason.contains("指摘を 1 件"), "{reason}");
+        assert_eq!(ws.records().len(), 3);
+    }
+
+    #[test]
+    fn writes_whose_shape_is_decided_at_run_time_are_only_reported() {
+        let ws = Workspace::new();
+        for command in [
+            // 実行時に `--dry-run` や `--text` が加わるかもしれない
+            format!("{WRITE} $EXTRA"),
+            format!("{WRITE} \"$FLAG\""),
+            "gws docs +write --document $DOC --text 'ユーザー様の声を集めました。'".to_string(),
+        ] {
+            let context = ws.run(&ws.event(&command)).unwrap().context();
+            assert!(context.starts_with(&head(CONTEXT_HEAD)), "{context}");
+        }
+        assert!(ws.records().is_empty());
+        // フラグの値の位置の 1 語 (書き込み先) だけなら止める
+        ws.run(
+            &ws.event("gws docs +write --document \"$DOC\" --text 'ユーザー様の声を集めました。'"),
+        )
+        .unwrap()
+        .deny();
     }
 
     #[test]
@@ -832,9 +970,9 @@ severity = "info"
         // --dry-run は止めず、止めた記録も使わない
         let dry = ws.event(&format!("{WRITE} --dry-run"));
         let context = ws.run(&dry).unwrap().context();
-        assert!(context.starts_with(DRY_RUN_HEAD), "{context}");
+        assert!(context.starts_with(&head(DRY_RUN_HEAD)), "{context}");
         assert!(
-            context.contains("gws docs +write の --text (--dry-run)"),
+            context.contains("gws docs +write (--document D1) の --text (--dry-run)"),
             "{context}"
         );
         // 最初の書き込みの記録は残っている
@@ -847,7 +985,7 @@ severity = "info"
         let mut no_session = ws.event(WRITE);
         no_session["session_id"] = json!("");
         let context = ws.run(&no_session).unwrap().context();
-        assert!(context.starts_with(CONTEXT_HEAD), "{context}");
+        assert!(context.starts_with(&head(CONTEXT_HEAD)), "{context}");
         assert!(context.contains("X01"), "{context}");
         no_session.as_object_mut().unwrap().remove("session_id");
         ws.run(&no_session).unwrap().context();
@@ -888,14 +1026,16 @@ severity = "info"
             .run(&ws.event("gws docs +write --document D1 --text 'お知らせです。'"))
             .unwrap()
             .context();
-        assert!(info.starts_with(CONTEXT_HEAD), "{info}");
+        assert!(info.starts_with(&head(CONTEXT_HEAD)), "{info}");
         assert!(info.contains("X02"), "{info}");
 
         let cells = r#"gws sheets spreadsheets values update --params '{"spreadsheetId":"S","range":"A1"}' --json '{"values":[["名前","ユーザー様の区分"],["=ユーザー様()","ユーザー様"]]}'"#;
         let context = ws.run(&ws.event(cells)).unwrap().context();
-        assert!(context.starts_with(CONTEXT_HEAD), "{context}");
+        assert!(context.starts_with(&head(CONTEXT_HEAD)), "{context}");
         assert!(
-            context.contains("noslop が gws sheets spreadsheets values update の values[*][*] に"),
+            context.contains(
+                "noslop が gws sheets spreadsheets values update (spreadsheetId S, range A1) の values[*][*] に"
+            ),
             "{context}"
         );
         assert!(context.contains(FRAGMENT_NOTE), "{context}");
@@ -905,7 +1045,7 @@ severity = "info"
         assert!(context.contains("L3:"), "{context}");
         assert!(
             context.contains(
-                "gws sheets spreadsheets values update の values[*][*] の行と値の対応: L2 = values[0][1]、L3 = values[1][1]"
+                "gws sheets spreadsheets values update (spreadsheetId S, range A1) の values[*][*] の行と値の対応: L2 = values[0][1]、L3 = values[1][1]"
             ),
             "{context}"
         );
@@ -922,10 +1062,13 @@ severity = "info"
         let event = ws.event(&command);
         let reason = ws.run(&event).unwrap().deny();
         // 複数の値の文書をまとめた改稿指示は、文書ごとに「名前: 件数」の行を並べる
-        assert!(reason.contains("\ngws docs +write の --text: "), "{reason}");
+        assert!(
+            reason.contains("\ngws docs +write (--document D1) の --text: "),
+            "{reason}"
+        );
         assert!(
             reason.contains(
-                "\ngws docs documents batchUpdate の requests[*].replaceAllText.replaceText: "
+                "\ngws docs documents batchUpdate (documentId D1) の requests[*].replaceAllText.replaceText: "
             ),
             "{reason}"
         );
@@ -949,7 +1092,7 @@ severity = "info"
             .deny();
         assert!(
             reason.contains(
-                "noslop が gws docs documents batchUpdate の requests[0].insertText.text に"
+                "noslop が gws docs documents batchUpdate (documentId D1) の requests[0].insertText.text に"
             ),
             "{reason}"
         );
@@ -1079,7 +1222,7 @@ severity = "info"
             "{}",
             reason.chars().count()
         );
-        assert!(reason.starts_with(DENY_HEAD), "頭は残す");
+        assert!(reason.starts_with(&head(DENY_HEAD)), "頭は残す");
         assert!(reason.contains("行を省きました"), "{reason}");
     }
 

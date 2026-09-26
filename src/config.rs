@@ -18,10 +18,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::code::CodeLanguage;
 use crate::diagnostic::{Lane, Severity};
 use crate::genre::Genre;
 use crate::morph::MorphologyMode;
 use crate::segment::LineBreakMode;
+use crate::walk::DEFAULT_EXTENSIONS;
 
 /// 探索する設定ファイルの名前 (優先順)。
 pub const CONFIG_FILE_NAMES: [&str; 2] = ["noslop.toml", ".noslop.toml"];
@@ -396,8 +398,8 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// `noslop init` が書き出すひな形。
-pub const TEMPLATE: &str = r#"# noslop の設定ファイル
+/// `noslop init` が書き出すひな形 ([`template`] が拡張子の一覧を埋める)。
+const TEMPLATE: &str = r#"# noslop の設定ファイル
 #
 # CLI で指定した値はこのファイルより優先されます。
 # どの項目も、書かなければユーザーの設定 (~/.config/noslop/config.toml) の値、
@@ -418,16 +420,17 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # line_breaks = "space"
 
 [files]
-# 検査する拡張子
-# extensions = ["md", "markdown", "txt"]
+# 検査する文書の拡張子 (既定は次のすべて)
+@FILE_EXTENSIONS@
 # 除外するパス (.gitignore と同じ書式。このファイルのあるディレクトリ基準)
 # exclude = ["CHANGELOG.md", "vendor/"]
 
 [code]
 # コメントを検査するコードの拡張子 (既定は空で、ディレクトリをたどるときにコードは集めない)。
 # noslop check に直接渡したコードのファイルは、ここに書かなくてもコメントを検査します。
-# コメントは短い断片なので、1 文ずつ判定するルールだけを当てます
-# extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
+# コメントは短い断片なので、1 文ずつ判定するルールだけを当てます。
+# 次は noslop がコメントを読めるすべての拡張子です。使うものだけを残して、行頭の # を外してください
+@CODE_EXTENSIONS@
 
 [scope]
 # 語句ルールをリスト・表・引用にも当てるか (既定は地の文の段落だけ)
@@ -467,9 +470,10 @@ pub const TEMPLATE: &str = r#"# noslop の設定ファイル
 # severity = "warning"
 "#;
 
-/// `noslop init --user` が書き出す、ユーザーの設定 (`~/.config/noslop/config.toml`) のひな形。
-/// 書き方はプロジェクトの設定と同じだが、手元のマシンでだけ使う設定に絞って案内する。
-pub const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/noslop/config.toml)
+/// `noslop init --user` が書き出す、ユーザーの設定 (`~/.config/noslop/config.toml`) のひな形
+/// ([`user_template`] が拡張子の一覧を埋める)。書き方はプロジェクトの設定と同じだが、手元のマシンでだけ
+/// 使う設定に絞って案内する。
+const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/noslop/config.toml)
 #
 # このマシンでは、どのディレクトリで実行してもこのファイルを読みます。
 # プロジェクトの設定 (noslop.toml) に書いた項目はそちらが優先され、CLI で指定した値はさらに優先されます。
@@ -497,14 +501,17 @@ pub const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/
 # enable = ["P04"]
 
 [files]
+# 検査する文書の拡張子 (既定は次のすべて)。プロジェクトの設定に extensions があれば、こちらは使いません
+@FILE_EXTENSIONS@
 # 除外するパス (.gitignore と同じ書式)。ユーザーの設定では、noslop check に渡したディレクトリが基準です。
 # プロジェクトの設定に exclude があれば、こちらは使いません
 # exclude = ["drafts/"]
 
 [code]
 # コメントを検査するコードの拡張子 (フックと、ディレクトリをたどるときに集める。既定は空)。
-# プロジェクトの設定に extensions があれば、こちらは使いません
-# extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
+# プロジェクトの設定に extensions があれば、こちらは使いません。
+# 次は noslop がコメントを読めるすべての拡張子です。使うものだけを残して、行頭の # を外してください
+@CODE_EXTENSIONS@
 
 # 手元で使う独自ルール (プロジェクトの設定に同じ ID があれば、そちらで置き換わります)
 # [[custom]]
@@ -514,6 +521,52 @@ pub const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/
 # message = "「ユーザー様」ではなく「利用者」と書きます"
 # severity = "warning"
 "#;
+
+/// `noslop init` が書き出す、プロジェクトの設定 (`noslop.toml`) のひな形。
+pub fn template() -> String {
+    fill_extensions(TEMPLATE)
+}
+
+/// `noslop init --user` が書き出す、ユーザーの設定 (`~/.config/noslop/config.toml`) のひな形。
+pub fn user_template() -> String {
+    fill_extensions(USER_TEMPLATE)
+}
+
+/// ひな形に、読める拡張子すべての一覧 (コメントにしたもの) を埋める。一覧は文書の既定の拡張子と
+/// コードの言語の表から作るので、言語を足せばひな形にも載る。
+fn fill_extensions(template: &str) -> String {
+    let files = DEFAULT_EXTENSIONS
+        .iter()
+        .map(|e| format!("\"{e}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    template
+        .replace("@FILE_EXTENSIONS@", &format!("# extensions = [{files}]"))
+        .replace("@CODE_EXTENSIONS@", code_extensions_block().trim_end())
+}
+
+/// コメントを読めるコードの拡張子すべてを、言語ごとに 1 行ずつ並べた `extensions` (行頭の `# ` を外せば
+/// そのまま読める TOML の配列。行の後ろのコメントは言語の名前)。
+fn code_extensions_block() -> String {
+    let rows: Vec<(String, &str)> = CodeLanguage::ALL
+        .iter()
+        .map(|lang| {
+            let items: Vec<String> = lang
+                .extensions()
+                .iter()
+                .map(|e| format!("\"{e}\""))
+                .collect();
+            (format!("{},", items.join(", ")), lang.name())
+        })
+        .collect();
+    let width = rows.iter().map(|(items, _)| items.len()).max().unwrap_or(0);
+    let mut out = String::from("# extensions = [\n");
+    for (items, name) in rows {
+        out.push_str(&format!("#   {items:<width$}  # {name}\n"));
+    }
+    out.push_str("# ]\n");
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -602,15 +655,68 @@ message = "表記を統一します"
     #[test]
     fn template_is_valid() {
         // どちらのひな形も、そのまま読めて、既定値から何も変えない
-        for template in [TEMPLATE, USER_TEMPLATE] {
-            let cfg = parse(template).unwrap();
+        for template in [template(), user_template()] {
+            assert!(!template.contains('@'), "埋め残し: {template}");
+            let cfg = parse(&template).unwrap();
             assert!(cfg.genre.is_none());
             assert!(cfg.experimental.is_none());
             assert!(cfg.custom.is_empty());
             assert!(cfg.rules.enable.is_empty() && cfg.rules.disable.is_empty());
             assert!(cfg.morphology.dictionary.is_none());
             assert!(cfg.files.exclude.is_none());
+            assert!(cfg.files.extensions.is_none());
+            assert!(cfg.code.extensions.is_none());
         }
+    }
+
+    /// ひな形の `extensions` は、行頭の `# ` を外せば、読める拡張子すべての設定になる。
+    #[test]
+    fn templates_list_every_readable_extension() {
+        let known_files: Vec<String> = DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect();
+        let known_code: Vec<String> = CodeLanguage::known_extensions()
+            .map(str::to_string)
+            .collect();
+        for template in [template(), user_template()] {
+            let files = uncomment_section(&template, "[files]");
+            assert_eq!(
+                parse(&files).unwrap().files.extensions,
+                Some(known_files.clone()),
+                "{files}"
+            );
+            let code = uncomment_section(&template, "[code]");
+            assert_eq!(
+                parse(&code).unwrap().code.extensions,
+                Some(known_code.clone()),
+                "{code}"
+            );
+            assert!(code.contains("\"yaml\", \"yml\","), "{code}");
+        }
+    }
+
+    /// ひな形の節 `header` の中の、コメントにした `extensions` の設定の行頭の `# ` を外し、節の見出しと
+    /// その設定だけの TOML にする。
+    fn uncomment_section(template: &str, header: &str) -> String {
+        let section = template
+            .split_once(&format!("\n{header}\n"))
+            .map(|(_, rest)| rest.split("\n[").next().unwrap_or(rest))
+            .unwrap_or_else(|| panic!("{header} がない"));
+        let mut out = format!("{header}\n");
+        let mut inside = false;
+        for line in section.lines() {
+            let Some(body) = line.strip_prefix("# ") else {
+                continue;
+            };
+            if body.starts_with("extensions = [") {
+                inside = !body.ends_with(']');
+                out.push_str(body);
+                out.push('\n');
+            } else if inside {
+                out.push_str(body);
+                out.push('\n');
+                inside = body != "]";
+            }
+        }
+        out
     }
 
     #[test]
