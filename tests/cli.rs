@@ -1675,6 +1675,83 @@ fn dict_download_rejects_unknown_names_and_failed_downloads() {
     assert!(partial_files(dir.path()).is_empty());
 }
 
+/// 同じ辞書も古い辞書も取り直し、検証に失敗したときは既存の中身を保つ。
+/// 目録の版に依存しないよう、テスト用の小さな辞書を配布する。
+#[test]
+fn dictionary_download_always_replaces_after_verification() {
+    // ライブラリは親プロセスのプロキシ設定を読む。ほかの並列テストの環境を変えずに、
+    // このテストだけプロキシを外した子プロセスで実行する。
+    const CHILD: &str = "NOSLOP_TEST_DOWNLOAD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "dictionary_download_always_replaces_after_verification",
+                "--nocapture",
+            ])
+            .env(CHILD, "1");
+        for var in [
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+        ] {
+            child.env_remove(var);
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let source = tempfile::tempdir().unwrap();
+    let source_path = source.path().join("test.hsd");
+    write_dictionary(&source_path);
+    let body = fs::read(&source_path).unwrap();
+    let dict = noslop::dictionaries::Distributed {
+        name: "test",
+        summary: "テスト用",
+        size: body.len() as u64,
+        sha256: hasami::download::sha256_file(&source_path).unwrap().leak(),
+        compressed: None,
+    };
+    let (url, requests) = serve_file(&dict.file_name(), body.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(dict.file_name());
+    for (i, old) in [b"old dictionary".as_slice(), body.as_slice()]
+        .into_iter()
+        .enumerate()
+    {
+        fs::write(&path, old).unwrap();
+        let mut received = 0;
+        let placed =
+            noslop::dictionaries::download(&dict, dir.path(), &url, true, &mut |r, _| received = r)
+                .unwrap();
+        assert_eq!(placed, path);
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(received, dict.size);
+        assert_eq!(requests.load(Ordering::SeqCst), i + 1);
+    }
+
+    // 大きさが同じでも SHA-256 が違う中身は置かない。
+    let mut corrupt = body.clone();
+    corrupt[0] ^= 1;
+    let (url, requests) = serve_file(&dict.file_name(), corrupt);
+    let err = noslop::dictionaries::download(&dict, dir.path(), &url, true, &mut |_, _| {})
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("SHA-256 が違います"), "{err}");
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(fs::read(&path).unwrap(), body);
+    assert!(partial_files(dir.path()).is_empty());
+}
+
 /// `dict download` の表示と同じ、10 進の MB で小数 1 桁。
 fn megabytes(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1_000_000.0)
@@ -1854,7 +1931,7 @@ fn auto_uses_the_best_dictionary_in_the_share_directory() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("自動で選んだ辞書"), "{stderr}");
     assert!(
-        stderr.contains("noslop dict download ipadic-neologd-sudachi --force"),
+        stderr.contains("`noslop dict download ipadic-neologd-sudachi`"),
         "{stderr}"
     );
 }

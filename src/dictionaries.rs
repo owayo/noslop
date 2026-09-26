@@ -266,15 +266,6 @@ pub fn list(dir: &Path) -> Vec<Listed> {
 // 取得
 // ---------------------------------------------------------------------------
 
-/// 取得の結果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Outcome {
-    /// 正しいファイルがすでにあった (通信していない)。
-    Present(PathBuf),
-    /// 取得して置いた。
-    Downloaded(PathBuf),
-}
-
 /// hasami が、圧縮版を展開したものの誤りの出所 (`<URL>`) の後ろに付ける印。
 const DECOMPRESSED: &str = " (decompressed)";
 
@@ -306,10 +297,6 @@ impl DownloadError {
             HasamiError::Inspect { path, source } => {
                 format!("{} を確かめられません: {source}", path.display())
             }
-            HasamiError::Differs { path, .. } => format!(
-                "{} は hasami {HASAMI_TAG} の {name} と中身が違います (hasami の別の版か、壊れています)。置き換えるには --force を付けてください",
-                path.display()
-            ),
             HasamiError::TempFile { dir, source } => {
                 format!("一時ファイルを作れません: {}: {source}", dir.display())
             }
@@ -389,8 +376,7 @@ impl DownloadError {
 /// `source` は取得元の URL の接頭辞 (既定は [`DEFAULT_SOURCE`])。`compressed` が真で目録に圧縮版が
 /// あれば `<source>/<名前>.hsd.zst` を取って展開し、なければ `<source>/<名前>.hsd` を取る。
 /// 圧縮版が HTTP 404 のときも非圧縮版へ切り替える。通信・検証・展開の失敗では切り替えない。
-/// 正しいファイルがすでにあれば、`force` でなければ通信せずに [`Outcome::Present`] を返す。中身の
-/// 違うファイルがあれば、`force` でなければエラーにする。
+/// 既存のファイルがあっても毎回取得し、検証に成功してから置き換える。失敗時は既存のファイルを保つ。
 ///
 /// `progress(受信したバイト数, 受信する全体のバイト数)` は、通信を始める前に 1 度 (受信 0 で)、その後は
 /// 受け取るたびに呼ぶ。圧縮版を取るときの全体は圧縮版の大きさ ([`Distributed::transfer_size`])。
@@ -400,20 +386,18 @@ pub fn download(
     dict: &Distributed,
     dir: &Path,
     source: &str,
-    force: bool,
     compressed: bool,
     progress: &mut dyn FnMut(u64, u64),
-) -> Result<Outcome, DownloadError> {
+) -> Result<PathBuf, DownloadError> {
     let options = DownloadOptions {
         // 目録は依存の hasami より新しいことがあるので、取得元は目録の版 (DEFAULT_SOURCE) を渡す
         base_url: Some(source),
         compressed,
-        force,
+        force: true,
         progress: Some(progress),
     };
     match hasami::download::download(&dict.to_hasami(), dir, options) {
-        Ok(HasamiOutcome::Present(path)) => Ok(Outcome::Present(path)),
-        Ok(HasamiOutcome::Downloaded(path)) => Ok(Outcome::Downloaded(path)),
+        Ok(HasamiOutcome::Present(path) | HasamiOutcome::Downloaded(path)) => Ok(path),
         Err(e) => Err(DownloadError::from_hasami(e, dict)),
     }
 }
@@ -667,34 +651,23 @@ mod tests {
         assert!(plain.to_hasami().compressed.is_none());
     }
 
-    /// 正しいファイルがあれば通信せずに取得済みとし、中身の違うファイルは --force を促して止める
-    /// (どちらも取得元に接続する前に決まる)。
+    /// 既存の中身にかかわらず取得を試み、接続できなければ既存のファイルを保つ。
     #[test]
-    fn existing_files_are_checked_before_connecting() {
+    fn failed_downloads_preserve_existing_files() {
         let dir = tempfile::tempdir().unwrap();
         let dict = distributed("t", b"abcdef");
         let path = dir.path().join("t.hsd");
         // 接続できない取得元。接続しようとしたら誤りになる
         let unreachable = "http://127.0.0.1:9";
-        let mut calls = 0;
-        let mut progress = |_: u64, _: u64| calls += 1;
-
-        fs::write(&path, b"abcdef").unwrap();
-        let outcome = download(&dict, dir.path(), unreachable, false, true, &mut progress);
-        assert_eq!(outcome.unwrap(), Outcome::Present(path.clone()));
-
-        fs::write(&path, b"abcdeg").unwrap();
-        let err = download(&dict, dir.path(), unreachable, false, true, &mut progress)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("と中身が違います"), "{err}");
-        assert!(err.contains("--force"), "{err}");
-        assert_eq!(
-            fs::read(&path).unwrap(),
-            b"abcdeg",
-            "既存のファイルに触れない"
-        );
-        assert_eq!(calls, 0, "通信していない");
+        for old in [b"abcdef", b"abcdeg"] {
+            fs::write(&path, old).unwrap();
+            let err = download(&dict, dir.path(), unreachable, true, &mut |_, _| {})
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("を取得できません"), "{err}");
+            assert!(!err.contains("--force"), "{err}");
+            assert_eq!(fs::read(&path).unwrap(), old, "既存のファイルを保つ");
+        }
     }
 
     /// hasami の取得の誤りを、どこで何が起きたかが分かる日本語に言い換える。
@@ -813,18 +786,11 @@ mod tests {
         for (dict, compressed) in cases {
             let path = dir.path().join(dict.file_name());
             let mut total = 0;
-            let outcome = download(
-                dict,
-                dir.path(),
-                DEFAULT_SOURCE,
-                false,
-                compressed,
-                &mut |_, t| {
-                    total = t;
-                },
-            )
+            let outcome = download(dict, dir.path(), DEFAULT_SOURCE, compressed, &mut |_, t| {
+                total = t;
+            })
             .unwrap_or_else(|e| panic!("{} (compressed: {compressed}): {e}", dict.name));
-            assert_eq!(outcome, Outcome::Downloaded(path.clone()), "{}", dict.name);
+            assert_eq!(outcome, path, "{}", dict.name);
             assert_eq!(total, dict.transfer_size(compressed), "{}", dict.name);
             assert_eq!(check_file(&path, dict).unwrap(), Check::Verified);
             // 次の辞書の分のディスクを空ける
