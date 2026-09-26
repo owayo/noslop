@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::code::CodeLanguage;
 use crate::config::{self, ConfigError, ConfigLayers, CustomRuleConfig, FailOn, LoadedConfig};
 use crate::diagnostic::{RuleStatus, Severity};
-use crate::dictionaries::{self, Check, Distributed, Outcome};
+use crate::dictionaries::{self, Check, Distributed};
 use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
 use crate::genre::Genre;
@@ -389,6 +389,7 @@ pub enum DictCommand {
     ///
     /// 取得元は、noslop に組み込んだ hasami のリリースの目録 (dict list の 1 行目の版) の添付ファイル。
     /// 取得した中身は、目録の大きさと SHA-256 で確かめ、辞書として読めることも確かめてから置く。
+    /// 既存の辞書があっても毎回取得し直して置き換える。
     /// 途中で失敗しても、すでにあるファイルは消さず、壊さない。
     Download(DictDownloadArgs),
     /// 配布辞書と、取得済みかを表示する (通信しない)
@@ -414,9 +415,6 @@ pub struct DictDownloadArgs {
     /// 圧縮版 (.hsd.zst) を使わず、展開前の辞書 (.hsd) を取得する (圧縮版を置いていない取得元向け)
     #[arg(long)]
     pub uncompressed: bool,
-    /// 正しいファイルがあっても取り直す。中身の違うファイルも置き換える
-    #[arg(long)]
-    pub force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1544,14 +1542,9 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
     };
     let compressed = !args.uncompressed;
     let mut progress = DownloadProgress::new(dict, &dir, compressed, io::stderr().is_terminal());
-    let result = dictionaries::download(
-        dict,
-        &dir,
-        &args.source,
-        args.force,
-        compressed,
-        &mut |r, t| progress.update(r, t),
-    );
+    let result = dictionaries::download(dict, &dir, &args.source, compressed, &mut |r, t| {
+        progress.update(r, t)
+    });
     progress.finish();
     match result {
         Ok(outcome) => {
@@ -1571,23 +1564,16 @@ fn dict_download(args: DictDownloadArgs) -> u8 {
 /// とき (`auto`) に使う辞書。
 fn download_report(
     dict: &Distributed,
-    outcome: &Outcome,
+    path: &Path,
     dir: &Path,
     share: Option<&Path>,
     pick: &AutoPick,
 ) -> String {
-    let message = match outcome {
-        Outcome::Present(path) => format!(
-            "{} は取得済みです (大きさと SHA-256 を確かめました): {}",
-            dict.name,
-            display_path(path)
-        ),
-        Outcome::Downloaded(path) => format!(
-            "{} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): {}",
-            dict.name,
-            display_path(path)
-        ),
-    };
+    let message = format!(
+        "{} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): {}",
+        dict.name,
+        display_path(path)
+    );
     if !is_share_dir(dir, share) {
         return format!(
             "{message}\n使うときは --dict にこのファイルのパスを指定してください (share:<名前> は share ディレクトリの辞書を指します)"
@@ -2306,7 +2292,6 @@ mode = "required"
         assert_eq!(args.name, "ipadic-neologd-sudachi");
         assert_eq!(args.dir, None);
         assert_eq!(args.source, dictionaries::DEFAULT_SOURCE);
-        assert!(!args.force);
 
         let cli = Cli::try_parse_from([
             "noslop",
@@ -2317,7 +2302,6 @@ mode = "required"
             "d",
             "--source",
             "https://mirror.example.com/hasami",
-            "--force",
         ])
         .unwrap();
         let Command::Dict(DictCommand::Download(args)) = cli.command else {
@@ -2326,7 +2310,7 @@ mode = "required"
         assert_eq!(args.name, "ipadic");
         assert_eq!(args.dir, Some(PathBuf::from("d")));
         assert_eq!(args.source, "https://mirror.example.com/hasami");
-        assert!(args.force);
+        assert!(Cli::try_parse_from(["noslop", "dict", "download", "--force"]).is_err());
         // 名前は配布辞書の表にあるものだけ
         for name in dictionaries::DICTIONARIES.map(|d| d.name) {
             assert!(Cli::try_parse_from(["noslop", "dict", "download", name]).is_ok());
@@ -2488,13 +2472,7 @@ mode = "required"
         let name = dict.name;
 
         let this = AutoPick::Share(placed.clone());
-        let downloaded = download_report(
-            dict,
-            &Outcome::Downloaded(placed.clone()),
-            share,
-            Some(share),
-            &this,
-        );
+        let downloaded = download_report(dict, &placed, share, Some(share), &this);
         let lines: Vec<&str> = downloaded.lines().collect();
         assert!(lines[0].starts_with(&format!(
             "{name} を取得しました (大きさ・SHA-256・辞書の形式を確かめました): "
@@ -2512,10 +2490,7 @@ mode = "required"
 
         // 推奨順で先の辞書があれば、そちらを使うと知らせる
         let better = AutoPick::Share(share.join("better.hsd"));
-        let present = download_report(dict, &Outcome::Present(placed), share, Some(share), &better);
-        assert!(present.starts_with(&format!(
-            "{name} は取得済みです (大きさと SHA-256 を確かめました): "
-        )));
+        let present = download_report(dict, &placed, share, Some(share), &better);
         assert!(
             present.contains("辞書を指定しないとき (dictionary = \"auto\") は、better ("),
             "{present}"
@@ -2524,7 +2499,7 @@ mode = "required"
         let elsewhere = Path::new("elsewhere");
         let report = download_report(
             dict,
-            &Outcome::Downloaded(elsewhere.join(dict.file_name())),
+            &elsewhere.join(dict.file_name()),
             elsewhere,
             Some(share),
             &this,

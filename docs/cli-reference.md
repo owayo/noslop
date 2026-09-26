@@ -108,7 +108,7 @@ noslop explain R01
 | `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop hook git-diff` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000）。指摘があれば終了コード 1。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
-| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--uncompressed` / `--force` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、圧縮版を使わずに展開前の辞書を取るか（圧縮版を置いていないミラー用）、正しいファイルがあっても取り直すか（中身の違うファイルを置き換えるときにも要る）。詳細は[別の辞書を使う](dictionaries.md#別の辞書を使う) |
+| `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--uncompressed` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、圧縮版を使わずに非圧縮版を取るかを指定する。既存の辞書は毎回取得し直し、検証に成功してから置き換える。詳細は[別の辞書を使う](dictionaries.md#別の辞書を使う) |
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
 | `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`--min-detection`、`--no-experimental`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](../docs/calibration.md) |
 
