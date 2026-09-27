@@ -7,6 +7,8 @@ use regex::Regex;
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
 use crate::rules::{Rule, RuleContext, RuleMeta};
 
+use super::{final_prose_sentence, has_embedded_content};
+
 static META: RuleMeta = RuleMeta {
     id: "R15",
     name: "FORMULAIC_FUTURE_CLOSER",
@@ -60,17 +62,10 @@ impl Rule for FormulaicFutureCloser {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
-        let Some(last) = doc.sentences.last() else {
+        let Some(last) = final_prose_sentence(doc) else {
             return;
         };
         let block = &doc.blocks[last.block];
-        if !last.japanese
-            || !block.is_prose()
-            || doc.blocks.len() != last.block + 1
-            || !doc.source[block.span.end..].trim().is_empty()
-        {
-            return;
-        }
         let value = doc.sentence_text(last);
         // 1 文型は読点の後ろから期待の型が始まるものだけ。
         let within = value
@@ -78,10 +73,9 @@ impl Rule for FormulaicFutureCloser {
             .filter(|(_, c)| matches!(c, '、' | '，'))
             .find_map(|(i, c)| {
                 let (before, after) = value.split_at(i + c.len_utf8());
-                (CHALLENGE.is_match(before) && FUTURE.is_match(after.trim_start()))
-                    .then_some(last.span)
+                (CHALLENGE.is_match(before) && FUTURE.is_match(after.trim_start())).then_some(last)
             });
-        let pair = if within.is_none() {
+        let first = within.or_else(|| {
             doc.sentences.iter().rev().nth(1).and_then(|first| {
                 let previous = &doc.blocks[first.block];
                 let adjacent = first.block == last.block
@@ -94,15 +88,13 @@ impl Rule for FormulaicFutureCloser {
                     && adjacent
                     && CHALLENGE.is_match(doc.sentence_text(first))
                     && FUTURE.is_match(value))
-                .then_some(first.span)
+                .then_some(first)
             })
-        } else {
-            None
-        };
-        let Some(first) = within.or(pair) else {
+        });
+        let Some(first) = first else {
             return;
         };
-        let context = Span::new(first.start, last.span.end);
+        let context = Span::new(first.span.start, last.span.end);
         let source = doc.slice(context);
         if source.chars().any(|c| {
             c.is_numeric() || matches!(c, '?' | '？' | '「' | '」' | '『' | '』' | '`' | '<' | '>')
@@ -111,36 +103,27 @@ impl Rule for FormulaicFutureCloser {
             || doc
                 .blocks
                 .iter()
-                .skip(
-                    doc.sentences
-                        .iter()
-                        .find(|s| s.span == first)
-                        .map_or(last.block, |s| s.block),
-                )
-                .any(|b| {
-                    b.marks.iter().any(|m| {
-                        m.span.start < context.end
-                            && context.start < m.span.end
-                            && matches!(
-                                m.kind,
-                                crate::document::MarkKind::Link
-                                    | crate::document::MarkKind::Code
-                                    | crate::document::MarkKind::Math
-                                    | crate::document::MarkKind::Image
-                            )
-                    })
-                })
+                .skip(first.block)
+                .any(|b| has_embedded_content(b, context))
         {
             return;
         }
-        let related = if first == last.span {
+        let related = if first.span == last.span {
             Vec::new()
         } else {
             vec![last.span]
         };
-        out.push(META.diagnostic(first, "課題を挙げた後、今後への期待で文書を閉じる定型です")
-            .with_hint("期待の一文が必要か確かめ、残すなら次に確かめることや取り組むことを書いてください")
-            .with_context(context).with_related(related));
+        out.push(
+            META.diagnostic(
+                first.span,
+                "課題を挙げた後、今後への期待で文書を閉じる定型です",
+            )
+            .with_hint(
+                "期待の一文が必要か確かめ、残すなら次に確かめることや取り組むことを書いてください",
+            )
+            .with_context(context)
+            .with_related(related),
+        );
     }
 }
 
@@ -161,6 +144,20 @@ mod tests {
             "課題があります。\n\n将来の改善が期待されます。\n",
         ] {
             assert_eq!(run(&FormulaicFutureCloser, s).len(), 1, "{s}");
+        }
+    }
+
+    #[test]
+    fn excludes_links_only_when_they_overlap_the_closing_sentences() {
+        let before = format!("[資料](https://example.com)を確認した。{PAIR}");
+        let d = run(&FormulaicFutureCloser, &before);
+        assert_eq!(matched(&before, &d), ["運用には課題が残ります。"]);
+        for body in [
+            "運用には[課題][ref]が残ります。しかし、今後の普及が期待されます。",
+            "運用には課題が残ります。しかし、今後の[普及][ref]が期待されます。",
+        ] {
+            let md = format!("[ref]: https://example.com\n\n{body}");
+            assert!(run(&FormulaicFutureCloser, &md).is_empty(), "{md}");
         }
     }
 

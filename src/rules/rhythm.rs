@@ -22,7 +22,8 @@ mod paragraphs;
 mod self_answer;
 mod triads;
 
-use crate::document::{Document, Sentence};
+use crate::diagnostic::Span;
+use crate::document::{Block, Document, MarkKind, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleMeta, option_f64};
 // 各ルールは `super::` から使う (文末と体言止めの判定は `noslop diff` と共有する)
@@ -51,6 +52,29 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(nominal_lists::RepeatedNominalList::default()),
         Box::new(action_closer::ClosingCallToAction),
     ]
+}
+
+/// 原文の末尾まで確認し、文書の結びに当たる日本語の地の文を返す。
+fn final_prose_sentence(doc: &Document) -> Option<&Sentence> {
+    let last = doc.sentences.last()?;
+    let block = &doc.blocks[last.block];
+    (last.japanese
+        && block.is_prose()
+        && last.block + 1 == doc.blocks.len()
+        && doc.source[block.span.end..].trim().is_empty())
+    .then_some(last)
+}
+
+/// 指定した原文の範囲に、通常の文章以外のインライン要素が重なるか。
+fn has_embedded_content(block: &Block, span: Span) -> bool {
+    block.marks.iter().any(|m| {
+        m.span.start < span.end
+            && span.start < m.span.end
+            && matches!(
+                m.kind,
+                MarkKind::Link | MarkKind::Code | MarkKind::Math | MarkKind::Image
+            )
+    })
 }
 
 /// 間に別の内容を挟まない、日本語の地の文の組。
