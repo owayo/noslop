@@ -62,10 +62,9 @@ impl Rule for FormulaicFutureCloser {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
-        let Some(last) = final_prose_sentence(doc) else {
+        let Some((last, block)) = final_prose_sentence(doc) else {
             return;
         };
-        let block = &doc.blocks[last.block];
         let value = doc.sentence_text(last);
         // 1 文型は読点の後ろから期待の型が始まるものだけ。
         let within = value
@@ -100,10 +99,8 @@ impl Rule for FormulaicFutureCloser {
             c.is_numeric() || matches!(c, '?' | '？' | '「' | '」' | '『' | '』' | '`' | '<' | '>')
         }) || source.contains("http")
             || source.contains("[^")
-            || doc
-                .blocks
+            || doc.blocks[first.block..=last.block]
                 .iter()
-                .skip(first.block)
                 .any(|b| has_embedded_content(b, context))
         {
             return;
@@ -149,9 +146,13 @@ mod tests {
 
     #[test]
     fn excludes_links_only_when_they_overlap_the_closing_sentences() {
-        let before = format!("[資料](https://example.com)を確認した。{PAIR}");
-        let d = run(&FormulaicFutureCloser, &before);
-        assert_eq!(matched(&before, &d), ["運用には課題が残ります。"]);
+        for before in [
+            format!("[資料](https://example.com)を確認した。{PAIR}"),
+            format!("[前書き。](https://example.com){PAIR}"),
+        ] {
+            let d = run(&FormulaicFutureCloser, &before);
+            assert_eq!(matched(&before, &d), ["運用には課題が残ります。"]);
+        }
         for body in [
             "運用には[課題][ref]が残ります。しかし、今後の普及が期待されます。",
             "運用には課題が残ります。しかし、今後の[普及][ref]が期待されます。",

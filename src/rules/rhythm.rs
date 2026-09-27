@@ -55,17 +55,17 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
 }
 
 /// 原文の末尾まで確認し、文書の結びに当たる日本語の地の文を返す。
-fn final_prose_sentence(doc: &Document) -> Option<&Sentence> {
+fn final_prose_sentence(doc: &Document) -> Option<(&Sentence, &Block)> {
     let last = doc.sentences.last()?;
     let block = &doc.blocks[last.block];
     (last.japanese
         && block.is_prose()
         && last.block + 1 == doc.blocks.len()
         && doc.source[block.span.end..].trim().is_empty())
-    .then_some(last)
+    .then_some((last, block))
 }
 
-/// 指定した原文の範囲に、通常の文章以外のインライン要素が重なるか。
+/// 指定した原文の範囲に、リンク・コード・数式・画像が重なるか。
 fn has_embedded_content(block: &Block, span: Span) -> bool {
     block.marks.iter().any(|m| {
         m.span.start < span.end

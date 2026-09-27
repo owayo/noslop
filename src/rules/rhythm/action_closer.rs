@@ -100,10 +100,9 @@ impl Rule for ClosingCallToAction {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
-        let Some(last) = final_prose_sentence(doc) else {
+        let Some((last, block)) = final_prose_sentence(doc) else {
             return;
         };
-        let block = &doc.blocks[last.block];
         if has_embedded_content(block, last.span) {
             return;
         }
