@@ -71,7 +71,7 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
   <img src="https://img.shields.io/badge/TOML-9C4121?logo=toml&amp;logoColor=white" alt="TOML">
 </p>
 
-## フックによる修正例
+## AI エージェントのフックによる修正例
 
 Claude Code が書いたコードのコメントを noslop のフックで検査し、指摘を受けた Claude Code が文章を修正している様子です。
 
