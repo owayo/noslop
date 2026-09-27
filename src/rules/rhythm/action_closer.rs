@@ -1,14 +1,15 @@
 //! R19: 文書末尾で実践を促す定型の呼びかけ。
 
-use std::sync::LazyLock;
+use std::{ops::Range, sync::LazyLock};
 
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
-use crate::document::MarkKind;
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleContext, RuleMeta};
 use crate::text;
+
+use super::{final_prose_sentence, has_embedded_content};
 
 static META: RuleMeta = RuleMeta {
     id: "R19",
@@ -56,6 +57,36 @@ static CLOSER: LazyLock<Regex> = LazyLock::new(|| {
     .expect("action closer regex")
 });
 
+/// 文中の除外条件と呼びかけの語義を確かめ、解析用テキストの範囲を返す。
+fn invitation(value: &str) -> Option<Range<usize>> {
+    if value.chars().any(|c| {
+        c.is_numeric()
+            || text::closing_bracket(c).is_some()
+            || text::is_closing_bracket(c)
+            || c == text::PLACEHOLDER
+    }) || value.contains("https://")
+        || value.contains("http://")
+    {
+        return None;
+    }
+    LEAD.find_iter(value).find_map(|lead| {
+        let before = value[..lead.start()].trim_end();
+        let after = &value[lead.end()..];
+        // 同行者を表す「と一緒に」と、名詞の「是非」は呼びかけに数えない。
+        if (lead.as_str() == "一緒に" && before.ends_with('と'))
+            || (lead.as_str() == "是非"
+                && after
+                    .trim_start()
+                    .starts_with(['は', 'が', 'を', 'も', 'の']))
+        {
+            return None;
+        }
+        CLOSER
+            .captures(after)
+            .and_then(|c| c.name("m").map(|m| lead.start()..lead.end() + m.end()))
+    })
+}
+
 pub struct ClosingCallToAction;
 
 impl Rule for ClosingCallToAction {
@@ -69,53 +100,14 @@ impl Rule for ClosingCallToAction {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
-        let Some(last) = doc.sentences.last() else {
+        let Some(last) = final_prose_sentence(doc) else {
             return;
         };
         let block = &doc.blocks[last.block];
-        if !last.japanese
-            || !block.is_prose()
-            || last.block + 1 != doc.blocks.len()
-            || !doc.source[block.span.end..].trim().is_empty()
-        {
+        if has_embedded_content(block, last.span) {
             return;
         }
-        let value = doc.sentence_text(last);
-        if value.chars().any(|c| {
-            c.is_numeric()
-                || text::closing_bracket(c).is_some()
-                || text::is_closing_bracket(c)
-                || c == text::PLACEHOLDER
-        }) || value.contains("https://")
-            || value.contains("http://")
-            || block.marks.iter().any(|m| {
-                m.span.start < last.span.end
-                    && last.span.start < m.span.end
-                    && matches!(
-                        m.kind,
-                        MarkKind::Link | MarkKind::Code | MarkKind::Math | MarkKind::Image
-                    )
-            })
-        {
-            return;
-        }
-        let range = LEAD.find_iter(value).find_map(|lead| {
-            let before = value[..lead.start()].trim_end();
-            let after = &value[lead.end()..];
-            // 同行者を表す「と一緒に」と、名詞の「是非」は呼びかけに数えない。
-            if (lead.as_str() == "一緒に" && before.ends_with('と'))
-                || (lead.as_str() == "是非"
-                    && after
-                        .trim_start()
-                        .starts_with(['は', 'が', 'を', 'も', 'の']))
-            {
-                return None;
-            }
-            CLOSER
-                .captures(after)
-                .and_then(|c| c.name("m").map(|m| lead.start()..lead.end() + m.end()))
-        });
-        let Some(range) = range else {
+        let Some(range) = invitation(doc.sentence_text(last)) else {
             return;
         };
         let span = block.to_source(last.range.start + range.start..last.range.start + range.end);

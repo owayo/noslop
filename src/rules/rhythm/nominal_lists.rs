@@ -80,6 +80,51 @@ fn nominal_without_dictionary(part: &str) -> bool {
             .is_some_and(|c| text::is_kanji(c) || text::is_katakana(c))
 }
 
+/// 列挙の形を満たす文から、前後の空白を除いた各項目のバイト範囲を返す。
+/// 返す範囲は形態素の範囲と照合するため、文の先頭を基準にする。
+fn nominal_list_parts(value: &str) -> Option<Vec<Range<usize>>> {
+    let core = value.trim_end().strip_suffix('。')?;
+    if text::reading_length(core) < 15
+        || core.chars().any(|c| {
+            text::closing_bracket(c).is_some()
+                || text::is_closing_bracket(c)
+                || c == text::PLACEHOLDER
+                || c.is_numeric()
+                || text::is_sentence_ender(c)
+        })
+    {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for raw in core.split(['、', '，']) {
+        let part = raw.trim();
+        if parts.is_empty()
+            && matches!(
+                part,
+                "その結果"
+                    | "この結果"
+                    | "その後"
+                    | "この後"
+                    | "そのため"
+                    | "このため"
+                    | "その一方"
+                    | "その反面"
+            )
+        {
+            return None;
+        }
+        if text::reading_length(part) < 3 {
+            return None;
+        }
+        let part_start = start + raw.len() - raw.trim_start().len();
+        parts.push(part_start..part_start + part.len());
+        // 対象の区切り文字はどちらも UTF-8 で 3 バイト。
+        start += raw.len() + '、'.len_utf8();
+    }
+    (parts.len() >= 3).then_some(parts)
+}
+
 fn lists(ctx: &RuleContext<'_>) -> Vec<Span> {
     ctx.doc
         .sentences
@@ -89,55 +134,16 @@ fn lists(ctx: &RuleContext<'_>) -> Vec<Span> {
             if !sentence.japanese || !ctx.doc.blocks[sentence.block].is_prose() {
                 return None;
             }
-            let value = ctx.doc.sentence_text(sentence).trim_end();
-            let core = value.strip_suffix('。')?;
-            if text::reading_length(core) < 15
-                || core.chars().any(|c| {
-                    text::closing_bracket(c).is_some()
-                        || text::is_closing_bracket(c)
-                        || c == text::PLACEHOLDER
-                        || c.is_numeric()
-                        || text::is_sentence_ender(c)
-                })
-            {
-                return None;
-            }
-            let parts: Vec<_> = core.split(['、', '，']).collect();
-            if parts.len() < 3 {
-                return None;
-            }
+            let value = ctx.doc.sentence_text(sentence);
+            let parts = nominal_list_parts(value)?;
             let tokens = ctx.morph.and_then(|m| m.sentence(index));
-            let mut start = 0;
-            for (part_index, raw) in parts.into_iter().enumerate() {
-                let part = raw.trim();
-                if part_index == 0
-                    && matches!(
-                        part,
-                        "その結果"
-                            | "この結果"
-                            | "その後"
-                            | "この後"
-                            | "そのため"
-                            | "このため"
-                            | "その一方"
-                            | "その反面"
-                    )
-                {
-                    return None;
-                }
-                if text::reading_length(part) < 3 {
-                    return None;
-                }
-                let part_start = start + raw.len() - raw.trim_start().len();
-                if !tokens.map_or_else(
-                    || nominal_without_dictionary(part),
-                    |ts| nominal_part(ts, part_start..part_start + part.len()),
-                ) {
-                    return None;
-                }
-                start += raw.len() + '、'.len_utf8();
-            }
-            Some(sentence.span)
+            parts
+                .into_iter()
+                .all(|range| match tokens {
+                    Some(tokens) => nominal_part(tokens, range),
+                    None => nominal_without_dictionary(&value[range]),
+                })
+                .then_some(sentence.span)
         })
         .collect()
 }
@@ -270,6 +276,19 @@ mod tests {
                 run_with_morphology(&rule, &md, &dictionary()).is_empty(),
                 "{md}"
             );
+        }
+    }
+
+    #[test]
+    fn preserves_token_ranges_with_spaces_and_mixed_list_separators() {
+        let rule = RepeatedNominalList::default();
+        for sentence in [
+            "早朝の冷気 ， 駅の階段、 店の看板 。",
+            "早朝の冷気　，　駅の階段、　店の看板。",
+        ] {
+            let md = sentence.repeat(2);
+            let diagnostics = run_with_morphology(&rule, &md, &dictionary());
+            assert_eq!(matched(&md, &diagnostics), [sentence, sentence]);
         }
     }
 
