@@ -41,6 +41,7 @@
 | P20 | `COLON_CONTINUATION` | 「以下の通りです：」のような述語とコロンでの列挙の導入 | slop | experimental |
 | P21 | `VAGUE_ATTRIBUTION` | 「専門家は〜と指摘しています」などの出典をぼかした権威付け | slop | experimental |
 | P22 | `CITATION_ARTIFACT` | 出典のリンクに変換されず残った生成ツールの引用マーカー | slop | experimental |
+| P23 | `MARKUP_RESIDUE` | 太字にならずに記号のまま残った Markdown の強調記法 (`**`) | slop | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
 | R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |
@@ -73,4 +74,4 @@
 
 最新の一覧は `noslop rules`、各ルールの詳細は `noslop explain <ID>` で確認できます。全ルールの説明 (何を見るか・なぜ問題か・直し方・例・根拠) は [docs/rules.md](../docs/rules.md) にまとめてあります。ルールの ID は公開後に意味を変えません。
 
-語句パターン系ルールが既定で見るのは地の文（段落）だけです。校正を地の文で行ったためで、リスト・表・引用も見るには設定の `[scope]` を変えます。リズム・統計系ルールは常に地の文だけで集計します。
+語句パターン系ルールが既定で見るのは地の文（段落）だけです。校正を地の文で行ったためで、リスト・表・引用も見るには設定の `[scope]` を変えます。ただし記法の残骸（P23）は、残った記号がどこにあっても読み手に見えるので、この設定に関わらず見出し・リスト・表・引用も見ます。リズム・統計系ルールは常に地の文だけで集計します。

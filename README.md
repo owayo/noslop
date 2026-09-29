@@ -243,5 +243,3 @@ noslop のルール体系・語句カタログ・閾値の一部は、MIT ライ
 文分割には、日本語の形態素解析器 [hasami](https://github.com/owayo/hasami)（MIT）の辞書を使わない文分割を使っています。hasami が組み込む例外表（文末記号を含む語の一覧）は、SudachiDict などの辞書データから抽出しています。出典と著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
 
 既定のバイナリ（feature `bundled-dict`）には、hasami が mecab-ipadic から作った形態素解析の辞書を同梱しています。mecab-ipadic のライセンス（NAIST-2003）の条文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に、辞書の出所は [dict/README.md](dict/README.md) にあります。
-
-コードと語句の一覧は含みません。

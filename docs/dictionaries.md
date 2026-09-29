@@ -33,7 +33,7 @@ noslop は形態素解析器 [hasami](https://github.com/owayo/hasami) の IPAdi
 
 現在の辞書は HSD v5 形式です。v4 以前の辞書は読めません。以前に取得した配布辞書は `noslop dict download <名前>` で取り直してください。自作の辞書は hasami v26.9.107 以降の対応版で作り直します。同梱の辞書だけを使う場合は、noslop の更新だけで移行できます。
 
-`auto` で使う辞書は、手元の share ディレクトリに何を取得したかで変わります。CI のように、どこで実行しても同じ結果にしたい場面では、`dictionary = "bundled"` か `share:<名前>` で辞書を固定してください。P15・P16 の校正と R18 の探索的な検証には同梱の IPAdic を使いました。同じ条件で判定するなら `bundled` です。R18 の測定結果は [2026 年 9 月の検証](validation-2026-09.md) にあります。
+`auto` で使う辞書は、手元の share ディレクトリに何を取得したかで変わります。CI のように、どこで実行しても同じ結果にしたい場面では、`dictionary = "bundled"` か `share:<名前>` で辞書を固定してください。P15・P16 の校正と R18 の探索的な検証には同梱の IPAdic を使いました。同じ条件で判定するなら `bundled` です。R18 の測定結果は `noslop explain R18` の「根拠」にあります。
 
 ```toml
 [morphology]

@@ -5,12 +5,14 @@
 //! 個別に実装している。
 //!
 //! どのルールも `RuleContext::scoped_blocks` が返すブロック (既定は地の文の段落だけ) の
-//! 文ごとに照合し、文をまたぐ一致はしない。
+//! 文ごとに照合し、文をまたぐ一致はしない。記法の残骸 ([`markup`]、P23) だけは、置き場所を
+//! 問わず見える記号を拾うので、スコープに従わず全ブロックを行ごとに見る。
 
 mod artifacts;
 mod attribution;
 mod catalog;
 mod engine;
+mod markup;
 mod reading;
 mod syntax;
 
@@ -44,6 +46,7 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(syntax::ColonContinuation),
         Box::new(attribution::VagueAttribution),
         Box::new(PhraseRule::new(&artifacts::P22)),
+        Box::new(markup::MarkupResidue),
     ]
 }
 
@@ -55,7 +58,7 @@ mod tests {
     #[test]
     fn all_phrase_rules_are_registered_in_id_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=22).map(|n| format!("P{n:02}")).collect();
+        let expected: Vec<String> = (1..=23).map(|n| format!("P{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -157,7 +160,7 @@ mod tests {
         for id in ["P15", "P16", "P17"] {
             assert_eq!(get(id), (Lane::Readability, RuleStatus::Stable), "{id}");
         }
-        for id in ["P18", "P19", "P20", "P21", "P22"] {
+        for id in ["P18", "P19", "P20", "P21", "P22", "P23"] {
             assert_eq!(get(id), (Lane::Slop, RuleStatus::Experimental), "{id}");
         }
     }

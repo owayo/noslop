@@ -30,8 +30,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-
-
 ## hasami（MIT License）
 
 noslop の文分割は、日本語の形態素解析器 [hasami](https://github.com/owayo/hasami) の辞書を使わない文分割（`hasami::sentence`）を使っています。配布するバイナリには hasami が静的にリンクされています。hasami は noslop と同じ作者によるもので、著作権表示とライセンス（MIT License、Copyright (c) 2026 Yohei）は noslop の [LICENSE](LICENSE) と同じです。
@@ -456,9 +454,6 @@ noslop uses tree-sitter and the following grammars to extract comments from sour
 | TOML（`tree-sitter-toml-ng`） | 0.7.0 | Copyright (c) Ika | [tree-sitter-grammars/tree-sitter-toml](https://github.com/tree-sitter-grammars/tree-sitter-toml) |
 | TypeScript・TSX | 0.23.2 | Copyright (c) 2017 Max Brunsfeld | [tree-sitter/tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) |
 | YAML | 0.7.2 | Copyright (c) 2024 tree-sitter-grammars contributors / Copyright (c) 2019-2021 Ika | [tree-sitter-grammars/tree-sitter-yaml](https://github.com/tree-sitter-grammars/tree-sitter-yaml) |
-
-
-
 
 ## ライセンスの全文
 
