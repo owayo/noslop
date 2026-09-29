@@ -91,7 +91,7 @@ flowchart TD
 | `src/genre.rs` | ジャンルと別名 |
 | `src/diagnostic.rs` | 診断・重大度・レーン・ステータス・原文上の範囲 |
 | `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、判定の単位 (`RuleUnit`。1 文ずつか、文書・段落をまたぐか)、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |
-| `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/attribution.rs` が出典をぼかした権威付け (P21)、`phrases/artifacts.rs` が引用マーカーの残骸 (P22)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
+| `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/attribution.rs` が出典をぼかした権威付け (P21)、`phrases/artifacts.rs` が引用マーカーの残骸 (P22)、`phrases/markup.rs` が太字にならずに記号のまま残った強調の記法 (P23。語句ルールのスコープの設定に従わず、見出し・表・引用を含む全ブロックの 1 行の中で `**…**` の対を探す。Markdown は描画されない対を警告、テキスト・コード・gws の値は出力先で描画されるか分からないので情報)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
 | `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas・duplicates・future_closer・triads・guide_density・nominal_lists・action_closer) |
 | `src/rules/structure.rs` | 構造系 (`S01`〜`S10`) |
 | `src/rules/custom.rs` | 設定ファイルの独自ルール (`[[custom]]`) |
@@ -179,7 +179,7 @@ make docs                          # docs/rules.md を作り直す
 ## 公開リポジトリとしての注意
 
 - 社内の組織名・チーム名、実在のメールアドレス、ホームディレクトリの絶対パスを、コード・ドキュメント・テスト・コミットメッセージに書かない。例には `you@example.com` や `~` を使う
-- ルールの知見の出典は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に記載している。出典の文面をそのまま持ち込まない
+- ルールの知見をどの情報から得たか (資料・記事・論文・Web ページの名前と URL や、どの調査・ツール・検出器から得たかの説明) は、コード・ドキュメント・説明文・テスト・コミットメッセージに書かない。説明文の「根拠」には、検出の条件と noslop のコーパスで測った結果だけを書く。[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に載せるのは、ライセンスが求める著作権表示と許諾文だけ。資料の文面をそのまま持ち込まない
 - 図は Mermaid で書く (ASCII アートは使わない)
 - コメントとドキュメントは日本語で書く。利用者に見せる診断の文も日本語
 

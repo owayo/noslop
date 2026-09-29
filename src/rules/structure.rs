@@ -884,7 +884,7 @@ static TEMPLATE_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。ビジネス文書では見出しの型を\
+実験的です。見出しの型の比率と閾値 0.8 は noslop のコーパスで校正していません。ビジネス文書では見出しの型を\
 そろえるのが正当な慣習なので、ジャンル business では既定で動かしません。
 ",
 };
@@ -1050,7 +1050,7 @@ static HEADING_EMPHASIS_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。
+実験的です。noslop のコーパスでは校正していません。
 ",
 };
 
@@ -1131,8 +1131,8 @@ static DENSITY_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。ただし既定の閾値 (見出し 4 個、項目 10 個) は校正前の\
-暫定値で、noslop のコーパスでは校正していません。ビジネス文書では見出しと箇条書きで区切るのが正当な\
+実験的です。既定の閾値 (見出し 4 個、項目 10 個) は校正前の暫定値で、noslop のコーパスでは\
+校正していません。ビジネス文書では見出しと箇条書きで区切るのが正当な\
 慣習なので、ジャンル business では既定で動かしません。
 ",
 };
@@ -1326,7 +1326,7 @@ static LABEL_STYLE_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。対談の書き起こしや Q&A の「話者名：発言」は\
+実験的です。noslop のコーパスでは校正していません。対談の書き起こしや Q&A の「話者名：発言」は\
 正当な書き方なので、抑制コメントで理由を添えて外してください。ビジネス文書ではラベルで項目を立てる\
 のが正当な慣習なので、ジャンル business では既定で動かしません。
 ",
@@ -1386,7 +1386,7 @@ fn label_lead(block: &Block) -> Option<Diagnostic> {
     }
     let (label, end) = leading_label(rest)?;
     let mut span = block.to_source(lead..lead + end);
-    // 「**重要**:」のようにラベルが太字なら、太字の記号ごと指す
+    // `**重要**:` のようにラベルが太字なら、太字の記号ごと指す
     if let Some(m) = block
         .marks
         .iter()

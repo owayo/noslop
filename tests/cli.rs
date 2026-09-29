@@ -165,6 +165,40 @@ fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
 }
 
 #[test]
+fn markup_residue_in_plain_text_is_opt_in_information() {
+    let text = "今月は**売上の回復**を優先する。\n";
+    for (flags, expected) in [(vec![], 0), (vec!["--only-rules", "P23"], 1)] {
+        let output = noslop()
+            .args([
+                "check",
+                "-",
+                "--stdin-filename",
+                "memo.txt",
+                "--no-config",
+                "--no-dict",
+                "--format",
+                "json",
+            ])
+            .args(&flags)
+            .write_stdin(text)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&output);
+        assert_eq!(rule_count(&report, "P23"), expected, "{flags:?}");
+        if expected > 0 {
+            let d = &report["files"][0]["diagnostics"][0];
+            assert_eq!(d["severity"], "info");
+            assert_eq!(d["status"], "experimental");
+            assert_eq!(d["lane"], "slop");
+            assert_eq!(d["metrics"]["item"], "文字のまま残った強調の記法");
+        }
+    }
+}
+
+#[test]
 fn nominal_list_calibration_does_not_suggest_a_forbidden_single_occurrence() {
     let dir = tempfile::tempdir().unwrap();
     let human = dir.path().join("human");

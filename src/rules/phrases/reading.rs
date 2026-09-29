@@ -343,10 +343,11 @@ impl NoChain {
         out
     }
 
+    /// 辞書の形態素で数える (校正と同じ定義を、IPAdic の分割に合わせて数える)。
     ///
     /// 連体の「の」が `min_chain` 個以上並び、隣り合う「の」の間の語が 1〜2 個で、間に句読点・
-    /// 括弧・記号がない箇所を返す。
-    /// 数えていたので、IPAdic が細かく分ける形は 1 語にまとめてから数える ([`chain_units`])。
+    /// 括弧・記号がない箇所を返す。校正は複合語を 1 語にまとめる分割で数えたので、IPAdic が
+    /// 細かく分ける形は 1 語にまとめてから数える ([`chain_units`])。
     /// 範囲は、最初の「の」の前の名詞のまとまりから、最後の「の」の後の名詞のまとまりまで。
     fn find_with_tokens(&self, text: &str, tokens: &[MorphToken]) -> Vec<(Range<usize>, usize)> {
         let units = chain_units(text, tokens);
@@ -388,6 +389,7 @@ impl NoChain {
     }
 }
 
+/// 隣り合う「の」の間に置ける語の最大数 (校正と同じ)。
 const NO_CHAIN_MAX_GAP: usize = 2;
 
 /// 「の」の連鎖を数える単位の種類。
@@ -539,6 +541,7 @@ const FIXED_NO_WORDS: [(&str, &str); 1] = [("目", "前")];
 
 /// `t` が直前の形態素 `prev` と 1 語にまとまるか。
 ///
+/// 校正で 1 語に数えた複合語のうち、IPAdic が分けるものに絞る。
 /// 名詞どうしは、辞書にない複合語まで 1 語にすると連鎖の間が緩むのでまとめない。
 fn joins(text: &str, prev: &MorphToken, t: &MorphToken) -> bool {
     let katakana = |m: &MorphToken| text[m.range.clone()].chars().all(text::is_katakana);
@@ -562,6 +565,7 @@ fn joins(text: &str, prev: &MorphToken, t: &MorphToken) -> bool {
         // 分数「3分の1」の後ろの数
         (CoarsePos::NounSuffix, CoarsePos::Numeral) => &text[prev.range.clone()] == "分の",
         // カタカナ語の並び (「オススメアプリ」)。hasami は IPAdic でカタカナの複合語を辞書の語に
+        // 分ける (オススメ / アプリ) が、校正では 1 語に数えた
         _ => katakana(prev) && katakana(t),
     }
 }
@@ -1186,6 +1190,7 @@ mod tests {
 
     #[test]
     fn p16_with_a_dictionary_counts_katakana_compounds_as_one_word() {
+        // 辞書がカタカナの複合語を分けても (オススメ / アプリ)、校正と同じく 1 語に数える
         let dict = morphology(&[
             ("人気", "名詞,一般,*,*"),
             NO,

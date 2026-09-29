@@ -38,7 +38,7 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-未校正の実験的なルールです。日本語での型と除外条件は独自のもので、誤検知率は測っていません。情報として確認を促します。",
+未校正の実験的なルールです。型と除外条件の誤検知率は測っていません。情報として確認を促します。",
 };
 
 static CHALLENGE: LazyLock<Regex> = LazyLock::new(|| {

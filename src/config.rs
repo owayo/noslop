@@ -434,6 +434,7 @@ const TEMPLATE: &str = r#"# noslop の設定ファイル
 
 [scope]
 # 語句ルールをリスト・表・引用にも当てるか (既定は地の文の段落だけ)
+# 記法の残骸 (P23) は、この設定に関わらず見出し・表・引用も見ます
 # lists = false
 # tables = false
 # blockquotes = false
