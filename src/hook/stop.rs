@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde_json::{Value, json};
 
-use super::git::{ChangedFile, WorkTree, line_regions};
-use super::{CONTEXT_BUDGET_CHARS, Reviewer, display_name, touches, truncate_lines};
+use super::{CONTEXT_BUDGET_CHARS, Reviewer, display_name, followup_command, truncate_lines};
+use crate::changed::{ChangedFile, WorkTree, is_regular_file, retain_changed};
 use crate::cli::{self, GitDiffHookArgs, HookArgs};
 use crate::engine::FileReport;
 
@@ -136,7 +136,8 @@ fn review_repository(
     } else {
         LIMITED_NOTE
     });
-    Ok(Some(fit(&brief, &notes, budget)))
+    let command = followup_command(args, &start, None);
+    Ok(Some(fit(&brief, &notes, budget, Some(&command))))
 }
 
 /// 変わったファイルを検査し、変わった行に重なる指摘だけを残す。読めないファイル (UTF-8 でない
@@ -155,29 +156,22 @@ fn lint(
             return None;
         }
     };
-    if let (false, Some(lines)) = (whole_file, &file.lines) {
-        let regions = line_regions(lines, &report.doc);
-        report.diagnostics.retain(|d| touches(d, &regions));
+    if !whole_file {
+        retain_changed(&mut report, &file.lines);
     }
     Some(report)
 }
 
-/// 通常のファイルか (シンボリックリンク・ディレクトリ (サブモジュール) は見ない。リンクの差分は
-/// リンク先の中身の行ではないため)。
-fn is_regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
-}
-
 /// 改稿指示と注記を `budget` 文字に収める。注記は残し、改稿指示の後ろを行の単位で省く。上限が
 /// 小さすぎるときは、注記ごと切る。
-fn fit(brief: &str, notes: &str, budget: usize) -> String {
+fn fit(brief: &str, notes: &str, budget: usize, followup: Option<&str>) -> String {
     let note_chars = notes.chars().count();
     if budget >= note_chars + MIN_BRIEF_CHARS {
-        let mut text = truncate_lines(brief, budget - note_chars);
+        let mut text = truncate_lines(brief, budget - note_chars, followup);
         text.push_str(notes);
         text
     } else {
-        truncate_lines(&format!("{brief}{notes}"), budget)
+        truncate_lines(&format!("{brief}{notes}"), budget, followup)
     }
 }
 
@@ -651,11 +645,11 @@ mod tests {
             .map(|i| format!("{i} 行目の指摘です。\n"))
             .collect();
         let notes = "注記です。\n";
-        let text = fit(&brief, notes, 1_000);
+        let text = fit(&brief, notes, 1_000, None);
         assert!(text.chars().count() <= 1_000, "{}", text.chars().count());
         assert!(text.ends_with(notes) && text.contains("残り"), "{text}");
-        assert_eq!(fit("短い。\n", notes, 1_000), "短い。\n注記です。\n");
-        let tiny = fit(&brief, notes, 200);
+        assert_eq!(fit("短い。\n", notes, 1_000, None), "短い。\n注記です。\n");
+        let tiny = fit(&brief, notes, 200, None);
         assert!(tiny.chars().count() <= 200, "{tiny}");
     }
 }

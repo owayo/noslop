@@ -18,7 +18,6 @@
 mod claude_code;
 mod command;
 mod file;
-mod git;
 mod gws;
 mod stop;
 
@@ -31,8 +30,9 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+use crate::changed::touches;
 use crate::cli::{self, HookArgs};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::Span;
 use crate::document::{Document, ParseOptions, SourceFormat};
 use crate::engine::{Engine, FileReport, RunReport};
 use crate::output::{self, RenderOptions, RuleCatalog};
@@ -82,9 +82,7 @@ impl Reviewer {
     /// `root` を起点に検査するとき、`path` を検査するか (文書・コードの拡張子、設定の除外、
     /// `.noslopignore`)。
     fn selects(&self, root: &Path, path: &Path) -> bool {
-        self.walk.selects(path)
-            && !self.walk.is_excluded(root, path, false)
-            && !crate::walk::is_noslopignored(path)
+        crate::changed::selects(&self.walk, root, path)
     }
 
     /// ファイルを読んで検査する。消えたファイルと大きすぎるファイルは `None`。
@@ -229,52 +227,103 @@ fn read_source(path: &Path, name: &str) -> Result<Option<String>, String> {
         .map_err(|_| format!("{name} を UTF-8 として読めません"))
 }
 
-/// 指摘の箇所か文脈 (文・段落) が、変わった行に重なるか。
-fn touches(d: &Diagnostic, regions: &[Span]) -> bool {
-    std::iter::once(d.span)
-        .chain(d.context)
-        .any(|s| regions.iter().any(|r| overlaps(s, *r)))
-}
-
-fn overlaps(a: Span, b: Span) -> bool {
-    if a.start == a.end {
-        b.start <= a.start && a.start <= b.end
-    } else if b.start == b.end {
-        a.start <= b.start && b.start < a.end
-    } else {
-        a.start < b.end && b.start < a.end
-    }
-}
-
 /// `budget` 文字に収まるよう、行単位で後ろを省く。1 行が長すぎるときは行の途中で切る。
-fn truncate_lines(text: &str, budget: usize) -> String {
+fn truncate_lines(text: &str, budget: usize, followup: Option<&str>) -> String {
     if text.chars().count() <= budget {
         return text.to_string();
     }
-    // 省略の注記のぶんを残しておく
-    let budget = budget.saturating_sub(100);
     let lines: Vec<&str> = text.lines().collect();
+    let note = |remaining: usize| match followup {
+        Some(command) => format!(
+            "(長いので残り {remaining} 行を省きました。全件は `{command}` で確認できます)\n"
+        ),
+        None => format!(
+            "(長いので残り {remaining} 行を省きました。検査した文章と表示されたルールを確認してください)\n"
+        ),
+    };
+    // 注記は最も長い行数で予約する。案内自体が入らない上限では、省略の事実だけを残す。
+    let longest = note(lines.len());
+    if longest.chars().count() > budget {
+        return "(長いので残りを省きました)\n"
+            .chars()
+            .take(budget)
+            .collect();
+    }
+    let available = budget - longest.chars().count();
     let mut out = String::new();
     let mut used = 0;
     for (i, line) in lines.iter().enumerate() {
         let n = line.chars().count() + 1;
-        if used + n > budget {
-            let room = budget - used;
+        if used + n > available {
+            let room = available - used;
             if room > 20 {
                 out.extend(line.chars().take(room - 2));
                 out.push_str("…\n");
             }
-            out.push_str(&format!(
-                "(長いので残り {} 行を省きました。全件は `noslop check --format brief` で確認できます)\n",
-                lines.len() - i
-            ));
-            break;
+            out.push_str(&note(lines.len() - i));
+            return out;
         }
         out.push_str(line);
         out.push('\n');
         used += n;
     }
     out
+}
+
+/// 再実行するコマンドの語を、シェルの展開を受けない形で引用する。
+fn shell_quote(value: &str) -> String {
+    quote_for_shell(value, cfg!(windows))
+}
+
+fn quote_for_shell(value: &str, powershell: bool) -> String {
+    let escaped = if powershell {
+        value.replace('\'', "''")
+    } else {
+        value.replace('\'', "'\"'\"'")
+    };
+    format!("'{escaped}'")
+}
+
+/// フックのルール選択・設定・実行場所を保った、全件の確認コマンド。
+fn followup_command(args: &HookArgs, cwd: &Path, file: Option<&Path>) -> String {
+    let check = file.is_none() && !args.whole_file;
+    let mut command = if check {
+        "noslop check --git-diff --report brief --brief-limit unlimited".to_string()
+    } else {
+        let kind = if file.is_some() { "file" } else { "git-diff" };
+        format!("noslop hook {kind} --max-chars unlimited --brief-limit unlimited")
+    };
+    if !args.include_readability && check {
+        command.push_str(" --no-readability");
+    } else if args.include_readability && !check {
+        command.push_str(" --include-readability");
+    }
+    if args.experimental {
+        command.push_str(" --experimental");
+    }
+    if let Some(genre) = args.genre {
+        command.push_str(&format!(" --genre {}", genre.as_str()));
+    }
+    if args.whole_file && !check {
+        command.push_str(" --whole-file");
+    }
+    if args.config.no_config {
+        command.push_str(" --no-config");
+    } else if let Some(path) = &args.config.config {
+        command.push_str(&format!(
+            " --config {}",
+            shell_quote(&path.to_string_lossy())
+        ));
+    }
+    if let Some(path) = file {
+        command.push_str(&format!(" -- {}", shell_quote(&path.to_string_lossy())));
+    }
+    let location = shell_quote(&cwd.to_string_lossy());
+    if cfg!(windows) {
+        format!("& {{ Set-Location -LiteralPath {location} -ErrorAction Stop; {command} }}")
+    } else {
+        format!("cd {location} && {command}")
+    }
 }
 
 /// フックのテストで共有する道具。
@@ -321,16 +370,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shell_arguments_are_literal_in_posix_and_powershell() {
+        let value = "案内 '別名' $HOME `date` $(command)";
+        assert_eq!(
+            quote_for_shell(value, false),
+            "'案内 '\"'\"'別名'\"'\"' $HOME `date` $(command)'"
+        );
+        assert_eq!(
+            quote_for_shell(value, true),
+            "'案内 ''別名'' $HOME `date` $(command)'"
+        );
+    }
+
+    #[test]
     fn long_context_is_cut_within_the_budget() {
         let text: String = (0..500).map(|i| format!("{i} 行目の文です。\n")).collect();
-        let cut = truncate_lines(&text, 1_000);
+        let cut = truncate_lines(&text, 1_000, Some("noslop hook git-diff"));
         assert!(cut.chars().count() <= 1_000, "{}", cut.chars().count());
         assert!(cut.ends_with("確認できます)\n"), "{cut}");
-        assert_eq!(truncate_lines("短い。\n", 1_000), "短い。\n");
+        assert_eq!(truncate_lines("短い。\n", 1_000, None), "短い。\n");
 
         let long = format!("{}\n次の行\n", "長".repeat(5_000));
-        let cut = truncate_lines(&long, 1_000);
+        let cut = truncate_lines(&long, 1_000, None);
         assert!(cut.starts_with("長長"), "1 行目が長くても先頭は残す: {cut}");
         assert!(cut.chars().count() <= 1_000);
+        assert!(cut.contains("検査した文章と表示されたルール"), "{cut}");
+        assert!(
+            !cut.contains("noslop check") && !cut.contains("再利用"),
+            "{cut}"
+        );
+
+        for budget in 0..200 {
+            for followup in [
+                None,
+                Some("noslop check --git-diff --report brief --brief-limit unlimited"),
+            ] {
+                let cut = truncate_lines(&long, budget, followup);
+                assert!(cut.chars().count() <= budget, "{budget}: {cut}");
+            }
+        }
     }
 }

@@ -8,8 +8,8 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::git::git_changed_regions;
-use super::{KEEP_NOTE, review, truncate_lines};
+use super::{KEEP_NOTE, followup_command, review, truncate_lines};
+use crate::changed::git_changed_regions;
 use crate::cli::{self, FileHookArgs};
 use crate::document::Document;
 
@@ -66,7 +66,10 @@ fn review_file(
             review.name
         ));
     }
-    Ok(Some(truncate_lines(&text, args.max_chars)))
+    let cwd = cwd.unwrap_or(Path::new("."));
+    let cwd = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let command = followup_command(&args.hook, &cwd, Some(&path));
+    Ok(Some(truncate_lines(&text, args.max_chars, Some(&command))))
 }
 
 #[cfg(test)]

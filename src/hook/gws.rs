@@ -520,7 +520,7 @@ fn compose(style: &Style, head: &str, brief: &str, notes: &[String]) -> String {
     for note in notes {
         text.push_str(note);
     }
-    truncate_lines(&text, style.budget)
+    truncate_lines(&text, style.budget, None)
 }
 
 /// 止めた書き込みの記録の名前。記録の形の版・noslop の版・セッションと、書き込みのコマンド (サービス・
