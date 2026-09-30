@@ -4,6 +4,7 @@
 //! 判定する。検出は疑いの提示であり、直すかどうかは書き手が決める。
 
 pub mod calibrate;
+mod changed;
 pub mod cli;
 pub mod code;
 pub mod config;

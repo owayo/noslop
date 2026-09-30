@@ -55,6 +55,8 @@ noslop のフックは、ファイルを書いた直後・応答を終えたと�
 
 - **gws の書き込みが止められたとき** (「コマンドを止めました。まだ書き込んでいません」): 書き込む文章を直してから、gws のコマンドを打ち直す。直さずに書き込むと決めたら、同じコマンドをそのままもう一度実行する (止めた書き込みと同じものは、止めてから 30 分のあいだ通る)。1 つのコマンドの gws の書き込みを 1 つずつ止めることがあるので、別の書き込みでまた止まったら、同じように判断する。止めた理由と残した判断は、書き手への報告に添える
 - **書き込んだ後に届いた指摘** (セル・タイトルのような短い値や、`--dry-run` の値): 書き込みは済んでいる。直すなら、書き込んだ先を改めて更新する。短い値の判定は未校正なので、参考として扱う
+- **Stop の指摘が省略されたとき**: 注記のコマンドを、そのまま実行して全件を受け取る。既定の Stop と同じ指摘を JSON で受け取るなら `noslop check --git-diff --no-readability --format json`、改稿指示を TOON で受け取るなら `noslop check --git-diff --no-readability --report brief --format toon --brief-limit unlimited`。フックで読みやすさを含めた場合は `--no-readability` を外し、ジャンル・実験的ルール・設定ファイルの指定も合わせる。パスを省くと作業ツリー全体、明示するとその範囲の変更だけを見る
+- **gws や PostToolUse の指摘が省略されたとき**: 同じ指摘の全件を再現するコマンドは案内しない。検査した文章と表示されたルールを見直す。gws の値を改めて検査するなら、その文章自体を個別に検査する。書き込みのコマンドを再実行する必要はない
 - **同じ指摘がまた出たとき**: 一度見直して残すと決めた指摘は、直さなくてよい
 
 ## 改稿指示の読み方 (TOON)
@@ -77,7 +79,7 @@ files[1]:
 
 - 先頭に `revisionRules` (改稿のルール) と `editorialQuestions` (ルールでは拾えない観点の問い) がある。
 - `rules` はファイルごとの指摘のあったルールで、**優先して見る順** (AI 臭さ → 独自ルール → 読みやすさ、校正済み → 実験的、重大度の高い順) に並ぶ。`why` はなぜ疑わしいか、`hint` は直し方の方向。`lane` が `readability` のものは読みやすさの指摘で、優先度は低い。
-- `occurrences` は該当箇所で、`ruleId` で `rules` を参照する。行・列は 1 始まり (列は文字数)。`excerpt` は指摘を含む文の抜粋 (文書全体の集計に基づく指摘は `null`)。1 ルールあたり `--brief-limit` 件 (既定 5) まで載り、残りの件数は `rules` の `omittedCount`。
+- `occurrences` は該当箇所で、`ruleId` で `rules` を参照する。行・列は 1 始まり (列は文字数)。`excerpt` は指摘を含む文の抜粋 (文書全体の集計に基づく指摘は `null`)。1 ルールあたり `--brief-limit` 件 (既定 5。`unlimited` で全件) まで載り、残りの件数は `rules` の `omittedCount`。
 - 指摘がなければ `files` は空で、`note` に断り書きが入る。指摘がないことは、内容の正しさの保証ではない。
 
 ## そのほかのコマンド
@@ -88,6 +90,7 @@ files[1]:
 | ルールの一覧 | `noslop rules` |
 | 全指摘のレポート (抑制した指摘・位置・metrics・fingerprint を含む) | `noslop check --format json <FILE>` (TOON なら `--format toon`) |
 | 標準入力の文章を検査する | `pbpaste \| noslop check - --stdin-filename draft.md --report brief --format toon` |
+| コミットしていない変更に重なる指摘を全件受け取る | `noslop check --git-diff --report brief --format toon --brief-limit unlimited` |
 | ディレクトリをまとめて検査する | `noslop check docs --report brief --format toon` |
 
 ## 注意
