@@ -19,7 +19,7 @@
 
 | ID | 名前 | 内容 | レーン | ステータス |
 |----|------|------|-------|-----------|
-| P01 | `AI_CONCLUSION` | 結論の押し付け・まとめ口調 | slop | stable |
+| P01 | `AI_CONCLUSION` | 結論の押し付け・まとめ口調（「まとめると」は要約の導入に限る） | slop | stable |
 | P02 | `AI_PREFACE` | 定型の前置き・予告 | slop | stable |
 | P03 | `AI_CONJUNCTION` | 空疎な接続 | slop | stable |
 | P04 | `REDUNDANT_VERB` | 冗長な動詞表現 | readability | experimental |
