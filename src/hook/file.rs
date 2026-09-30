@@ -68,7 +68,9 @@ fn review_file(
     }
     let cwd = cwd.unwrap_or(Path::new("."));
     let cwd = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let command = followup_command(&args.hook, &cwd, Some(&path));
+    // 作業ディレクトリへの移動でパスの表記が変わっても、同じ相対表示で再検査できるようにする。
+    let target = path.strip_prefix(&cwd).unwrap_or(&path);
+    let command = followup_command(&args.hook, &cwd, Some(target));
     Ok(Some(truncate_lines(&text, args.max_chars, Some(&command))))
 }
 
@@ -84,6 +86,39 @@ mod tests {
             cli::HookCommand::File(a) => a,
             _ => panic!("hook file"),
         }
+    }
+
+    #[test]
+    fn file_guidance_uses_the_same_relative_target_for_absolute_input() {
+        let dir = workspace(&"ユーザー様へ。\n\n".repeat(30));
+        let absolute = dir.path().join("guide.md");
+        let run = |path: &str| {
+            review_file(
+                &file_args(&[
+                    "--max-chars",
+                    "900",
+                    "--brief-limit",
+                    "unlimited",
+                    "--whole-file",
+                    path,
+                ]),
+                Some(dir.path()),
+                &cli::Environment::default(),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let relative = run("guide.md");
+        let absolute = run(absolute.to_str().unwrap());
+        assert_eq!(relative, absolute);
+        let command = absolute
+            .split("全件は `")
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .next()
+            .unwrap();
+        assert!(command.contains(" -- 'guide.md'"), "{command}");
     }
 
     /// パスだけを受け取るフックも、claude-code と同じ短い改稿指示をテキストで返す。git の外では

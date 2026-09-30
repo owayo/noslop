@@ -656,6 +656,9 @@ fn whole_file_and_file_guidance_reproduce_the_original_hook() {
             command.contains("--whole-file") && command.contains("--include-readability"),
             "{command}"
         );
+        if kind == "file" {
+            assert!(command.contains(" -- 'docs/"), "{command}");
+        }
         let (code, full, stderr) = rerun(command);
         assert_eq!(code, Some(if kind == "file" { 0 } else { 1 }), "{stderr}");
         let (_, expected, _) = run("unlimited");
