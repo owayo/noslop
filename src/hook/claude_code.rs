@@ -119,7 +119,7 @@ fn post_tool_use(
             review.name
         ));
     }
-    let context = truncate_lines(&context, CONTEXT_BUDGET_CHARS);
+    let context = truncate_lines(&context, CONTEXT_BUDGET_CHARS, None);
     let output = json!({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",

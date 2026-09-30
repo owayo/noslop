@@ -56,10 +56,27 @@ noslop explain R01
 
 ディレクトリを渡したときは、拡張子 `md` / `markdown` / `txt` のファイルを対象にします（設定で変更できます）。ファイルを直接指定した場合は拡張子に関わらず検査します。渡したディレクトリから検査するファイルが 1 件も見つからなければ、標準エラーに警告を出します（`.gitignore` に `dir/**` のようなファイルに当たる行があると、渡したディレクトリの中身も除外されます。除外するなら `dir/` と書いてください）。
 
+### 変更した箇所の検査
+
+```bash
+noslop check --git-diff --format json
+noslop check --git-diff --report brief --format toon --brief-limit unlimited
+noslop check --git-diff docs/ guide.md --format brief
+```
+
+`--git-diff` は HEAD と現在のファイルを比べ、index と作業ツリーの両方の変更に重なる指摘を残します。追跡していないファイルは全体を検査し、削除したファイルは飛ばします。名前を変えたファイルは新しいパスで、変更前の内容との差分を見ます。まだコミットがないリポジトリでは、index に入れたファイルと追跡していないファイルの全体を見ます。
+
+検査はファイル全体に当ててから、指摘の箇所か文脈（文・段落）が変わった行に重なるものを残します。このため、改行をまたぐ文の後半を変えると、前半の指摘も返ることがあります。行の削除だけの箇所では、つなぎ目の前後の行を見ます。
+
+パスを省くと、サブディレクトリから実行しても作業ツリー全体の変更を見ます。明示的な `.` はカレントディレクトリ以下の変更だけです。指定したパスは同じ作業ツリーの中に限り、標準入力とは組み合わせられません。git の外での実行もエラーになります。設定・表示名・ユーザーの除外の基準は実行したディレクトリです。
+
+対象の拡張子・設定の除外・`.noslopignore` は Stop フックと同じ条件で、ファイルを直接指定しても除外を適用します。シンボリックリンク・サブモジュールは見ません。通常の `check` と同じ出力形式・ルール選択・終了コードを使えます。フックは既定で読みやすさの指摘を返さないので、その結果に合わせるときは `--no-readability` を付けます。
+
 ### `check` のオプション
 
 | オプション | 短縮形 | 説明 |
 |-----------|-------|------|
+| `--git-diff` | | コミットしていない変更に重なる指摘だけを出す。パスを省くと作業ツリー全体、指定するとその範囲の変更だけを検査する |
 | `--report <KIND>` | | 出力する内容。`full`（全指摘のレポート。既定）/ `brief`（直す箇所をルールごとにまとめた改稿指示） |
 | `--format <FORMAT>` | `-f` | 出力形式。全指摘のレポートは `text`（既定）/ `json` / `toon` / `github`（別名 `github-actions`）、改稿指示は `markdown`（既定）/ `json` / `toon`。`brief` は `--report brief --format markdown` の省略形 |
 | `--genre <GENRE>` | | ジャンル。`general`（既定）/ `tech` / `business` / `essay`。別名 `blog`→essay、`minutes`→business |
@@ -79,7 +96,7 @@ noslop explain R01
 | `--no-dict` | | 形態素解析の辞書を使わず、辞書なしの近似で判定する |
 | `--color <WHEN>` | | 色付けの有無。`auto`（既定）/ `always` / `never`。`NO_COLOR` も尊重する |
 | `--quiet` | `-q` | 指摘のないファイルとサマリを表示しない |
-| `--brief-limit <N>` | | `brief` 形式で、1 ルールあたりに並べる箇所の上限（既定 5） |
+| `--brief-limit <N>` | | `brief` 形式で、1 ルールあたりに並べる箇所の上限（既定 5。`unlimited` で全件） |
 | `--help` | `-h` | ヘルプを表示する |
 | `--version` | `-V` | バージョンを表示する |
 
@@ -104,9 +121,9 @@ noslop explain R01
 | `noslop init` | `--user` / `--force` | `noslop.toml` のひな形をカレントディレクトリに作る。`--user` ならユーザーの設定のひな形を `~/.config/noslop/config.toml` に作る（ディレクトリがなければ作る）。既にあれば `--force` で上書き |
 | `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](../docs/integrations.md) |
 | `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](../docs/integrations.md) |
-| `noslop hook command` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。claw-hooks の出力の上限（既定 1000 文字）に合わせるなら 900。詳細は [docs/integrations.md](../docs/integrations.md) |
-| `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](../docs/integrations.md) |
-| `noslop hook git-diff` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000）。指摘があれば終了コード 1。詳細は [docs/integrations.md](../docs/integrations.md) |
+| `noslop hook command` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。`unlimited` で上限なし。超える分は行の単位で省く）。claw-hooks の出力の上限（既定 1000 文字）に合わせるなら 900。詳細は [docs/integrations.md](../docs/integrations.md) |
+| `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。`unlimited` で上限なし。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](../docs/integrations.md) |
+| `noslop hook git-diff` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。`unlimited` で上限なし）。指摘があれば終了コード 1。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
 | `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--uncompressed` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、圧縮版を使わずに非圧縮版を取るかを指定する。既存の辞書は毎回取得し直し、検証に成功してから置き換える。詳細は[別の辞書を使う](dictionaries.md#別の辞書を使う) |
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |

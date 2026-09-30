@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use anstream::{AutoStream, ColorChoice};
 use clap::builder::{PossibleValue, PossibleValuesParser};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use rayon::prelude::*;
 use unicode_width::UnicodeWidthStr;
 
 use crate::code::CodeLanguage;
@@ -139,8 +140,12 @@ pub struct EngineArgs {
 #[derive(Debug, Args)]
 pub struct CheckArgs {
     /// 検査するファイルかディレクトリ ("-" で標準入力)
-    #[arg(value_name = "PATH", default_value = ".")]
+    #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
+    /// コミットしていない変更 (HEAD との差分と追跡していないファイル) に重なる指摘だけを出す。
+    /// パスを省くと作業ツリー全体、指定するとその範囲の変更だけを見る
+    #[arg(long, conflicts_with = "stdin_filename")]
+    pub git_diff: bool,
     /// 出力形式 (既定は text。`--report brief` のときは markdown)
     #[arg(short = 'f', long, value_enum)]
     pub format: Option<FormatArg>,
@@ -166,7 +171,7 @@ pub struct CheckArgs {
     /// 指摘のないファイルとサマリを表示しない
     #[arg(short = 'q', long)]
     pub quiet: bool,
-    /// brief 形式で、1 ルールあたりに並べる箇所の上限 (既定 5)
+    /// brief 形式で、1 ルールあたりに並べる箇所の上限 (既定 5。unlimited で全件)
     #[arg(long, value_parser = parse_limit, value_name = "N")]
     pub brief_limit: Option<usize>,
 }
@@ -302,7 +307,7 @@ pub enum HookCommand {
 /// `hook command` の引数。
 #[derive(Debug, Clone, Args)]
 pub struct CommandHookArgs {
-    /// 出力の文字数の上限。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
+    /// 出力の文字数の上限 (unlimited で上限なし)。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
     #[arg(long, default_value_t = 9_000, value_parser = parse_limit, value_name = "N")]
     pub max_chars: usize,
     #[command(flatten)]
@@ -312,7 +317,7 @@ pub struct CommandHookArgs {
 /// `hook git-diff` の引数。
 #[derive(Debug, Clone, Args)]
 pub struct GitDiffHookArgs {
-    /// 出力の文字数の上限。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
+    /// 出力の文字数の上限 (unlimited で上限なし)。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
     #[arg(long, default_value_t = 9_000, value_parser = parse_limit, value_name = "N")]
     pub max_chars: usize,
     #[command(flatten)]
@@ -325,7 +330,7 @@ pub struct FileHookArgs {
     /// 編集したファイル
     #[arg(value_name = "PATH")]
     pub path: PathBuf,
-    /// 出力の文字数の上限。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
+    /// 出力の文字数の上限 (unlimited で上限なし)。超えるときは行の単位で後ろを省く (呼び出し側の上限に合わせる)
     #[arg(long, default_value_t = 9_000, value_parser = parse_limit, value_name = "N")]
     pub max_chars: usize,
     #[command(flatten)]
@@ -335,7 +340,7 @@ pub struct FileHookArgs {
 /// フックに共通の引数。
 #[derive(Debug, Clone, Args)]
 pub struct HookArgs {
-    /// 1 ルールあたりに返す箇所の上限
+    /// 1 ルールあたりに返す箇所の上限 (unlimited で全件)
     #[arg(long, default_value_t = 3, value_parser = parse_limit, value_name = "N")]
     pub brief_limit: usize,
     /// 読みやすさの指摘も返す
@@ -559,9 +564,12 @@ fn parse_genre(s: &str) -> Result<Genre, String> {
 }
 
 fn parse_limit(s: &str) -> Result<usize, String> {
+    if s == "unlimited" {
+        return Ok(usize::MAX);
+    }
     match s.parse::<usize>() {
         Ok(n) if n >= 1 => Ok(n),
-        _ => Err("1 以上の整数を指定してください".to_string()),
+        _ => Err("1 以上の整数か unlimited を指定してください".to_string()),
     }
 }
 
@@ -947,6 +955,9 @@ fn check(args: CheckArgs) -> u8 {
         Ok(output) => output,
         Err(e) => return error(e),
     };
+    if args.git_diff && args.paths.iter().any(|path| is_stdin(path)) {
+        return error("--git-diff は標準入力と組み合わせられません");
+    }
     let env = Environment::from_process();
     let cfg = match load_config(&args.config, &env) {
         Ok(cfg) => cfg,
@@ -977,40 +988,53 @@ fn check(args: CheckArgs) -> u8 {
         catalog: RuleCatalog::from_engine(&engine),
     };
 
-    let mut inputs = Vec::new();
-    let mut paths = Vec::new();
-    let mut stdin_used = false;
-    for path in &args.paths {
-        if !is_stdin(path) {
-            paths.push(path.clone());
-        } else if !stdin_used {
-            stdin_used = true;
-            match read_stdin(args.stdin_filename.as_deref()) {
-                Ok(input) => inputs.push(input),
-                Err(e) => return error(e),
+    let report = if args.git_diff {
+        match check_changed(&args.paths, &walk_opts, &engine) {
+            Ok(report) => report,
+            Err(e) => return error(e),
+        }
+    } else {
+        let mut inputs = Vec::new();
+        let mut paths = Vec::new();
+        let mut stdin_used = false;
+        let paths_arg = if args.paths.is_empty() {
+            vec![PathBuf::from(".")]
+        } else {
+            args.paths.clone()
+        };
+        for path in &paths_arg {
+            if !is_stdin(path) {
+                paths.push(path.clone());
+            } else if !stdin_used {
+                stdin_used = true;
+                match read_stdin(args.stdin_filename.as_deref()) {
+                    Ok(input) => inputs.push(input),
+                    Err(e) => return error(e),
+                }
             }
         }
-    }
-    let collected = walk::collect(&paths, &walk_opts);
-    for dir in &collected.empty_dirs {
-        eprintln!(
-            "警告: {dir} には検査するファイルがありません (拡張子と、.gitignore などの除外の指定を確かめてください)"
-        );
-    }
-    inputs.extend(collected.files.into_iter().map(Input::Path));
+        let collected = walk::collect(&paths, &walk_opts);
+        for dir in &collected.empty_dirs {
+            eprintln!(
+                "警告: {dir} には検査するファイルがありません (拡張子と、.gitignore などの除外の指定を確かめてください)"
+            );
+        }
+        inputs.extend(collected.files.into_iter().map(Input::Path));
 
-    let mut report = engine.run(inputs);
-    let mut errors: Vec<_> = collected
-        .errors
-        .into_iter()
-        .map(|e| crate::engine::FileError {
-            path: e.path,
-            message: e.message,
-        })
-        .collect();
-    errors.append(&mut report.errors);
-    errors.sort_by(|a, b| a.path.cmp(&b.path));
-    report.errors = errors;
+        let mut report = engine.run(inputs);
+        let mut errors: Vec<_> = collected
+            .errors
+            .into_iter()
+            .map(|e| crate::engine::FileError {
+                path: e.path,
+                message: e.message,
+            })
+            .collect();
+        errors.append(&mut report.errors);
+        errors.sort_by(|a, b| a.path.cmp(&b.path));
+        report.errors = errors;
+        report
+    };
 
     // 標準出力のロックは改行のたびにフラッシュするので、直接書くと整形済み JSON や
     // 大量の指摘では行数ぶんの write システムコールになる。バッファに溜めてから書く。
@@ -1036,6 +1060,52 @@ fn check(args: CheckArgs) -> u8 {
     } else {
         EXIT_OK
     }
+}
+
+/// 差分は対象の選択と指摘の絞り込みだけに使い、検査はファイル全体に当てる。
+fn check_changed(
+    paths: &[PathBuf],
+    walk: &WalkOptions,
+    engine: &Engine,
+) -> Result<crate::engine::RunReport, String> {
+    let start = std::env::current_dir().map_err(|e| e.to_string())?;
+    let tree = crate::changed::WorkTree::discover(&start)?
+        .ok_or_else(|| "--git-diff は git の作業ツリーの中で実行してください".to_string())?;
+    let scopes = tree.scopes(&start, paths)?;
+    let files = tree.changes(|path| {
+        crate::changed::selects(walk, &start, path)
+            && crate::changed::is_regular_file(path)
+            && (scopes.is_empty()
+                || scopes
+                    .iter()
+                    .any(|scope| path == scope || path.starts_with(scope)))
+    })?;
+    // 表示名は非 UTF-8 のパスを同じ文字列にすることがある。元のパスと変更行を組のまま
+    // 検査・絞り込みへ渡し、表示名を対応付けのキーにはしない。
+    let results: Vec<_> = files
+        .into_par_iter()
+        .map(|file| {
+            let path = file
+                .path
+                .strip_prefix(&start)
+                .unwrap_or(&file.path)
+                .to_path_buf();
+            let mut report = engine.run(vec![Input::Path(path)]);
+            for result in &mut report.files {
+                crate::changed::retain_changed(result, &file.lines);
+            }
+            report
+        })
+        .collect();
+    let mut report = crate::engine::RunReport {
+        morphology: engine.morphology().clone(),
+        ..Default::default()
+    };
+    for mut result in results {
+        report.files.append(&mut result.files);
+        report.errors.append(&mut result.errors);
+    }
+    Ok(report)
 }
 
 fn is_stdin(path: &Path) -> bool {
@@ -1958,7 +2028,7 @@ mod tests {
         let Command::Check(args) = cli.command else {
             panic!("check");
         };
-        assert_eq!(args.paths, vec![PathBuf::from(".")]);
+        assert!(args.paths.is_empty(), "省略時の対象は実行時に決める");
         assert!(Cli::try_parse_from(["noslop", "check", "--genre", "poem"]).is_err());
         assert!(Cli::try_parse_from(["noslop", "check", "--config", "a", "--no-config"]).is_err());
     }

@@ -2,7 +2,7 @@
 //!
 //! - [`git_changed_regions`]: 1 つのファイルの、HEAD との差分で変わった行 (`hook file`)
 //! - [`WorkTree`]: 作業ツリーのコミットしていない変更 (HEAD との差分と追跡していないファイル) の
-//!   ファイルと変わった行 (Stop の `hook claude-code` と `hook git-diff`)
+//!   ファイルと変わった行 (`check --git-diff` と Stop のフック)
 //!
 //! git は手元の設定や言語に左右されにくいようにそろえて呼ぶ ([`git_in`])。パスの一覧は `-z` の
 //! 出力で受け取り、空白・引用符・日本語を含むパスも崩さずに扱う。
@@ -12,8 +12,47 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use crate::diagnostic::Span;
+use crate::diagnostic::{Diagnostic, Span};
 use crate::document::Document;
+use crate::engine::FileReport;
+use crate::walk::WalkOptions;
+
+/// 設定とフックで共有する、変更ファイルの選択条件。
+pub(crate) fn selects(options: &WalkOptions, root: &Path, path: &Path) -> bool {
+    options.selects(path)
+        && !options.is_excluded(root, path, false)
+        && !crate::walk::is_noslopignored(path)
+}
+
+/// 通常のファイルだけを見る。リンク先の行は、リンク自身の差分ではない。
+pub(crate) fn is_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+}
+
+/// 全文を検査した結果を、指摘か文脈が変わった行に重なるものに絞る。
+pub(crate) fn retain_changed(report: &mut FileReport, lines: &Option<BTreeSet<usize>>) {
+    if let Some(lines) = lines {
+        let regions = line_regions(lines, &report.doc);
+        report.diagnostics.retain(|d| touches(d, &regions));
+    }
+}
+
+/// 指摘の箇所か文脈 (文・段落) が、変わった行に重なるか。
+pub(crate) fn touches(d: &Diagnostic, regions: &[Span]) -> bool {
+    std::iter::once(d.span)
+        .chain(d.context)
+        .any(|s| regions.iter().any(|r| overlaps(s, *r)))
+}
+
+fn overlaps(a: Span, b: Span) -> bool {
+    if a.start == a.end {
+        b.start <= a.start && a.start <= b.end
+    } else if b.start == b.end {
+        a.start <= b.start && b.start < a.end
+    } else {
+        a.start < b.end && b.start < a.end
+    }
+}
 
 /// 1 回の git に渡すパスの合計の上限 (バイト)。Windows のコマンドラインの上限 (32,767 文字) より
 /// 十分に短くし、超える分は分けて呼ぶ。
@@ -54,13 +93,13 @@ fn failure(what: &str, out: &Output) -> String {
 
 /// git の差分 (HEAD との比較) で変わった行 (原文上の範囲)。git の外・追跡していないファイル・
 /// HEAD がない・git を実行できないときは `None` (ファイル全体)。コミットしていない変更がなければ空。
-pub(super) fn git_changed_regions(path: &Path, doc: &Document) -> Option<Vec<Span>> {
+pub(crate) fn git_changed_regions(path: &Path, doc: &Document) -> Option<Vec<Span>> {
     let lines = git_changed_lines(path)?;
     Some(line_regions(&lines, doc))
 }
 
 /// 行番号 (1 始まり) の集まりを、原文上の範囲にする。
-pub(super) fn line_regions(lines: &BTreeSet<usize>, doc: &Document) -> Vec<Span> {
+pub(crate) fn line_regions(lines: &BTreeSet<usize>, doc: &Document) -> Vec<Span> {
     lines
         .iter()
         .map(|&line| doc.lines.line_span(&doc.source, line))
@@ -104,7 +143,7 @@ fn git_changed_lines(path: &Path) -> Option<BTreeSet<usize>> {
 
 /// `git diff -U0` の出力から、変わった後のファイルの行番号 (1 始まり) を集める。削除だけの箇所は、
 /// つなぎ目の前後の行を入れる。hunk の見出しの形が想定と違えば `None`。
-pub(super) fn unified_diff_lines(diff: &str) -> Option<BTreeSet<usize>> {
+pub(crate) fn unified_diff_lines(diff: &str) -> Option<BTreeSet<usize>> {
     let mut lines = BTreeSet::new();
     // -U0 では本文の行は + か - で始まるので、@@ で始まる行は hunk の見出しだけ
     for header in diff.lines().filter(|l| l.starts_with("@@ ")) {
@@ -133,7 +172,7 @@ fn hunk_lines(header: &str, lines: &mut BTreeSet<usize>) -> Option<()> {
 
 /// コミットしていない変更があるファイル。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ChangedFile {
+pub(crate) struct ChangedFile {
     /// ファイルのパス (作業ツリーの最上位を付けたもの)。
     pub path: PathBuf,
     /// 変わった行 (1 始まり)。`None` はファイル全体 (追跡していないファイルと、HEAD のない
@@ -143,16 +182,61 @@ pub(super) struct ChangedFile {
 
 /// git の作業ツリー。
 #[derive(Debug)]
-pub(super) struct WorkTree {
+pub(crate) struct WorkTree {
     /// 最上位のディレクトリ。探し始めた場所のパスの形 (シンボリックリンクを解かない形) にそろえ、
     /// 表示名や設定の除外がその形のパスで決まるようにする。
     top: PathBuf,
 }
 
 impl WorkTree {
+    /// 明示されたパスを同じ作業ツリーの範囲として解く。空なら作業ツリー全体。
+    pub(crate) fn scopes(&self, start: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+        let physical_top = std::fs::canonicalize(&self.top).map_err(|e| e.to_string())?;
+        paths
+            .iter()
+            .map(|path| {
+                // .. はリンクをたどってから解く。先に字面で潰すと指す場所が変わる。
+                let absolute = start.join(path);
+                let physical = match std::fs::canonicalize(&absolute) {
+                    Ok(path) => path,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // 削除したファイルも範囲に指定できるよう、存在する親までリンクを解く。
+                        let ancestor = absolute
+                            .ancestors()
+                            .find(|p| p.exists())
+                            .ok_or_else(|| format!("{} の範囲を解けません", path.display()))?;
+                        let parent = std::fs::canonicalize(ancestor).map_err(|e| e.to_string())?;
+                        normalize(&parent.join(absolute.strip_prefix(ancestor).unwrap()))
+                    }
+                    Err(e) => return Err(format!("{} の範囲を解けません: {e}", path.display())),
+                };
+                let dir = physical
+                    .ancestors()
+                    .find(|p| p.is_dir())
+                    .ok_or_else(|| format!("{} の作業ツリーを探せません", path.display()))?;
+                let same_tree =
+                    Self::discover(dir)?.is_some_and(|tree| same_dir(&tree.top, &self.top));
+                if !same_tree {
+                    return Err(format!(
+                        "{} は同じ git の作業ツリーにありません",
+                        path.display()
+                    ));
+                }
+                // リンクを解いたパスも、列挙と同じ最上位の表記へ戻す。
+                let relative = physical
+                    .strip_prefix(&physical_top)
+                    .or_else(|_| absolute.strip_prefix(&self.top))
+                    .map_err(|_| {
+                        format!("{} は同じ git の作業ツリーにありません", path.display())
+                    })?;
+                Ok(normalize(&self.top.join(relative)))
+            })
+            .collect()
+    }
+
     /// `start` を含む git の作業ツリーを探す。リポジトリの外と、作業ツリーのない場所 (`.git` の中・
     /// bare リポジトリ) は `Ok(None)`。git を実行できないときなど、ほかの失敗は誤り。
-    pub(super) fn discover(start: &Path) -> Result<Option<Self>, String> {
+    pub(crate) fn discover(start: &Path) -> Result<Option<Self>, String> {
         let start = std::path::absolute(start)
             .map_err(|e| format!("{} を絶対パスにできません: {e}", start.display()))?;
         let out = run(git_in(&start).args(["rev-parse", "--show-cdup", "--show-toplevel"]))?;
@@ -193,7 +277,7 @@ impl WorkTree {
     ///   モードだけの変更) は入れない
     /// - 追跡していないファイル (`.gitignore` などで無視するものは除く): ファイル全体
     /// - まだコミットがないリポジトリ: index に入れたファイルと追跡していないファイルの全体
-    pub(super) fn changes(
+    pub(crate) fn changes(
         &self,
         select: impl Fn(&Path) -> bool,
     ) -> Result<Vec<ChangedFile>, String> {

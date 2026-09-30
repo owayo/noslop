@@ -8,8 +8,8 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::git::git_changed_regions;
-use super::{KEEP_NOTE, review, truncate_lines};
+use super::{KEEP_NOTE, followup_command, review, truncate_lines};
+use crate::changed::git_changed_regions;
 use crate::cli::{self, FileHookArgs};
 use crate::document::Document;
 
@@ -66,7 +66,12 @@ fn review_file(
             review.name
         ));
     }
-    Ok(Some(truncate_lines(&text, args.max_chars)))
+    let cwd = cwd.unwrap_or(Path::new("."));
+    let cwd = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    // 作業ディレクトリへの移動でパスの表記が変わっても、同じ相対表示で再検査できるようにする。
+    let target = path.strip_prefix(&cwd).unwrap_or(&path);
+    let command = followup_command(&args.hook, &cwd, Some(target));
+    Ok(Some(truncate_lines(&text, args.max_chars, Some(&command))))
 }
 
 #[cfg(test)]
@@ -81,6 +86,39 @@ mod tests {
             cli::HookCommand::File(a) => a,
             _ => panic!("hook file"),
         }
+    }
+
+    #[test]
+    fn file_guidance_uses_the_same_relative_target_for_absolute_input() {
+        let dir = workspace(&"ユーザー様へ。\n\n".repeat(30));
+        let absolute = dir.path().join("guide.md");
+        let run = |path: &str| {
+            review_file(
+                &file_args(&[
+                    "--max-chars",
+                    "900",
+                    "--brief-limit",
+                    "unlimited",
+                    "--whole-file",
+                    path,
+                ]),
+                Some(dir.path()),
+                &cli::Environment::default(),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let relative = run("guide.md");
+        let absolute = run(absolute.to_str().unwrap());
+        assert_eq!(relative, absolute);
+        let command = absolute
+            .split("全件は `")
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .next()
+            .unwrap();
+        assert!(command.contains(" -- 'guide.md'"), "{command}");
     }
 
     /// パスだけを受け取るフックも、claude-code と同じ短い改稿指示をテキストで返す。git の外では

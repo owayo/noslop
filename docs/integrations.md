@@ -32,6 +32,19 @@ sequenceDiagram
     MCP-->>Agent: 新しく出た指摘・消えた事実・改稿の偏り
 ```
 
+## フックの省略分を確認する
+
+Stop フックの出力を文字数で省略した場合は、注記のコマンドで同じ変更範囲の指摘を全件取得できます。実行場所と、ジャンル・実験的ルール・設定ファイル・読みやすさの選択を引き継ぎます。`--brief-limit unlimited` は箇所を省略せず、フックの `--max-chars unlimited` は文字数で切りません。案内するコマンドは、Windows では PowerShell、ほかの OS では POSIX シェルで実行する形です。パスや設定名は展開されないよう引用し、実行場所に移れなければ検査を始めません。
+
+```bash
+noslop check --git-diff --no-readability --format json
+noslop check --git-diff --no-readability --report brief --format toon --brief-limit unlimited
+```
+
+`--whole-file` を指定した Stop と `hook file` の省略分は、同じフックを上限なしで再実行するコマンドを案内します。PostToolUse と gws では、同じ指摘の全件を再現するコマンドは案内しません。検査した文章と表示されたルールを見直してください。gws の値を改めて検査したいときは、その文章自体を個別に検査します。書き込みのコマンドを再実行する必要はありません。
+
+フックは編集のたびに動くため、8 MiB を超えるファイルと読めないファイルを飛ばします。`check --git-diff` はこの大きさの上限を設けず、読み込みの失敗を通常の `check` と同じエラーとして返します。指摘の集合を比較するときは、フックが飛ばしたファイルも確かめてください。
+
 ## 改稿指示 (`--format brief`)
 
 ```bash
