@@ -195,9 +195,21 @@ impl WorkTree {
         paths
             .iter()
             .map(|path| {
-                let absolute = normalize(&start.join(path));
-                let physical =
-                    std::fs::canonicalize(&absolute).unwrap_or_else(|_| absolute.clone());
+                // .. はリンクをたどってから解く。先に字面で潰すと指す場所が変わる。
+                let absolute = start.join(path);
+                let physical = match std::fs::canonicalize(&absolute) {
+                    Ok(path) => path,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // 削除したファイルも範囲に指定できるよう、存在する親までリンクを解く。
+                        let ancestor = absolute
+                            .ancestors()
+                            .find(|p| p.exists())
+                            .ok_or_else(|| format!("{} の範囲を解けません", path.display()))?;
+                        let parent = std::fs::canonicalize(ancestor).map_err(|e| e.to_string())?;
+                        normalize(&parent.join(absolute.strip_prefix(ancestor).unwrap()))
+                    }
+                    Err(e) => return Err(format!("{} の範囲を解けません: {e}", path.display())),
+                };
                 let dir = physical
                     .ancestors()
                     .find(|p| p.is_dir())

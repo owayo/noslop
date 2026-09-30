@@ -310,6 +310,8 @@ fn followup_command(args: &HookArgs, cwd: &Path, file: Option<&Path>) -> String 
     if args.config.no_config {
         command.push_str(" --no-config");
     } else if let Some(path) = &args.config.config {
+        // 明示した設定はイベントの cwd ではなくプロセスの cwd で読んでいる。
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         command.push_str(&format!(
             " --config {}",
             shell_quote(&path.to_string_lossy())

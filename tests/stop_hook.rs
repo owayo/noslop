@@ -659,3 +659,109 @@ fn whole_file_and_file_guidance_reproduce_the_original_hook() {
         assert_eq!(full, expected, "{command}");
     }
 }
+
+#[test]
+fn stop_guidance_keeps_a_relative_config_from_the_process_directory() {
+    let Some(dir) = repository() else { return };
+    let config_dir = tempfile::tempdir().unwrap();
+    let config = "別の設定.toml";
+    fs::write(config_dir.path().join(config), CONFIG).unwrap();
+    // イベントの cwd に同名の設定があっても、それは元の検査には使っていない。
+    fs::write(dir.path().join(config), "[壊れた設定\n").unwrap();
+    fs::write(dir.path().join("new.md"), "ユーザー様へ。\n\n".repeat(1000)).unwrap();
+    let (code, response, stderr) = output(
+        noslop(config_dir.path())
+            .args([
+                "hook",
+                "claude-code",
+                "--config",
+                config,
+                "--brief-limit",
+                "unlimited",
+            ])
+            .write_stdin(stop_event(dir.path(), false)),
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    let response: Value = serde_json::from_str(&response).unwrap();
+    let context = response["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    let command = context
+        .split("全件は `")
+        .nth(1)
+        .unwrap()
+        .split('`')
+        .next()
+        .unwrap();
+    let (code, full, stderr) = rerun(command);
+    assert_eq!(code, Some(0), "{stderr}: {command}");
+    assert!(full.contains("独自ルール 1000 件"), "{full}");
+    assert!(!full.contains("ほか "), "{full}");
+}
+
+#[test]
+#[cfg(unix)]
+fn git_diff_scope_resolves_parent_components_after_symbolic_links() {
+    let Some(dir) = repository() else { return };
+    fs::create_dir_all(dir.path().join("sub/deep")).unwrap();
+    fs::write(dir.path().join("guide.md"), "ユーザー様へ。\n").unwrap();
+    fs::write(
+        dir.path().join("sub/guide.md"),
+        "ユーザー様へ。\n\nユーザー様からの返事。\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("sub/deep", dir.path().join("link")).unwrap();
+    let report = changed_report(dir.path(), &["link/../guide.md"]);
+    assert_eq!(report["files"][0]["path"], "sub/guide.md");
+    assert_eq!(report["summary"]["diagnostics"], 2);
+    fs::remove_file(dir.path().join("sub/guide.md")).unwrap();
+    assert_eq!(
+        changed_report(dir.path(), &["link/../guide.md"])["summary"]["diagnostics"],
+        0
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn non_utf8_paths_with_the_same_display_name_are_each_checked() {
+    use std::os::unix::ffi::OsStringExt;
+    let Some(dir) = repository() else { return };
+    let first = dir
+        .path()
+        .join(std::ffi::OsString::from_vec(b"invalid-\xfe.md".to_vec()));
+    let second = dir
+        .path()
+        .join(std::ffi::OsString::from_vec(b"invalid-\xff.md".to_vec()));
+    assert_ne!(first, second);
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    for path in [&first, &second] {
+        fs::write(path, DOC).unwrap();
+    }
+    assert!(git(dir.path(), &["add", "-A"]));
+    assert!(git(
+        dir.path(),
+        &["commit", "-q", "--no-verify", "-m", "paths"]
+    ));
+    fs::write(&first, format!("{DOC}\nユーザー様へ。\n")).unwrap();
+    fs::write(
+        &second,
+        format!("{DOC}\nユーザー様へ。\n\nユーザー様からの返事。\n"),
+    )
+    .unwrap();
+    let report = changed_report(dir.path(), &[]);
+    assert_eq!(report["summary"]["files"], 2);
+    assert_eq!(report["summary"]["diagnostics"], 3);
+    let lines: Vec<_> = report["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|file| {
+            file["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|finding| finding["range"]["start"]["line"].as_u64().unwrap())
+        })
+        .collect();
+    assert_eq!(lines, vec![7, 7, 9]);
+}

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use anstream::{AutoStream, ColorChoice};
 use clap::builder::{PossibleValue, PossibleValuesParser};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use rayon::prelude::*;
 use unicode_width::UnicodeWidthStr;
 
 use crate::code::CodeLanguage;
@@ -1079,26 +1080,30 @@ fn check_changed(
                     .iter()
                     .any(|scope| path == scope || path.starts_with(scope)))
     })?;
-    let changes: std::collections::BTreeMap<_, _> = files
-        .into_iter()
+    // 表示名は非 UTF-8 のパスを同じ文字列にすることがある。元のパスと変更行を組のまま
+    // 検査・絞り込みへ渡し、表示名を対応付けのキーにはしない。
+    let results: Vec<_> = files
+        .into_par_iter()
         .map(|file| {
             let path = file
                 .path
                 .strip_prefix(&start)
                 .unwrap_or(&file.path)
                 .to_path_buf();
-            (crate::walk::display(&path), (path, file.lines))
+            let mut report = engine.run(vec![Input::Path(path)]);
+            for result in &mut report.files {
+                crate::changed::retain_changed(result, &file.lines);
+            }
+            report
         })
         .collect();
-    let inputs = changes
-        .values()
-        .map(|(path, _)| Input::Path(path.clone()))
-        .collect();
-    let mut report = engine.run(inputs);
-    for file in &mut report.files {
-        if let Some((_, lines)) = changes.get(file.path()) {
-            crate::changed::retain_changed(file, lines);
-        }
+    let mut report = crate::engine::RunReport {
+        morphology: engine.morphology().clone(),
+        ..Default::default()
+    };
+    for mut result in results {
+        report.files.append(&mut result.files);
+        report.errors.append(&mut result.errors);
     }
     Ok(report)
 }
