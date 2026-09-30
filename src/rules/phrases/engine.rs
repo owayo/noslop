@@ -197,7 +197,9 @@ impl Matcher {
         for r in &self.regexes {
             if r.grouped {
                 // グループを取り出すのは遅いので、グループを持つ正規表現だけにする
-                for caps in r.re.captures_iter(text) {
+                let mut position = 0;
+                while let Some(caps) = r.re.captures_at(text, position) {
+                    let mut next = caps.get(0).expect("全体の一致がありません").end();
                     if let Some(m) = caps.name(MATCH_GROUP)
                         && m.start() < m.end()
                     {
@@ -205,6 +207,16 @@ impl Matcher {
                             range: m.start()..m.end(),
                             entry: r.entry,
                         });
+                        // 後ろの条件は次の一致でも使えるよう、指した範囲の末尾から探す。
+                        next = m.end();
+                    }
+                    if next > position {
+                        position = next;
+                    } else if let Some(ch) = text[position..].chars().next() {
+                        // 空・不参加のグループで全体も空なら、文字の境界まで進める。
+                        position += ch.len_utf8();
+                    } else {
+                        break;
                     }
                 }
             } else {
@@ -454,6 +466,54 @@ mod tests {
         let plain = Matcher::new(ENTRIES, false);
         let text = "読むことができる。";
         assert_eq!(&text[plain.find(text)[0].range.clone()], "ことができる");
+    }
+
+    #[test]
+    fn grouped_matches_can_share_context() {
+        const GROUPED: &[Entry] = &[Entry::re(r"(?:^|。)(?P<m>要約)(?:。|$)", Severity::Info)];
+        let matcher = Matcher::new(GROUPED, false);
+        let text = "要約。要約。要約";
+        let ranges: Vec<_> = matcher
+            .find(text)
+            .into_iter()
+            .map(|hit| hit.range)
+            .collect();
+        assert_eq!(ranges, vec![0..6, 9..15, 18..24]);
+        // 候補が増えても、同じ位置では長い指摘を優先する。
+        let entries = [GROUPED[0], Entry::lit("要約。要約", Severity::Info)];
+        let matcher = Matcher::new(&entries, false);
+        let ranges: Vec<_> = matcher
+            .find(text)
+            .into_iter()
+            .map(|hit| hit.range)
+            .collect();
+        assert_eq!(ranges, vec![0..15, 18..24]);
+    }
+
+    #[test]
+    fn empty_and_absent_groups_advance_on_character_boundaries() {
+        for pattern in [r"(?P<m>要約|)", r"(?P<m>要約)?"] {
+            let entries = [Entry::re(pattern, Severity::Info)];
+            let matcher = Matcher::new(&entries, false);
+            let text = "あ要約。要約い";
+            let ranges: Vec<_> = matcher
+                .find(text)
+                .into_iter()
+                .map(|hit| hit.range)
+                .collect();
+            assert_eq!(ranges, vec![3..9, 12..18], "{pattern}");
+            assert!(matcher.find("").is_empty());
+            assert!(matcher.find("あいう").is_empty());
+        }
+    }
+
+    #[test]
+    fn grouped_search_keeps_anchors_relative_to_the_whole_text() {
+        const GROUPED: &[Entry] = &[Entry::re(r"^(?P<m>要約)", Severity::Info)];
+        let matcher = Matcher::new(GROUPED, false);
+        let hits = matcher.find("要約要約");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].range, 0..6);
     }
 
     #[test]
