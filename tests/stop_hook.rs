@@ -487,7 +487,10 @@ fn check_git_diff_before_the_first_commit_and_outside_scopes() {
 fn rerun(command: &str) -> (Option<i32>, String, String) {
     let mut cmd = StdCommand::new(if cfg!(windows) { "pwsh" } else { "sh" });
     if cfg!(windows) {
-        cmd.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        // スクリプトブロックの成功と noslop の終了コードは別なので、pwsh のプロセスにも
+        // ネイティブコマンドの終了コードを明示的に引き継ぐ。
+        let script = format!("{command}; exit $LASTEXITCODE");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
     } else {
         cmd.args(["-c", command]);
     }
