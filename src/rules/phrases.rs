@@ -11,6 +11,7 @@
 mod artifacts;
 mod attribution;
 mod catalog;
+mod effect;
 mod engine;
 mod markup;
 mod reading;
@@ -47,6 +48,7 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(attribution::VagueAttribution),
         Box::new(PhraseRule::new(&artifacts::P22)),
         Box::new(markup::MarkupResidue),
+        Box::new(PhraseRule::new(&effect::P24)),
     ]
 }
 
@@ -58,7 +60,7 @@ mod tests {
     #[test]
     fn all_phrase_rules_are_registered_in_id_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=23).map(|n| format!("P{n:02}")).collect();
+        let expected: Vec<String> = (1..=24).map(|n| format!("P{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -160,7 +162,7 @@ mod tests {
         for id in ["P15", "P16", "P17"] {
             assert_eq!(get(id), (Lane::Readability, RuleStatus::Stable), "{id}");
         }
-        for id in ["P18", "P19", "P20", "P21", "P22", "P23"] {
+        for id in ["P18", "P19", "P20", "P21", "P22", "P23", "P24"] {
             assert_eq!(get(id), (Lane::Slop, RuleStatus::Experimental), "{id}");
         }
     }

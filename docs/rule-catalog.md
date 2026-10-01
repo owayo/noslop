@@ -42,6 +42,7 @@
 | P21 | `VAGUE_ATTRIBUTION` | 「専門家は〜と指摘しています」などの出典をぼかした権威付け | slop | experimental |
 | P22 | `CITATION_ARTIFACT` | 出典のリンクに変換されず残った生成ツールの引用マーカー | slop | experimental |
 | P23 | `MARKUP_RESIDUE` | 太字にならずに記号のまま残った Markdown の強調記法 (`**`) | slop | experimental |
+| P24 | `VAGUE_EFFECT` | 「地味に効く」のような効果を感覚的に評する言い回し (効果が説明されていれば残せる) | slop | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
 | R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |

@@ -5,7 +5,7 @@
 <h1 align="center">noslop</h1>
 
 <p align="center">
-  日本語の文章から「AI 臭さ」を機械的に拾う Rust 製の Linter
+  日本語の文章、コードのコメントから「AI 臭さ」を機械的に拾う Rust 製の Linter
 </p>
 
 <!-- standard:badges:start -->
