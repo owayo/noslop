@@ -16,6 +16,7 @@ mod effect;
 mod engine;
 mod jargon;
 mod markup;
+mod permission;
 mod reading;
 mod stance;
 mod syntax;
@@ -55,6 +56,7 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(stance::SourceStance),
         Box::new(jargon::ActionJargon::new()),
         Box::new(PhraseRule::new(&closer::P27)),
+        Box::new(permission::PermissiveAction),
     ]
 }
 
@@ -66,7 +68,7 @@ mod tests {
     #[test]
     fn all_phrase_rules_are_registered_in_id_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=27).map(|n| format!("P{n:02}")).collect();
+        let expected: Vec<String> = (1..=28).map(|n| format!("P{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
