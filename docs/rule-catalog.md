@@ -45,6 +45,7 @@
 | P24 | `VAGUE_EFFECT` | 「地味に効く」のような効果を感覚的に評する言い回し (効果が説明されていれば残せる) | slop | experimental |
 | P25 | `SOURCE_STANCE` | 本・記事・著者などの態度を解説する言い回し (内容の要約に必要か見直す) | slop | experimental |
 | P26 | `ACTION_JARGON` | 業務の対象に使う「打ち手」「落とし込む」「巻き取る」「握る」を具体化する | readability | experimental |
+| P27 | `STOCK_CLOSER` | 「参考になれば幸いです」などの結びの定型と言い換え | slop | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
 | R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |
@@ -78,3 +79,17 @@
 最新の一覧は `noslop rules`、各ルールの詳細は `noslop explain <ID>` で確認できます。全ルールの説明 (何を見るか・なぜ問題か・直し方・例・根拠) は [docs/rules.md](../docs/rules.md) にまとめてあります。ルールの ID は公開後に意味を変えません。
 
 語句パターン系ルールが既定で見るのは地の文（段落）だけです。校正を地の文で行ったためで、リスト・表・引用も見るには設定の `[scope]` を変えます。ただし記法の残骸（P23）は、残った記号がどこにあっても読み手に見えるので、この設定に関わらず見出し・リスト・表・引用も見ます。リズム・統計系ルールは常に地の文だけで集計します。
+
+## 結びの定型の有効化と設定の移行
+
+「参考になれば幸いです」「お役に立てれば幸いです」は、チャットの応答に限らないため、P18 から P27（結びの定型）へ移しました。言い換えも P27 で拾います。P27 は実験的なので、`--experimental`、`--enable-rules P27`、または設定の `[rules] enable = ["P27"]` で有効にしてください。
+
+結びだけを扱うために P18 を指定していた場合は、次のように移します。P18 のほかの項目も扱う場合は、P18 を残して P27 を追加します。
+
+| 目的 | 移行後 |
+| --- | --- |
+| 明示的な有効化・無効化 | `--enable-rules P27` / `--disable-rules P27`、設定の `enable` / `disable` に `P27` を指定する |
+| 重大度の上書き | `[rules.P27] severity = "info"` などを指定する |
+| 抑制コメント | `noslop-disable` / `noslop-disable-next-line` / `noslop-enable` で、結びの定型を扱う ID を `P27` にする |
+
+文書の途中も検査しますが、依頼文や必要な挨拶は残せます。既定で有効にするジャンルは、人の文章での出方を校正してから決めます。
