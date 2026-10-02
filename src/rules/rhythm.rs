@@ -20,6 +20,7 @@ mod nominal_lists;
 mod overcorrection;
 mod paragraphs;
 mod self_answer;
+mod style;
 mod triads;
 
 use crate::diagnostic::Span;
@@ -51,6 +52,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(guide_density::GuideClicheDensity::default()),
         Box::new(nominal_lists::RepeatedNominalList::default()),
         Box::new(action_closer::ClosingCallToAction),
+        Box::new(style::MixedWritingStyle::default()),
     ]
 }
 
@@ -139,9 +141,9 @@ mod tests {
     use crate::rules::testing::{self, assert_measures_agree};
 
     /// measure を実装しているルール。R10・R11・R15・R19 は閾値を持たない。
-    const MEASURED: [&str; 15] = [
+    const MEASURED: [&str; 16] = [
         "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13", "R14", "R16",
-        "R17", "R18",
+        "R17", "R18", "R20",
     ];
 
     fn rule_by_id(id: &str) -> Box<dyn Rule> {
@@ -249,6 +251,9 @@ mod tests {
             String::new(),
             "# 見出しだけ\n".to_string(),
             "- 項目。\n- 項目。\n- 項目。\n- 項目。\n".to_string(),
+            // R20
+            "設定を読み込みます。項目を確認します。処理を開始する。結果を表示する。".into(),
+            "設定を読み込みます。項目を確認します。処理を開始する。".into(),
             // R01
             (0..22)
                 .map(|i| format!("担当者が手順書の{}番目の項目を読んで確かめた。", i % 10))
@@ -351,7 +356,7 @@ mod tests {
     #[test]
     fn rule_ids_are_in_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=19).map(|n| format!("R{n:02}")).collect();
+        let expected: Vec<String> = (1..=20).map(|n| format!("R{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 

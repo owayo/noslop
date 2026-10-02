@@ -3,7 +3,7 @@
 //! 入口は 2 つある。Claude Code の PreToolUse (Bash) では、コマンド行から gws の書き込みと値を読む
 //! ([`crate::gws`])。claw-hooks のコマンドフック ([`super::command`]) では、claw-hooks が解析した gws の
 //! 呼び出し 1 つの引数を受け取る。検査と結論 ([`review_writes`]) は共通で、日本語を含む値を検査する
-//! (セルの数式は除く)。ドキュメントの本文 (文章) は値 1 つを 1 つの文書にしてすべてのルールを当て、
+//! (セルの数式は除く)。ドキュメントの本文 (文章) は値 1 つを 1 つの文書にする。宛先の全文は取得しないため、全文専用のルールは当てない。
 //! セル・タイトル・置き換えの文字列 (短い値) は、gws の呼び出しごとに断片の集まりの文書にして 1 文ずつ
 //! 判定するルールだけを当てる。
 //!
@@ -1272,5 +1272,39 @@ severity = "info"
             let owners: Vec<_> = doc.sentences.iter().map(|s| s.block).collect();
             assert_eq!(owners, vec![0, 0, 1, 1]);
         }
+    }
+
+    #[test]
+    fn remote_insertions_do_not_run_full_document_rules() {
+        let ws = Workspace::with_config(
+            "[rules]\nenable = [\"R20\"]\n[rules.R20]\nseverity = \"warning\"\n[morphology]\nmode = \"off\"\n",
+        );
+        let text = "設定を読み込みます。項目を確認します。処理を開始する。結果を表示する。";
+        let body = json!({"requests":[{"insertText":{"location":{"index":1},"text":text}}]});
+        let command = format!(
+            "gws docs documents batchUpdate --params '{{\"documentId\":\"D1\"}}' --json '{body}'"
+        );
+        let writes = gws::writes(&command);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].values.len(), 1);
+        assert_eq!(writes[0].values[0].kind, ValueKind::Prose);
+        let reviewer = Reviewer::new(&args(&[]), Some(ws.dir.path()), &ws.env()).unwrap();
+        let doc = Document::parse(
+            "inserted text",
+            text,
+            SourceFormat::PlainText,
+            reviewer.parse_options(),
+        );
+        let full = reviewer.engine.lint(doc.clone());
+        assert!(full.diagnostics.iter().any(|d| d.rule_id == "R20"));
+        assert!(
+            !reviewer
+                .lint(doc)
+                .diagnostics
+                .iter()
+                .any(|d| d.rule_id == "R20")
+        );
+        assert!(ws.run(&ws.event(&command)).is_none());
+        assert!(ws.records().is_empty());
     }
 }

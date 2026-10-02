@@ -152,6 +152,12 @@ pub trait Rule: Send + Sync {
         RuleUnit::Document
     }
 
+    /// 全文がチェック対象である場合にだけ実行するか。
+    /// 部分差分では、明示的に有効にしていても判定を実行しない。
+    fn requires_full_document(&self) -> bool {
+        false
+    }
+
     /// 設定ファイルの `[rules.<ID>]` のうち、エンジンが扱う `enabled` / `severity` 以外のキーを受け取る。
     fn configure(&mut self, key: &str, _value: &toml::Value) -> Result<(), String> {
         Err(format!(

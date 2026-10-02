@@ -805,3 +805,247 @@ fn tech_hook_reports_stock_closers_by_default() {
         .success()
         .stdout("");
 }
+
+const MIXED_STYLE: &str =
+    "設定を読み込みます。項目を確認します。\n\n処理を開始する。結果を表示する。\n";
+const STYLE_CONFIG: &str = "[rules]\nenable = [\"R20\"]\n[morphology]\nmode = \"off\"\n";
+
+#[test]
+fn style_check_distinguishes_full_files_from_partial_changes() {
+    let Some(dir) = repository() else { return };
+    fs::write(dir.path().join("noslop.toml"), STYLE_CONFIG).unwrap();
+    fs::write(dir.path().join("docs/guide.md"), MIXED_STYLE).unwrap();
+    assert!(git(dir.path(), &["add", "-A"]));
+    assert!(git(
+        dir.path(),
+        &["commit", "-q", "--no-verify", "-m", "style baseline"]
+    ));
+    let partial =
+        "設定を読み込みます。項目を確認します。\n\n処理を開始する。結果を画面に表示する。\n";
+    fs::write(dir.path().join("docs/guide.md"), partial).unwrap();
+    fs::write(dir.path().join("docs/new.md"), MIXED_STYLE).unwrap();
+    let result = noslop(dir.path())
+        .args([
+            "check",
+            "--git-diff",
+            "--only-rules",
+            "R20",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let data: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let files = data["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    for file in files {
+        let path = file["path"].as_str().unwrap();
+        let findings = file["diagnostics"].as_array().unwrap();
+        assert_eq!(
+            findings.len(),
+            usize::from(path.ends_with("new.md")),
+            "{path}: {file}"
+        );
+    }
+    assert!(git(dir.path(), &["add", "docs/new.md"]));
+    let result = noslop(dir.path())
+        .args([
+            "check",
+            "--git-diff",
+            "--only-rules",
+            "R20",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let data: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let new = data["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"].as_str().unwrap().ends_with("new.md"))
+        .unwrap();
+    assert_eq!(new["diagnostics"].as_array().unwrap().len(), 1);
+    let out = noslop(dir.path())
+        .args(["hook", "file", "docs/new.md"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+    let out = noslop(dir.path())
+        .args(["hook", "file", "docs/guide.md"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("R20"));
+    let out = noslop(dir.path())
+        .args(["hook", "git-diff"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("R20") && text.contains("new.md"), "{text}");
+    assert!(!text.contains("guide.md"), "{text}");
+    let out = noslop(dir.path())
+        .args(["hook", "git-diff", "--whole-file"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("guide.md"));
+    fs::write(
+        dir.path().join("docs/guide.md"),
+        "設定を準備します。内容を読み込みます。\n\n処理を実行する。結果を送信する。\n",
+    )
+    .unwrap();
+    let out = noslop(dir.path())
+        .args(["hook", "file", "docs/guide.md"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+}
+
+#[test]
+fn style_check_write_is_full_and_edit_is_partial() {
+    let dir = workspace();
+    fs::write(dir.path().join("noslop.toml"), STYLE_CONFIG).unwrap();
+    let path = dir.path().join("docs/guide.md");
+    fs::write(&path, MIXED_STYLE).unwrap();
+    let write = json!({"tool_name":"Write", "cwd":dir.path(), "tool_input":{"file_path":path, "content":MIXED_STYLE}});
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(write.to_string())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+    for (response, expected) in [
+        (
+            json!({"type":"update", "structuredPatch":[{"oldStart":1,"oldLines":3,"newStart":1,"newLines":3,"lines":[" 設定を読み込みます。項目を確認します。", " ", "-処理を開始する。結果を確認する。", "+処理を開始する。結果を表示する。"]}]}),
+            false,
+        ),
+        (json!({"type":"create", "structuredPatch":[]}), true),
+        (json!({"type":"update", "structuredPatch":[]}), false),
+        (
+            json!({"type":"update", "structuredPatch":[{"lines":["+変更後の文。"]}]}),
+            false,
+        ),
+    ] {
+        let mut event = write.clone();
+        event["tool_response"] = response;
+        let out = noslop(dir.path())
+            .args(["hook", "claude-code"])
+            .write_stdin(event.to_string())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{:?}", out);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).contains("R20"),
+            expected,
+            "{event}: {out:?}"
+        );
+    }
+    // 空行だけの削除は、残った全行が削除箇所に隣接していても全文の更新ではない。
+    let remaining = MIXED_STYLE.replace("\n\n", "\n");
+    fs::write(&path, &remaining).unwrap();
+    let deletion = json!({"tool_name":"Write", "cwd":dir.path(), "tool_input":{"file_path":path, "content":remaining}, "tool_response":{"type":"update", "structuredPatch":[{"oldStart":1,"oldLines":3,"newStart":1,"newLines":2,"lines":[" 設定を読み込みます。項目を確認します。", "-", " 処理を開始する。結果を表示する。"]}]}});
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(deletion.to_string())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("R20"),
+        "{out:?}"
+    );
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code", "--whole-file"])
+        .write_stdin(deletion.to_string())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+    fs::write(&path, MIXED_STYLE).unwrap();
+    let edit = json!({"tool_name":"Edit", "cwd":dir.path(), "tool_input":{"file_path":path, "old_string":"結果を確認する。", "new_string":"結果を表示する。"}});
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(edit.to_string())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("R20"));
+    let unknown = json!({"tool_name":"Edit", "cwd":dir.path(), "tool_input":{"file_path":path, "old_string":"以前の文。", "new_string":"別の文。"}});
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(unknown.to_string())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("R20"));
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code", "--whole-file"])
+        .write_stdin(unknown.to_string())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+    let full_edit = json!({"tool_name":"Edit", "cwd":dir.path(), "tool_input":{"file_path":path, "old_string":"以前の全文。", "new_string":MIXED_STYLE}});
+    let out = noslop(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(full_edit.to_string())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+}
+
+#[test]
+fn deletion_neighbors_do_not_count_as_full_document_changes() {
+    let Some(dir) = repository() else { return };
+    fs::write(dir.path().join("noslop.toml"), STYLE_CONFIG).unwrap();
+    fs::write(dir.path().join("docs/guide.md"), MIXED_STYLE).unwrap();
+    assert!(git(dir.path(), &["add", "-A"]));
+    assert!(git(
+        dir.path(),
+        &["commit", "-q", "--no-verify", "-m", "deletion baseline"]
+    ));
+    fs::write(
+        dir.path().join("docs/guide.md"),
+        MIXED_STYLE.replace("\n\n", "\n"),
+    )
+    .unwrap();
+    let out = noslop(dir.path())
+        .args([
+            "check",
+            "--git-diff",
+            "--only-rules",
+            "R20",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(data["files"].as_array().unwrap().len(), 1);
+    assert!(
+        data["files"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    for args in [
+        vec!["hook", "file", "docs/guide.md"],
+        vec!["hook", "git-diff"],
+    ] {
+        let out = noslop(dir.path()).args(args).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("R20"),
+            "{out:?}"
+        );
+    }
+    let out = noslop(dir.path())
+        .args(["hook", "file", "docs/guide.md", "--whole-file"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("R20"));
+}

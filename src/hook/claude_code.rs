@@ -103,10 +103,19 @@ fn post_tool_use(
 
     let changed = |doc: &Document| {
         if args.whole_file {
-            None
-        } else {
-            changed_regions(tool, event, doc)
+            return (None, crate::engine::Coverage::Full);
         }
+        let changed = changed_regions(tool, event, doc, true);
+        let added = changed_regions(tool, event, doc, false);
+        let full_write = tool == "Write"
+            && (event.get("tool_response").is_none()
+                || event.pointer("/tool_response/type").and_then(Value::as_str) == Some("create"));
+        let coverage = if added.is_none() && !full_write {
+            crate::engine::Coverage::Partial
+        } else {
+            crate::changed::coverage(doc, added.as_deref())
+        };
+        (changed, coverage)
     };
     let Some(review) = review(&path, cwd.as_deref(), args, env, changed)? else {
         return Ok(None);
@@ -130,7 +139,12 @@ fn post_tool_use(
 }
 
 /// 今回のツール呼び出しで変わった行 (原文上の範囲)。決められないときは `None` (ファイル全体)。
-fn changed_regions(tool: &str, event: &Value, doc: &Document) -> Option<Vec<Span>> {
+fn changed_regions(
+    tool: &str,
+    event: &Value,
+    doc: &Document,
+    include_deletion_neighbors: bool,
+) -> Option<Vec<Span>> {
     if tool == "Write"
         && event.pointer("/tool_response/type").and_then(Value::as_str) == Some("create")
     {
@@ -138,7 +152,13 @@ fn changed_regions(tool: &str, event: &Value, doc: &Document) -> Option<Vec<Span
     }
     if let Some(lines) = event
         .pointer("/tool_response/structuredPatch")
-        .and_then(patch_lines)
+        .and_then(|patch| {
+            if include_deletion_neighbors {
+                patch_lines(patch)
+            } else {
+                patch_lines_with(patch, false)
+            }
+        })
     {
         return Some(
             lines
@@ -156,6 +176,10 @@ fn changed_regions(tool: &str, event: &Value, doc: &Document) -> Option<Vec<Span
 /// 差分の hunk の配列 (`structuredPatch`) から、変わった後のファイルの行番号 (1 始まり) を集める。
 /// 削除だけの箇所は、つなぎ目の前後の行を入れる。形が想定と違えば `None`。
 fn patch_lines(patch: &Value) -> Option<BTreeSet<usize>> {
+    patch_lines_with(patch, true)
+}
+
+fn patch_lines_with(patch: &Value, include_deletion_neighbors: bool) -> Option<BTreeSet<usize>> {
     let hunks = patch.as_array().filter(|h| !h.is_empty())?;
     let mut lines = BTreeSet::new();
     for hunk in hunks {
@@ -167,8 +191,10 @@ fn patch_lines(patch: &Value) -> Option<BTreeSet<usize>> {
                     line += 1;
                 }
                 Some('-') => {
-                    lines.insert(line.saturating_sub(1).max(1));
-                    lines.insert(line.max(1));
+                    if include_deletion_neighbors {
+                        lines.insert(line.saturating_sub(1).max(1));
+                        lines.insert(line.max(1));
+                    }
                 }
                 // 「\ No newline at end of file」
                 Some('\\') => {}

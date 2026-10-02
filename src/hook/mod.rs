@@ -85,21 +85,22 @@ impl Reviewer {
         crate::changed::selects(&self.walk, root, path)
     }
 
-    /// ファイルを読んで検査する。消えたファイルと大きすぎるファイルは `None`。
-    fn lint_file(&self, path: &Path, name: String) -> Result<Option<FileReport>, String> {
+    /// ファイルを読んで文書を組み立てる。消えたファイルと大きすぎるファイルは `None`。
+    fn read_document(&self, path: &Path, name: String) -> Result<Option<Document>, String> {
         let Some(source) = read_source(path, &name)? else {
             return Ok(None);
         };
-        Ok(Some(self.engine.lint_source(
+        Ok(Some(Document::parse(
             name,
             source,
             SourceFormat::from_path(path),
+            self.parse_options(),
         )))
     }
 
-    /// 読み込み済みの文書を検査する (gws で書き込む値のように、ファイルでない文書)。
+    /// gws で書き込む値を検査する。宛先の全文を取得しないため、全文専用のルールは動かさない。
     fn lint(&self, doc: Document) -> FileReport {
-        self.engine.lint(doc)
+        self.engine.lint_with(doc, crate::engine::Coverage::Partial)
     }
 
     /// 文書の読み込み方の設定 (改行の扱い)。値から文書を組み立てるときに使う。
@@ -152,7 +153,7 @@ fn review(
     cwd: Option<&Path>,
     args: &HookArgs,
     env: &cli::Environment,
-    changed: impl FnOnce(&Document) -> Option<Vec<Span>>,
+    changed: impl FnOnce(&Document) -> (Option<Vec<Span>>, crate::engine::Coverage),
 ) -> Result<Option<Review>, String> {
     let reviewer = Reviewer::new(args, cwd, env)?;
     // ユーザーの設定の除外は、検査の起点 (エージェントの作業ディレクトリ。なければファイルの
@@ -162,10 +163,11 @@ fn review(
         return Ok(None);
     }
     let name = display_name(path, cwd);
-    let Some(mut file) = reviewer.lint_file(path, name.clone())? else {
+    let Some(doc) = reviewer.read_document(path, name.clone())? else {
         return Ok(None);
     };
-    let changed = changed(&file.doc);
+    let (changed, coverage) = changed(&doc);
+    let mut file = reviewer.engine.lint_with(doc, coverage);
     if let Some(regions) = &changed {
         file.diagnostics.retain(|d| touches(d, regions));
     }

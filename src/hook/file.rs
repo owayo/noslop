@@ -50,7 +50,7 @@ fn review_file(
     };
     let changed = |doc: &Document| {
         if args.hook.whole_file {
-            None
+            (None, crate::engine::Coverage::Full)
         } else {
             git_changed_regions(&path, doc)
         }

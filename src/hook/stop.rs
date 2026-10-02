@@ -149,13 +149,19 @@ fn lint(
     whole_file: bool,
 ) -> Option<FileReport> {
     let name = display_name(&file.path, Some(start));
-    let mut report = match reviewer.lint_file(&file.path, name) {
-        Ok(report) => report?,
+    let doc = match reviewer.read_document(&file.path, name) {
+        Ok(doc) => doc?,
         Err(message) => {
             eprintln!("noslop: {message} (このファイルは飛ばします)");
             return None;
         }
     };
+    let coverage = if whole_file {
+        crate::engine::Coverage::Full
+    } else {
+        crate::changed::coverage_lines(&doc, &file.added_lines)
+    };
+    let mut report = reviewer.engine.lint_with(doc, coverage);
     if !whole_file {
         retain_changed(&mut report, &file.lines);
     }
