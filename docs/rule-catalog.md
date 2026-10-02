@@ -46,6 +46,7 @@
 | P25 | `SOURCE_STANCE` | 本・記事・著者などの態度を解説する言い回し (内容の要約に必要か見直す) | slop | experimental |
 | P26 | `ACTION_JARGON` | 業務の対象に使う「打ち手」「落とし込む」「巻き取る」「握る」を具体化する | readability | experimental |
 | P27 | `STOCK_CLOSER` | 「参考になれば幸いです」などの結びの定型と言い換え | slop | experimental |
+| P28 | `PERMISSIVE_ACTION` | 「追記しても構いません」などの許可の形で語る行動 (必要な許可は残せる) | readability | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
 | R03 | `LONG_SENTENCE` | 長すぎる一文 | readability | stable |
