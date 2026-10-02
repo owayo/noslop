@@ -771,3 +771,37 @@ fn non_utf8_paths_with_the_same_display_name_are_each_checked() {
         .collect();
     assert_eq!(lines, vec![7, 7, 9]);
 }
+
+#[test]
+fn tech_hook_reports_stock_closers_by_default() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("closer.md"), "参考になれば幸いです。\n").unwrap();
+    noslop(dir.path())
+        .args([
+            "hook",
+            "file",
+            "--genre",
+            "tech",
+            "--no-config",
+            "closer.md",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("P27"));
+    fs::write(dir.path().join("noslop.toml"), "genre = \"tech\"\n").unwrap();
+    noslop(dir.path())
+        .args(["hook", "file", "closer.md"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("P27"));
+    fs::write(
+        dir.path().join("noslop.toml"),
+        "genre = \"tech\"\n[rules]\ndisable = [\"P27\"]\n",
+    )
+    .unwrap();
+    noslop(dir.path())
+        .args(["hook", "file", "closer.md"])
+        .assert()
+        .success()
+        .stdout("");
+}

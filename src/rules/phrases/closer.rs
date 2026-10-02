@@ -1,22 +1,109 @@
 //! P27: 書き手の願望で締める結びの定型。
 
-use crate::diagnostic::{Lane, RuleStatus, Severity};
-use crate::rules::RuleMeta;
+use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::genre::Genre;
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit};
 
-use super::engine::{Entry, PhraseSpec, WEAK_SIGNAL_NOTE};
+use super::engine::{Entry, PhraseRule, PhraseSpec, WEAK_SIGNAL_NOTE};
 
-pub(super) static P27: PhraseSpec = PhraseSpec {
-    meta: RuleMeta {
-        id: "P27",
-        name: "STOCK_CLOSER",
-        title: "結びの定型",
-        lane: Lane::Slop,
-        status: RuleStatus::Experimental,
-        default_severity: Severity::Info,
-        summary: "「参考になれば幸いです」など、書き手の願望で締める定型を見直す (実験的)",
-        explanation: r"### 何を見るか
+const fn entries(status: RuleStatus) -> [Entry; 4] {
+    [
+    Entry { status, ..Entry::re(r#"(?:^|[^「『“"])(?P<m>参考になれば\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE) },
+    Entry { status, ..Entry::re(r#"(?:^|[^「『“"])(?P<m>参考にしていただければ\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE) },
+    Entry { status, ..Entry::re(r#"(?:^|[^「『“"])(?P<m>お役に立て(?:れば|たなら)\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE) },
+    Entry { status, ..Entry::re(r#"(?:^|[^「『“"])(?P<m>一助となれば\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE) },
+    ]
+}
 
-「参考になれば」「参考にしていただければ」「お役に立てれば」「お役に立てたなら」「一助となれば」に、「幸いです」「うれしいです」「嬉しいです」が続く結びの定型を探します。条件の語と「幸いです」などの間にある空白や段落内の折り返しも含みます。定型の直前が開きかぎ括弧や引用符なら、語句自体への言及として除きます。文書の最後だけに限らず、途中の段落にあるものも同じように拾います。複数の節の結びを取りこぼさないためです。既定は地の文の段落だけで、リスト・表・引用は語句ルールのスコープ設定に従います。
+const EXPERIMENTAL_ENTRIES: [Entry; 4] = entries(RuleStatus::Experimental);
+const TECH_ENTRIES: [Entry; 4] = entries(RuleStatus::Stable);
+
+static P27: PhraseSpec = spec(
+    RuleStatus::Experimental,
+    &EXPERIMENTAL_ENTRIES,
+    "「参考になれば幸いです」など、書き手の願望で締める定型を見直す (tech 以外では実験的)",
+);
+static P27_TECH: PhraseSpec = spec(
+    RuleStatus::Stable,
+    &TECH_ENTRIES,
+    "「参考になれば幸いです」など、書き手の願望で締める定型を見直す (tech では既定)",
+);
+
+fn for_genre(genre: Genre) -> &'static PhraseSpec {
+    if genre == Genre::Tech {
+        &P27_TECH
+    } else {
+        &P27
+    }
+}
+
+pub(super) struct StockCloser(PhraseRule);
+
+impl StockCloser {
+    pub(super) fn new(genre: Genre) -> Self {
+        Self(PhraseRule::new(for_genre(genre)))
+    }
+}
+
+impl Rule for StockCloser {
+    fn meta(&self) -> &'static RuleMeta {
+        self.0.meta()
+    }
+    fn unit(&self) -> RuleUnit {
+        self.0.unit()
+    }
+    fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
+        let mut findings = Vec::new();
+        self.0.check(ctx, &mut findings);
+        if findings.is_empty() {
+            return;
+        }
+        let mut quotes = Vec::new();
+        for (_, block) in ctx.scoped_blocks() {
+            let mut stack = Vec::new();
+            for (offset, c) in block.text.char_indices() {
+                if let Some(position) = stack.iter().rposition(|&(_, close)| close == c) {
+                    let (start, _) = stack[position];
+                    stack.truncate(position);
+                    quotes.push(block.to_source(start..offset + c.len_utf8()));
+                } else if let Some(close) = match c {
+                    '「' => Some('」'),
+                    '『' => Some('』'),
+                    '“' => Some('”'),
+                    '"' if !block.text[..offset]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_ascii_digit()) =>
+                    {
+                        Some('"')
+                    }
+                    _ => None,
+                } {
+                    stack.push((offset, close));
+                }
+            }
+        }
+        out.extend(findings.into_iter().filter(|d| {
+            !quotes
+                .iter()
+                .any(|q| q.start <= d.span.start && d.span.end <= q.end)
+        }));
+    }
+}
+
+const fn spec(status: RuleStatus, entries: &'static [Entry], summary: &'static str) -> PhraseSpec {
+    PhraseSpec {
+        meta: RuleMeta {
+            id: "P27",
+            name: "STOCK_CLOSER",
+            title: "結びの定型",
+            lane: Lane::Slop,
+            status,
+            default_severity: Severity::Info,
+            summary,
+            explanation: r"### 何を見るか
+
+「参考になれば」「参考にしていただければ」「お役に立てれば」「お役に立てたなら」「一助となれば」に、「幸いです」「うれしいです」「嬉しいです」が続く結びの定型を探します。条件の語と「幸いです」などの間にある空白や段落内の折り返しも含みます。定型の直前が開きかぎ括弧や引用符の場合と、対応する引用符の内側にある場合は、語句自体への言及として除きます。文書の最後だけに限らず、途中の段落にあるものも同じように拾います。複数の節の結びを取りこぼさないためです。既定は地の文の段落だけで、リスト・表・引用は語句ルールのスコープ設定に従います。
 
 ### なぜ問題か
 
@@ -33,17 +120,13 @@ pub(super) static P27: PhraseSpec = PhraseSpec {
 
 ### 根拠
 
-人の文書 171 本中 1 本・生成文書 390 本中 5 本に反応しました。技術記事では人 45 本中 1 本・生成 32 本中 0 本、随筆では人 27 本・生成 65 本でどちらも 0 本でした。人のジャンル別の文書数が足りず、検出率の差も小さいため、実験的な情報の指摘にとどめます。既定で有効にするかは、追加の校正をしてから決めます。P18 から結びの挨拶を分け、チャットの応答だとは断定しません。",
-    },
-    entries: &[
-        Entry::exp_re(r#"(?:^|[^「『“"])(?P<m>参考になれば\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE),
-        Entry::exp_re(r#"(?:^|[^「『“"])(?P<m>参考にしていただければ\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE),
-        Entry::exp_re(r#"(?:^|[^「『“"])(?P<m>お役に立て(?:れば|たなら)\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE),
-        Entry::exp_re(r#"(?:^|[^「『“"])(?P<m>一助となれば\s*(?:幸いです|うれしいです|嬉しいです))"#, Severity::Info).with_note(WEAK_SIGNAL_NOTE),
-    ],
-    message: "「{m}」は結びの定型です。本文につながる締め方が必要か確かめてください",
-    hint: "結びが必要なら、本文にある内容を使って何をどこから試せるか示してください。必要な挨拶は残せます",
-};
+人の文書 176 本中 2 本・生成文書 390 本中 4 本に反応しました。技術記事では人 50 本中 2 本 (4%、片側 95% の Wilson 上限 11.4%)・生成 32 本中 0 本、随筆では人 27 本・生成 65 本でどちらも 0 本でした。技術記事の一致を読み返し、引用への誤一致がなく、結びを見直す情報として使えることを確認したため、tech でのみ既定で有効にします。ほかのジャンルは実験的です。生成文書を見分ける根拠にはせず、必要な挨拶を一律に直すものでもありません。P18 から結びの挨拶を分け、チャットの応答だとは断定しません。",
+        },
+        entries,
+        message: "「{m}」は結びの定型です。本文につながる締め方が必要か確かめてください",
+        hint: "結びが必要なら、本文にある内容を使って何をどこから試せるか示してください。必要な挨拶は残せます",
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -68,7 +151,7 @@ mod tests {
             "お役に立てたなら幸いです",
         ] {
             let md = format!("皆さんの**{phrase}**。\n");
-            let findings = run(&PhraseRule::new(&P27), &md);
+            let findings = run(&StockCloser::new(Genre::General), &md);
             assert_eq!(matched(&md, &findings), [phrase]);
             assert_eq!(findings[0].lane, Lane::Slop);
             assert_eq!(findings[0].severity, Severity::Info);
@@ -81,10 +164,10 @@ mod tests {
     #[test]
     fn detects_each_section_and_mid_document_paragraph() {
         let md = "# 進め方\n\n参考になれば幸いです。\n\n同じ悩みを持つ方の参考になれば幸いです。\n\nこの記事が参考になればうれしいです。\n\n少しでもお役に立てれば幸いです。\n\n## 手順\n\nこの表が手順の参考になれば幸いです。\n\n確認欄を埋めてください。\n";
-        assert_eq!(run(&PhraseRule::new(&P27), md).len(), 5);
+        assert_eq!(run(&StockCloser::new(Genre::General), md).len(), 5);
         let md = "参考になれば\n幸いです。";
         assert_eq!(
-            matched(md, &run(&PhraseRule::new(&P27), md)),
+            matched(md, &run(&StockCloser::new(Genre::General), md)),
             ["参考になれば\n幸いです"]
         );
         for md in [
@@ -92,15 +175,20 @@ mod tests {
             "参考にしてください。",
             "`参考になれば幸いです` は例です。",
         ] {
-            assert!(run(&PhraseRule::new(&P27), md).is_empty(), "{md}");
+            assert!(
+                run(&StockCloser::new(Genre::General), md).is_empty(),
+                "{md}"
+            );
         }
     }
 
     #[test]
     fn skips_direct_quoted_mentions_and_separates_calibration_items() {
-        let rule = PhraseRule::new(&P27);
+        let rule = StockCloser::new(Genre::General);
         for md in [
             "「参考になれば幸いです」で締めない。",
+            "「この資料がお役に立てれば幸いです」と書く例です。",
+            "『この記事が参考になれば嬉しいです』という文末です。",
             "『参考になれば嬉しいです』は定型です。",
             "\"お役に立てれば幸いです\"と書いた。",
         ] {
@@ -124,7 +212,7 @@ mod tests {
         {
             let engine = Engine::with_rules(
                 vec![
-                    Box::new(PhraseRule::new(&P27)),
+                    Box::new(StockCloser::new(Genre::General)),
                     Box::new(PhraseRule::new(&catalog::P18)),
                 ],
                 EngineOptions {
@@ -143,7 +231,7 @@ mod tests {
             assert_eq!(engine.lint(doc).diagnostics.len(), expected);
         }
         let md = "- 参考になれば幸いです。\n\n> お役に立てれば幸いです。\n";
-        let rule = PhraseRule::new(&P27);
+        let rule = StockCloser::new(Genre::General);
         assert!(run(&rule, md).is_empty());
         assert_eq!(
             run_with(
@@ -157,5 +245,73 @@ mod tests {
             .len(),
             2
         );
+    }
+    #[test]
+    fn tech_is_default_and_other_genres_require_opt_in() {
+        for genre in Genre::ALL {
+            for experimental in [false, true] {
+                let engine = Engine::new(EngineOptions {
+                    genre,
+                    experimental,
+                    ..Default::default()
+                })
+                .unwrap();
+                let file = engine.lint(Document::plain_text("参考になれば幸いです。"));
+                let findings: Vec<_> = file
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.rule_id == "P27")
+                    .collect();
+                assert_eq!(
+                    findings.len(),
+                    usize::from(genre == Genre::Tech || experimental)
+                );
+                if let Some(d) = findings.first() {
+                    assert_eq!(
+                        d.status,
+                        if genre == Genre::Tech {
+                            RuleStatus::Stable
+                        } else {
+                            RuleStatus::Experimental
+                        }
+                    );
+                }
+            }
+        }
+        let engine = Engine::new(EngineOptions {
+            genre: Genre::Tech,
+            selection: Selection {
+                no_readability: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(engine.active_ids().contains(&"P27"));
+        let engine = Engine::new(EngineOptions {
+            genre: Genre::Tech,
+            selection: Selection {
+                config_disable: vec!["P27".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!engine.active_ids().contains(&"P27"));
+    }
+    #[test]
+    fn asymmetric_quotes_close_even_after_an_unpaired_inch_mark() {
+        for genre in [Genre::General, Genre::Tech] {
+            let rule = StockCloser::new(genre);
+            assert!(
+                run(
+                    &rule,
+                    "「画面は5\"で、皆さんの参考になれば幸いです」と書く例です。"
+                )
+                .is_empty()
+            );
+            let md = "画面は5\"です。参考になれば幸いです。\"file\"を開きます。";
+            assert_eq!(matched(md, &run(&rule, md)), ["参考になれば幸いです"]);
+        }
     }
 }
