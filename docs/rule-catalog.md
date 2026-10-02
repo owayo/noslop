@@ -66,6 +66,7 @@
 | R17 | `GUIDE_CLICHE_DENSITY` | 解説の定型句の密集（複数系統の語句と本文量で判定） | slop | experimental |
 | R18 | `REPEATED_NOMINAL_LIST` | 名詞句を三つ以上並べる体言止めの反復 | slop | experimental |
 | R19 | `CLOSING_CALL_TO_ACTION` | 文書末尾で実践を促す定型の呼びかけ | slop | experimental |
+| R20 | `MIXED_WRITING_STYLE` | 全文が対象のときだけ、本文全体の敬体と常体の混在を見る | readability | experimental |
 | S01 | `BOLD_DENSITY` | 太字の多用 | slop | experimental |
 | S02 | `BULLET_RATIO` | 箇条書きへの偏り | slop | experimental |
 | S03 | `BOILERPLATE_HEADING` | 「まとめ」「おわりに」などの定型見出し | slop | experimental |
@@ -76,6 +77,8 @@
 | S08 | `HEADING_EMPHASIS` | 見出しの中の太字・絵文字 | slop | experimental |
 | S09 | `STRUCTURE_DENSITY` | 見出しと箇条書きの密度 | slop | experimental |
 | S10 | `LABEL_STYLE` | 段落や項目を絵文字・「ラベル：」で書き出す | slop | experimental |
+
+R20 は `--enable-rules R20` または `[rules] enable = ["R20"]` で有効にできます。地の文に敬体と常体が各2文以上あると、根拠となる文末を示します。`[rules.R20] min_each = 1` のように最小文数を変えられます。部分差分では明示的に有効でも判定を実行せず、新規ファイルなど空白以外の全文が差分になっている場合は実行します。`noslop diff` と MCP の `diff` は改稿前が空のときだけ改稿後を全文の対象とし、それ以外では R20 を実行しません。引用・会話・見出し・リスト・表・独立した断片は比べません。gws の書き込み値は宛先の全文を取得しないため、R20 を実行しません。混在が意図した書き分けかは判別できないため、実験的な info の指摘です。
 
 最新の一覧は `noslop rules`、各ルールの詳細は `noslop explain <ID>` で確認できます。全ルールの説明 (何を見るか・なぜ問題か・直し方・例・根拠) は [docs/rules.md](../docs/rules.md) にまとめてあります。ルールの ID は公開後に意味を変えません。
 

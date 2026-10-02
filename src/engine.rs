@@ -67,6 +67,13 @@ pub struct EngineOptions {
     pub morphology: MorphologyOptions,
 }
 
+/// この文書でチェック対象となる原文の範囲。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Coverage {
+    Full,
+    Partial,
+}
+
 /// エンジンが持つルール 1 つ。
 pub struct RuleEntry {
     pub rule: Box<dyn Rule>,
@@ -256,6 +263,11 @@ impl Engine {
 
     /// 読み込み済みの文書を lint する。
     pub fn lint(&self, doc: Document) -> FileReport {
+        self.lint_with(doc, Coverage::Full)
+    }
+
+    /// 全文・部分差分の条件を、ルールの実行前に適用する。
+    pub(crate) fn lint_with(&self, doc: Document, coverage: Coverage) -> FileReport {
         let mut diagnostics = Vec::new();
         {
             let morph = self.doc_morphology(&doc);
@@ -268,7 +280,9 @@ impl Engine {
             };
             // 断片の集まり (コードのコメント・セル) には、1 文ずつ判定するルールだけを当てる
             let applies = |rule: &dyn Rule| {
-                doc.kind == DocumentKind::Prose || rule.unit() == RuleUnit::Sentence
+                (doc.kind == DocumentKind::Prose || rule.unit() == RuleUnit::Sentence)
+                    && (!rule.requires_full_document()
+                        || (coverage == Coverage::Full && doc.kind == DocumentKind::Prose))
             };
             for entry in self
                 .entries
@@ -306,7 +320,7 @@ impl Engine {
     pub fn run(&self, inputs: Vec<Input>) -> RunReport {
         let results: Vec<Result<FileReport, FileError>> = inputs
             .into_par_iter()
-            .map(|input| self.process(input))
+            .map(|input| self.read_input(input).map(|doc| self.lint(doc)))
             .collect();
         let mut report = RunReport {
             morphology: self.morphology_status.clone(),
@@ -321,7 +335,8 @@ impl Engine {
         report
     }
 
-    fn process(&self, input: Input) -> Result<FileReport, FileError> {
+    /// 入力を読み込む。差分の入口は、文書を組み立ててから対象の範囲を判定する。
+    pub(crate) fn read_input(&self, input: Input) -> Result<Document, FileError> {
         match input {
             Input::Path(path) => {
                 let name = crate::walk::display(&path);
@@ -334,13 +349,18 @@ impl Engine {
                     message: "UTF-8 として読めません (文字コードを UTF-8 にしてください)"
                         .to_string(),
                 })?;
-                Ok(self.lint_source(name, source, SourceFormat::from_path(&path)))
+                Ok(Document::parse(
+                    name,
+                    source,
+                    SourceFormat::from_path(&path),
+                    &self.options.parse,
+                ))
             }
             Input::Text {
                 name,
                 source,
                 format,
-            } => Ok(self.lint_source(name, source, format)),
+            } => Ok(Document::parse(name, source, format, &self.options.parse)),
         }
     }
 }
@@ -917,5 +937,66 @@ pub(crate) mod tests {
         assert!(!report.trips(crate::config::FailOn::At(Severity::Warning)));
         assert!(report.trips(crate::config::FailOn::At(Severity::Info)));
         let _ = Span::new(0, 0);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct CountingRule {
+        meta: &'static crate::rules::RuleMeta,
+        calls: Arc<AtomicUsize>,
+    }
+    impl Rule for CountingRule {
+        fn meta(&self) -> &'static crate::rules::RuleMeta {
+            self.meta
+        }
+        fn unit(&self) -> RuleUnit {
+            RuleUnit::Sentence
+        }
+        fn requires_full_document(&self) -> bool {
+            true
+        }
+        fn check(&self, _: &RuleContext<'_>, _: &mut Vec<Diagnostic>) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn partial_coverage_skips_the_checker_even_when_explicitly_enabled() {
+        let mut options = EngineOptions::default();
+        options.selection.only = Some(vec!["R20".into()]);
+        options.morphology.mode = crate::morph::MorphologyMode::Off;
+        let mut engine = Engine::new(options).unwrap();
+        let meta = engine
+            .entries
+            .iter()
+            .find(|e| e.rule.meta().id == "R20")
+            .unwrap()
+            .rule
+            .meta();
+        let calls = Arc::new(AtomicUsize::new(0));
+        engine.entries = vec![RuleEntry {
+            rule: Box::new(CountingRule {
+                meta,
+                calls: calls.clone(),
+            }),
+            enabled: true,
+            builtin: true,
+            severity: None,
+        }];
+        engine.lint_with(Document::markdown("本文です。"), Coverage::Partial);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        engine.lint(Document::markdown("本文です。"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mut doc = Document::markdown("独立した断片です。");
+        doc.kind = DocumentKind::Fragments;
+        engine.lint(doc);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
