@@ -27,7 +27,7 @@ use crate::rules::Rule;
 use engine::PhraseRule;
 
 /// 語句パターン系の組み込みルール (ID 順)。
-pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
+pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(PhraseRule::new(&catalog::P01)),
         Box::new(PhraseRule::new(&catalog::P02)),
@@ -55,7 +55,7 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(PhraseRule::new(&effect::P24)),
         Box::new(stance::SourceStance),
         Box::new(jargon::ActionJargon::new()),
-        Box::new(PhraseRule::new(&closer::P27)),
+        Box::new(closer::StockCloser::new(genre)),
         Box::new(permission::PermissiveAction),
     ]
 }
