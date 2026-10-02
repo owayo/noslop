@@ -45,7 +45,7 @@
 | P24 | `VAGUE_EFFECT` | 「地味に効く」のような効果を感覚的に評する言い回し (効果が説明されていれば残せる) | slop | experimental |
 | P25 | `SOURCE_STANCE` | 本・記事・著者などの態度を解説する言い回し (内容の要約に必要か見直す) | slop | experimental |
 | P26 | `ACTION_JARGON` | 業務の対象に使う「打ち手」「落とし込む」「巻き取る」「握る」を具体化する | readability | experimental |
-| P27 | `STOCK_CLOSER` | 「参考になれば幸いです」などの結びの定型と言い換え | slop | experimental |
+| P27 | `STOCK_CLOSER` | 「参考になれば幸いです」などの結びの定型と言い換え | slop | tech では stable、ほかは experimental |
 | P28 | `PERMISSIVE_ACTION` | 「追記しても構いません」などの許可の形で語る行動 (必要な許可は残せる) | readability | experimental |
 | R01 | `LOW_BURSTINESS` | 文長の単調さ | slop | stable |
 | R02 | `REPETITIVE_ENDING` | 文末の反復 | readability | experimental |
@@ -83,7 +83,7 @@
 
 ## 結びの定型の有効化と設定の移行
 
-「参考になれば幸いです」「お役に立てれば幸いです」は、チャットの応答に限らないため、P18 から P27（結びの定型）へ移しました。言い換えも P27 で拾います。P27 は実験的なので、`--experimental`、`--enable-rules P27`、または設定の `[rules] enable = ["P27"]` で有効にしてください。
+「参考になれば幸いです」「お役に立てれば幸いです」は、チャットの応答に限らないため、P18 から P27（結びの定型）へ移しました。言い換えも P27 で拾います。P27 は `--genre tech`（設定の `genre = "tech"` も同じ）の既定の検査とフックで情報として出ます。ほかのジャンルとジャンル未指定では実験的なので、`--experimental`、`--enable-rules P27`、または設定の `[rules] enable = ["P27"]` で有効にしてください。技術記事の人の文書50本中2本に一致し、指摘を読み返して結びを見直す情報として確認しました。生成文書の判別には使いません。不要なら `[rules] disable = ["P27"]` で止められます。
 
 結びだけを扱うために P18 を指定していた場合は、次のように移します。P18 のほかの項目も扱う場合は、P18 を残して P27 を追加します。
 
