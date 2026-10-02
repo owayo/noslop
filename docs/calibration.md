@@ -105,7 +105,7 @@ noslop calibrate --human corpus/tech/human --ai corpus/tech/ai-claude --ai corpu
 
 設定ファイルは `noslop check` と同じように読みます (ユーザーの設定 `~/.config/noslop/config.toml` にプロジェクトの設定を重ねます)。`[rules.<ID>]` で閾値を変えていれば、その値が「現在の閾値」になります。`[rules.<ID>] severity` で重大度を上書きしていれば、指摘はその重大度で数えます (校正の基準は変わりません)。実験的なルールと語句も既定で測ります。
 
-品詞で数えるルール (P15・P16・R18) の辞書も設定の `[morphology]` に従います。既定の `auto` は、share ディレクトリに取得した配布辞書があればそれを使うので、測る人の手元によって結果が変わります。元の校正と同じ条件 (同梱の IPAdic) で測るなら、`[morphology]` に `dictionary = "bundled"` と書いた設定ファイルを `--config` で渡してください。
+品詞で数えるルール (P15・P16・R18・R20) の辞書も設定の `[morphology]` に従います。既定の `auto` は、share ディレクトリに取得した配布辞書があればそれを使うので、測る人の手元によって結果が変わります。元の校正と同じ条件 (同梱の IPAdic) で測るなら、`[morphology]` に `dictionary = "bundled"` と書いた設定ファイルを `--config` で渡してください。
 
 ### 測り方
 

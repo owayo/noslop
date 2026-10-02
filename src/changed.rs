@@ -14,7 +14,7 @@ use std::process::{Command, Output, Stdio};
 
 use crate::diagnostic::{Diagnostic, Span};
 use crate::document::Document;
-use crate::engine::FileReport;
+use crate::engine::{Coverage, FileReport};
 use crate::walk::WalkOptions;
 
 /// 設定とフックで共有する、変更ファイルの選択条件。
@@ -34,6 +34,45 @@ pub(crate) fn retain_changed(report: &mut FileReport, lines: &Option<BTreeSet<us
     if let Some(lines) = lines {
         let regions = line_regions(lines, &report.doc);
         report.diagnostics.retain(|d| touches(d, &regions));
+    }
+}
+
+/// 変更範囲が空白以外の原文をすべて覆っているか。
+/// 行の範囲には改行が入らないため、LF・CRLF・空行の隙間は全文の判定を妨げない。
+pub(crate) fn coverage(doc: &Document, regions: Option<&[Span]>) -> Coverage {
+    let Some(regions) = regions else {
+        return Coverage::Full;
+    };
+    if regions.is_empty() {
+        return Coverage::Partial;
+    }
+    let mut regions = regions.to_vec();
+    regions.sort_by_key(|s| (s.start, s.end));
+    let mut end = 0;
+    for span in regions {
+        if span.start > span.end
+            || span.end > doc.source.len()
+            || !doc.source.is_char_boundary(span.start)
+            || !doc.source.is_char_boundary(span.end)
+        {
+            return Coverage::Partial;
+        }
+        if span.start > end && !doc.source[end..span.start].trim().is_empty() {
+            return Coverage::Partial;
+        }
+        end = end.max(span.end);
+    }
+    if doc.source[end..].trim().is_empty() {
+        Coverage::Full
+    } else {
+        Coverage::Partial
+    }
+}
+
+pub(crate) fn coverage_lines(doc: &Document, lines: &Option<BTreeSet<usize>>) -> Coverage {
+    match lines {
+        None => Coverage::Full,
+        Some(lines) => coverage(doc, Some(&line_regions(lines, doc))),
     }
 }
 
@@ -92,10 +131,16 @@ fn failure(what: &str, out: &Output) -> String {
 }
 
 /// git の差分 (HEAD との比較) で変わった行 (原文上の範囲)。git の外・追跡していないファイル・
-/// HEAD がない・git を実行できないときは `None` (ファイル全体)。コミットしていない変更がなければ空。
-pub(crate) fn git_changed_regions(path: &Path, doc: &Document) -> Option<Vec<Span>> {
-    let lines = git_changed_lines(path)?;
-    Some(line_regions(&lines, doc))
+/// HEAD がない・git を実行できないときは全文。指摘の絞り込みの範囲と、追加・置換した行からの全文判定を返す。
+pub(crate) fn git_changed_regions(path: &Path, doc: &Document) -> (Option<Vec<Span>>, Coverage) {
+    let Some(lines) = git_changed_lines(path) else {
+        return (None, Coverage::Full);
+    };
+    let coverage = coverage_lines(doc, &lines.added);
+    (
+        lines.touched.map(|lines| line_regions(&lines, doc)),
+        coverage,
+    )
 }
 
 /// 行番号 (1 始まり) の集まりを、原文上の範囲にする。
@@ -106,7 +151,7 @@ pub(crate) fn line_regions(lines: &BTreeSet<usize>, doc: &Document) -> Vec<Span>
         .collect()
 }
 
-fn git_changed_lines(path: &Path) -> Option<BTreeSet<usize>> {
+fn git_changed_lines(path: &Path) -> Option<ChangedLines> {
     // git -C でファイルのディレクトリに移るので、相対パスのままでは指す先がずれる
     let path = std::path::absolute(path).ok()?;
     let dir = path.parent()?;
@@ -138,23 +183,39 @@ fn git_changed_lines(path: &Path) -> Option<BTreeSet<usize>> {
     if !diff.status.success() {
         return None;
     }
-    unified_diff_lines(&String::from_utf8_lossy(&diff.stdout))
+    let diff = String::from_utf8_lossy(&diff.stdout);
+    Some(ChangedLines {
+        touched: unified_diff_lines(&diff),
+        // 読めない差分を全文とみなさない。従来の指摘の絞り込みは全文へ戻す。
+        added: Some(unified_diff_lines_with(&diff, false).unwrap_or_default()),
+    })
 }
 
 /// `git diff -U0` の出力から、変わった後のファイルの行番号 (1 始まり) を集める。削除だけの箇所は、
 /// つなぎ目の前後の行を入れる。hunk の見出しの形が想定と違えば `None`。
 pub(crate) fn unified_diff_lines(diff: &str) -> Option<BTreeSet<usize>> {
+    unified_diff_lines_with(diff, true)
+}
+
+fn unified_diff_lines_with(
+    diff: &str,
+    include_deletion_neighbors: bool,
+) -> Option<BTreeSet<usize>> {
     let mut lines = BTreeSet::new();
     // -U0 では本文の行は + か - で始まるので、@@ で始まる行は hunk の見出しだけ
     for header in diff.lines().filter(|l| l.starts_with("@@ ")) {
-        hunk_lines(header, &mut lines)?;
+        hunk_lines(header, &mut lines, include_deletion_neighbors)?;
     }
     Some(lines)
 }
 
 /// hunk の見出し (`@@ -<旧の開始>[,<行数>] +<新の開始>[,<行数>] @@`) から、変わった後のファイルの
 /// 行番号を `lines` に足す。削除だけの hunk は、つなぎ目の前後の行を入れる。形が違えば `None`。
-fn hunk_lines(header: &str, lines: &mut BTreeSet<usize>) -> Option<()> {
+fn hunk_lines(
+    header: &str,
+    lines: &mut BTreeSet<usize>,
+    include_deletion_neighbors: bool,
+) -> Option<()> {
     let new = header.split_whitespace().nth(2)?.strip_prefix('+')?;
     let (start, count) = match new.split_once(',') {
         Some((start, count)) => (start.parse::<usize>().ok()?, count.parse::<usize>().ok()?),
@@ -162,8 +223,10 @@ fn hunk_lines(header: &str, lines: &mut BTreeSet<usize>) -> Option<()> {
     };
     if count == 0 {
         // 削除だけ: start 行の後ろが消えた
-        lines.insert(start.max(1));
-        lines.insert(start + 1);
+        if include_deletion_neighbors {
+            lines.insert(start.max(1));
+            lines.insert(start + 1);
+        }
     } else {
         lines.extend(start.max(1)..start + count);
     }
@@ -178,6 +241,15 @@ pub(crate) struct ChangedFile {
     /// 変わった行 (1 始まり)。`None` はファイル全体 (追跡していないファイルと、HEAD のない
     /// リポジトリのファイル。hunk の見出しを読めなかったときも)。
     pub lines: Option<BTreeSet<usize>>,
+    /// 実際に追加・置換した行。削除箇所の隣接行は全文対象の判定に含めない。
+    /// `None` は新規ファイルなど、全文が対象と分かる場合だけ。
+    pub added_lines: Option<BTreeSet<usize>>,
+}
+
+#[derive(Debug)]
+struct ChangedLines {
+    touched: Option<BTreeSet<usize>>,
+    added: Option<BTreeSet<usize>>,
 }
 
 /// git の作業ツリー。
@@ -295,20 +367,32 @@ impl WorkTree {
             for (entry, path) in tracked {
                 // 差分に hunk のないファイルは、中身が変わっていない
                 if let Some(lines) = lines.remove(&entry.path) {
-                    files.push(ChangedFile { path, lines });
+                    files.push(ChangedFile {
+                        path,
+                        lines: lines.touched,
+                        added_lines: lines.added,
+                    });
                 }
             }
             for rel in self.ls_files(&["--others", "--exclude-standard"])? {
                 let path = self.top.join(os_path(&rel));
                 if select(&path) {
-                    files.push(ChangedFile { path, lines: None });
+                    files.push(ChangedFile {
+                        path,
+                        lines: None,
+                        added_lines: None,
+                    });
                 }
             }
         } else {
             for rel in self.ls_files(&["--cached", "--others", "--exclude-standard"])? {
                 let path = self.top.join(os_path(&rel));
                 if select(&path) {
-                    files.push(ChangedFile { path, lines: None });
+                    files.push(ChangedFile {
+                        path,
+                        lines: None,
+                        added_lines: None,
+                    });
                 }
             }
         }
@@ -353,7 +437,7 @@ impl WorkTree {
     fn changed_lines(
         &self,
         entries: &[&NameStatus],
-    ) -> Result<BTreeMap<Vec<u8>, Option<BTreeSet<usize>>>, String> {
+    ) -> Result<BTreeMap<Vec<u8>, ChangedLines>, String> {
         let mut lines = BTreeMap::new();
         for batch in batches(entries) {
             let mut cmd = git_in(&self.top);
@@ -386,7 +470,17 @@ impl WorkTree {
             if !out.status.success() {
                 return Err(failure("diff", &out));
             }
-            lines.extend(patch_lines_by_path(&out.stdout));
+            let mut added = patch_lines_by_path_with(&out.stdout, false);
+            for (path, touched) in patch_lines_by_path(&out.stdout) {
+                let added = added.remove(&path).flatten().unwrap_or_default();
+                lines.insert(
+                    path,
+                    ChangedLines {
+                        touched,
+                        added: Some(added),
+                    },
+                );
+            }
         }
         Ok(lines)
     }
@@ -463,6 +557,13 @@ fn batches<'a>(entries: &[&'a NameStatus]) -> Vec<Vec<&'a NameStatus>> {
 /// (最上位からの相対パス) ごとの変わった行に分ける。消したファイル (`+++ /dev/null`) の hunk は
 /// 数えず、hunk のないファイルは入れない。hunk の見出しを読めないファイルは `None` (ファイル全体)。
 fn patch_lines_by_path(patch: &[u8]) -> BTreeMap<Vec<u8>, Option<BTreeSet<usize>>> {
+    patch_lines_by_path_with(patch, true)
+}
+
+fn patch_lines_by_path_with(
+    patch: &[u8],
+    include_deletion_neighbors: bool,
+) -> BTreeMap<Vec<u8>, Option<BTreeSet<usize>>> {
     let mut files: BTreeMap<Vec<u8>, Option<BTreeSet<usize>>> = BTreeMap::new();
     let mut current: Option<Vec<u8>> = None;
     // ファイルの見出し (`diff --git` から最初の hunk まで) の中か。本文の追加の行が `++ ` で
@@ -484,7 +585,12 @@ fn patch_lines_by_path(patch: &[u8]) -> BTreeMap<Vec<u8>, Option<BTreeSet<usize>
                 .entry(path.clone())
                 .or_insert_with(|| Some(BTreeSet::new()));
             if let Some(lines) = entry
-                && hunk_lines(&String::from_utf8_lossy(line), lines).is_none()
+                && hunk_lines(
+                    &String::from_utf8_lossy(line),
+                    lines,
+                    include_deletion_neighbors,
+                )
+                .is_none()
             {
                 *entry = None;
             }
@@ -601,6 +707,14 @@ mod tests {
         let lines: Vec<usize> = unified_diff_lines(diff).unwrap().into_iter().collect();
         // 3 行目の書き換え、6 行目の後ろの削除 (つなぎ目の 6・7 行目)、10〜11 行目の追加
         assert_eq!(lines, vec![3, 6, 7, 10, 11]);
+        assert_eq!(
+            unified_diff_lines_with(diff, false),
+            Some([3, 10, 11].into_iter().collect())
+        );
+        assert_eq!(
+            unified_diff_lines_with("@@ -2 +1,0 @@\n-old\n", false),
+            Some(BTreeSet::new())
+        );
         // 新しいファイルの全行と、差分なし
         let lines: Vec<usize> = unified_diff_lines("@@ -0,0 +1,3 @@\n+a\n+b\n+c\n")
             .unwrap()
@@ -724,5 +838,56 @@ mod tests {
         let base = std::path::absolute("repo").unwrap();
         assert_eq!(normalize(&base.join("sub/deep/../..")), base);
         assert_eq!(normalize(&base.join("./a/./b")), base.join("a/b"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    #[test]
+    fn all_non_whitespace_source_must_be_covered() {
+        for source in [
+            "本文です。\n\n処理する。\n",
+            "本文です。\r\n\r\n処理する。\r\n",
+        ] {
+            let doc = Document::markdown(source);
+            let lines = Some([1, 3].into_iter().collect());
+            assert_eq!(coverage_lines(&doc, &lines), Coverage::Full);
+            assert_eq!(
+                coverage_lines(&doc, &Some([3].into_iter().collect())),
+                Coverage::Partial
+            );
+            assert_eq!(
+                coverage_lines(&doc, &Some(BTreeSet::new())),
+                Coverage::Partial
+            );
+            assert_eq!(coverage_lines(&doc, &None), Coverage::Full);
+            let mut spans = line_regions(lines.as_ref().unwrap(), &doc);
+            spans.reverse();
+            spans.push(spans[0]);
+            assert_eq!(coverage(&doc, Some(&spans)), Coverage::Full);
+        }
+        let source = "---\nlabel: draft\n---\n\n本文です。\n";
+        let doc = Document::markdown(source);
+        assert_eq!(
+            coverage_lines(&doc, &Some([5].into_iter().collect())),
+            Coverage::Partial
+        );
+        assert_eq!(
+            coverage(&doc, Some(&[Span::new(0, source.len())])),
+            Coverage::Full
+        );
+        assert_eq!(
+            coverage(&doc, Some(&[Span::new(1, source.len())])),
+            Coverage::Partial
+        );
+        assert_eq!(
+            coverage(&doc, Some(&[Span::new(0, source.len() + 1)])),
+            Coverage::Partial
+        );
+        assert_eq!(
+            coverage(&Document::markdown(""), Some(&[])),
+            Coverage::Partial
+        );
     }
 }

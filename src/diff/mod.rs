@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::diagnostic::Diagnostic;
 use crate::document::Document;
-use crate::engine::{Engine, FileError, FileReport, Input};
+use crate::engine::{Coverage, Engine, FileError, FileReport, Input};
 
 pub use facts::{Fact, FactChange, FactChanges, FactKind};
 pub use render::{DIFF_SCHEMA_VERSION, render_json, render_text, render_toon};
@@ -71,13 +71,25 @@ pub fn lint_pair(
     before: Input,
     after: Input,
 ) -> Result<(FileReport, FileReport), Vec<FileError>> {
-    let mut report = engine.run(vec![before, after]);
-    if !report.errors.is_empty() {
-        return Err(report.errors);
+    let (before, after) = rayon::join(|| engine.read_input(before), || engine.read_input(after));
+    let mut errors = Vec::new();
+    let before = before.map_err(|e| errors.push(e)).ok();
+    let after = after.map_err(|e| errors.push(e)).ok();
+    if !errors.is_empty() {
+        return Err(errors);
     }
-    let after = report.files.pop().expect("after report");
-    let before = report.files.pop().expect("before report");
-    Ok((before, after))
+    let before = before.expect("before document");
+    let after = after.expect("after document");
+    // 改稿の比較では全文の統一感を数えない。空の文書からの追加だけは全文が対象。
+    let after_coverage = if before.source.trim().is_empty() {
+        Coverage::Full
+    } else {
+        Coverage::Partial
+    };
+    Ok(rayon::join(
+        || engine.lint_with(before, Coverage::Partial),
+        || engine.lint_with(after, after_coverage),
+    ))
 }
 
 /// 検査済みの改稿前・改稿後を比べる。
@@ -344,5 +356,33 @@ mod tests {
         )
         .expect_err("missing file");
         assert_eq!(err.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::document::SourceFormat;
+    const MIXED: &str =
+        "設定を読み込みます。項目を確認します。\n\n処理を開始する。結果を表示する。\n";
+    #[test]
+    fn revision_diff_skips_style_unless_the_before_document_is_empty() {
+        let mut options = crate::engine::EngineOptions::default();
+        options.selection.only = Some(vec!["R20".into()]);
+        options.morphology.mode = crate::morph::MorphologyMode::Off;
+        let engine = Engine::new(options).unwrap();
+        let text = |source: &str| Input::Text {
+            name: "draft.md".into(),
+            source: source.into(),
+            format: SourceFormat::Markdown,
+        };
+        let (before, after) = lint_pair(&engine, text(MIXED), text(MIXED)).unwrap();
+        assert!(before.diagnostics.is_empty() && after.diagnostics.is_empty());
+        for empty in ["", "\n \r\n"] {
+            let (before, after) = lint_pair(&engine, text(empty), text(MIXED)).unwrap();
+            assert!(before.diagnostics.is_empty());
+            assert_eq!(after.diagnostics.len(), 1);
+            assert_eq!(after.diagnostics[0].rule_id, "R20");
+        }
     }
 }

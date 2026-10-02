@@ -43,6 +43,7 @@ noslop は「この文章は AI が書いた」と判定する道具ではあり
 - **判断を記録できる**: `<!-- noslop-disable-next-line P01 -- 引用のため -->` のように、残す理由を文書に書ける
 - **CI 向けの出力**: text（色付き）・JSON（安定したスキーマ）・GitHub Actions の注釈に対応する。既定ではジョブを落とさない
 - **AI エージェントに渡せる**: 直す箇所をルールごとにまとめた改稿指示を、Markdown・JSON・TOON（同じ内容を少ないトークンで表す形式）で出せる。MCP サーバー（`noslop mcp`）、Claude Code のフック（`noslop hook claude-code`。書いた直後、gws で Google ドキュメント・スプレッドシートに書き込む前、応答を終えたとき）、claw-hooks から呼ぶ入口（`noslop hook command` など）、スキル（`noslop skill-install`）で、書いた AI 自身に見直させる。gws の書き込み前に読める値とコマンドの形は[連携方法](docs/integrations.md#gws-の書き込み-pretooluse)にまとめた
+- **文体の混在を見直す**: 実験的な R20 を `--enable-rules R20` で有効にすると、全文が対象の文書で、本文全体のです・ます調と言い切りの混在を確認できる。引用・会話・独立した断片を除き、部分差分では判定を実行しない
 - **変更した箇所だけを見直す**: `noslop check --git-diff` で、コミットしていない変更に重なる指摘を JSON・TOON などで取り出せる（[変更した箇所の検査](docs/cli-reference.md#変更した箇所の検査)）
 - **改稿を比べる**: `noslop diff` で、改稿で新しく出た指摘・消えた数字や固有名詞・文書全体に一律に当てた直しを確かめる
 - **手元のコーパスで校正できる**: `noslop calibrate` で、人の文書と生成文書からルールごとの誤検知率・検出率を測り、閾値を選ぶ

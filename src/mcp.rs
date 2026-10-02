@@ -22,7 +22,7 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 
 use crate::document::SourceFormat;
-use crate::engine::{Engine, EngineOptions, RunReport};
+use crate::engine::{Engine, EngineOptions, Input, RunReport};
 use crate::genre::Genre;
 use crate::output::{CheckOutput, RenderOptions, RuleCatalog};
 
@@ -319,8 +319,26 @@ impl Server {
             Some(name) => (name.to_string(), SourceFormat::from_path(Path::new(name))),
             None => ("<text>".to_string(), SourceFormat::Markdown),
         };
-        let before = engine.lint_source(format!("{name} (改稿前)"), before.clone(), source_format);
-        let after = engine.lint_source(format!("{name} (改稿後)"), after.clone(), source_format);
+        let (before, after) = crate::diff::lint_pair(
+            engine,
+            Input::Text {
+                name: format!("{name} (改稿前)"),
+                source: before.clone(),
+                format: source_format,
+            },
+            Input::Text {
+                name: format!("{name} (改稿後)"),
+                source: after.clone(),
+                format: source_format,
+            },
+        )
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|e| e.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
         let report = crate::diff::compare(before, after);
         let mut buf = Vec::new();
         match format {
@@ -1215,5 +1233,42 @@ mod tests {
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(tool_text(&r).contains("3 行目"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    const MIXED: &str =
+        "設定を読み込みます。項目を確認します。\n\n処理を開始する。結果を表示する。\n";
+    #[test]
+    fn check_and_diff_share_full_document_conditions() {
+        let mut options = EngineOptions::default();
+        options.selection.only = Some(vec!["R20".into()]);
+        options.morphology.mode = crate::morph::MorphologyMode::Off;
+        let mut server = Server::new(Ok(options));
+        let args = json!({"text":MIXED,"report":"full","format":"json"});
+        let result = server.check(args.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(data["files"][0]["diagnostics"][0]["ruleId"], "R20");
+        for before in [MIXED, "", "\n \r\n"] {
+            let args = json!({"before":before,"after":MIXED,"format":"json"});
+            let result = server.diff(args.as_object().unwrap()).unwrap();
+            let data: Value = serde_json::from_str(&result).unwrap();
+            let findings = data["findings"]["new"].as_array().unwrap();
+            assert_eq!(
+                findings.iter().any(|d| d["ruleId"] == "R20"),
+                before.trim().is_empty()
+            );
+        }
+        let args = json!({"text":"// 設定です。項目です。処理する。表示する。", "filename":"draft.rs","report":"full","format":"json"});
+        let result = server.check(args.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            data["files"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 }
