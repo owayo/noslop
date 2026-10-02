@@ -30,9 +30,8 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-use crate::changed::touches;
+use crate::changed::ChangeScope;
 use crate::cli::{self, HookArgs};
-use crate::diagnostic::Span;
 use crate::document::{Document, ParseOptions, SourceFormat};
 use crate::engine::{Engine, FileReport, RunReport};
 use crate::output::{self, RenderOptions, RuleCatalog};
@@ -146,14 +145,14 @@ struct Review {
     limited: bool,
 }
 
-/// 編集したファイルを検査し、変わった行 (`changed` が求める。`None` ならファイル全体) に重なる指摘の
+/// 編集したファイルを検査し、変更範囲 (`changed` が求める) に重なる指摘の
 /// 改稿指示を作る。対象外のファイル (拡張子・除外・なくなった・大きすぎる) と、指摘がないときは `None`。
 fn review(
     path: &Path,
     cwd: Option<&Path>,
     args: &HookArgs,
     env: &cli::Environment,
-    changed: impl FnOnce(&Document) -> (Option<Vec<Span>>, crate::engine::Coverage),
+    changed: impl FnOnce(&Document) -> ChangeScope,
 ) -> Result<Option<Review>, String> {
     let reviewer = Reviewer::new(args, cwd, env)?;
     // ユーザーの設定の除外は、検査の起点 (エージェントの作業ディレクトリ。なければファイルの
@@ -166,18 +165,16 @@ fn review(
     let Some(doc) = reviewer.read_document(path, name.clone())? else {
         return Ok(None);
     };
-    let (changed, coverage) = changed(&doc);
-    let mut file = reviewer.engine.lint_with(doc, coverage);
-    if let Some(regions) = &changed {
-        file.diagnostics.retain(|d| touches(d, regions));
-    }
+    let scope = changed(&doc);
+    let limited = scope.is_limited();
+    let file = scope.lint(&reviewer.engine, doc);
     let Some(brief) = reviewer.brief(vec![file])? else {
         return Ok(None);
     };
     Ok(Some(Review {
         brief,
         name,
-        limited: changed.is_some(),
+        limited,
     }))
 }
 

@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use super::{KEEP_NOTE, followup_command, review, truncate_lines};
-use crate::changed::git_changed_regions;
+use crate::changed::{ChangeScope, git_changed_scope};
 use crate::cli::{self, FileHookArgs};
 use crate::document::Document;
 
@@ -48,11 +48,11 @@ fn review_file(
         Some(dir) if args.path.is_relative() => dir.join(&args.path),
         _ => args.path.clone(),
     };
-    let changed = |doc: &Document| {
+    let changed = |_: &Document| {
         if args.hook.whole_file {
-            (None, crate::engine::Coverage::Full)
+            ChangeScope::Whole
         } else {
-            git_changed_regions(&path, doc)
+            git_changed_scope(&path)
         }
     };
     let Some(review) = review(&path, cwd, &args.hook, env, changed)? else {
