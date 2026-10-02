@@ -474,7 +474,7 @@ noslop uses tree-sitter and the following grammars to extract comments from sour
 | Lua | 0.5.0 | Copyright (c) 2021 Munif Tanjim | [tree-sitter-grammars/tree-sitter-lua](https://github.com/tree-sitter-grammars/tree-sitter-lua) |
 | PHP | 0.24.2 | Copyright (c) 2017 Josh Vera, GitHub / Copyright (c) 2019 Max Brunsfeld, Amaan Qureshi, Christian Frøystad, Caleb White | [tree-sitter/tree-sitter-php](https://github.com/tree-sitter/tree-sitter-php) |
 | Python | 0.25.0 | Copyright (c) 2016 Max Brunsfeld | [tree-sitter/tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python) |
-| Ruby | コミット 710bc56 | Copyright (c) 2016 Rob Rix | [owayo/tree-sitter-ruby](https://github.com/owayo/tree-sitter-ruby)（[tree-sitter/tree-sitter-ruby](https://github.com/tree-sitter/tree-sitter-ruby) のフォーク） |
+| Ruby | コミット 0188e96 | Copyright (c) 2016 Rob Rix | [owayo/tree-sitter-ruby](https://github.com/owayo/tree-sitter-ruby)（[tree-sitter/tree-sitter-ruby](https://github.com/tree-sitter/tree-sitter-ruby) のフォーク） |
 | Rust | 0.24.2 | Copyright (c) 2017 Maxim Sokolov | [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust) |
 | Swift | 0.7.3 | Copyright (c) 2021 alex-pinkus | [alex-pinkus/tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) |
 | TOML（`tree-sitter-toml-ng`） | 0.7.0 | Copyright (c) Ika | [tree-sitter-grammars/tree-sitter-toml](https://github.com/tree-sitter-grammars/tree-sitter-toml) |
