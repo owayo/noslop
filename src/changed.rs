@@ -1,6 +1,6 @@
 //! git の差分から、変わった行を求める。
 //!
-//! - [`git_changed_regions`]: 1 つのファイルの、HEAD との差分で変わった行 (`hook file`)
+//! - [`git_changed_scope`]: 1 つのファイルの、HEAD との差分で変わった行 (`hook file`)
 //! - [`WorkTree`]: 作業ツリーのコミットしていない変更 (HEAD との差分と追跡していないファイル) の
 //!   ファイルと変わった行 (`check --git-diff` と Stop のフック)
 //!
@@ -14,7 +14,7 @@ use std::process::{Command, Output, Stdio};
 
 use crate::diagnostic::{Diagnostic, Span};
 use crate::document::Document;
-use crate::engine::{Coverage, FileReport};
+use crate::engine::{Coverage, Engine, FileReport};
 use crate::walk::WalkOptions;
 
 /// 設定とフックで共有する、変更ファイルの選択条件。
@@ -29,20 +29,57 @@ pub(crate) fn is_regular_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
 }
 
-/// 全文を検査した結果を、指摘か文脈が変わった行に重なるものに絞る。
-pub(crate) fn retain_changed(report: &mut FileReport, lines: &Option<BTreeSet<usize>>) {
-    if let Some(lines) = lines {
-        let regions = line_regions(lines, &report.doc);
-        report.diagnostics.retain(|d| touches(d, &regions));
+/// 変更の範囲。全文と範囲不明を区別し、全文専用のルールを動かすかを決める。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChangeScope {
+    Whole,
+    Lines(ChangedLines),
+    Unknown,
+}
+
+/// 指摘を残す行と、全文判定に使う実際の追加・置換行を一緒に収集する。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ChangedLines {
+    pub touched: BTreeSet<usize>,
+    pub added: BTreeSet<usize>,
+}
+
+impl ChangeScope {
+    /// 追加した文字列から位置を求めた編集では、どちらの範囲も同じ行になる。
+    pub(crate) fn from_added(lines: BTreeSet<usize>) -> Self {
+        Self::Lines(ChangedLines {
+            touched: lines.clone(),
+            added: lines,
+        })
+    }
+
+    pub(crate) fn is_limited(&self) -> bool {
+        matches!(self, Self::Lines(_))
+    }
+
+    fn coverage(&self, doc: &Document) -> Coverage {
+        match self {
+            Self::Whole => Coverage::Full,
+            Self::Unknown => Coverage::Partial,
+            Self::Lines(lines) => coverage(doc, &line_regions(&lines.added, doc)),
+        }
+    }
+
+    /// 全文対象の条件を適用して検査し、変更した行に重なる指摘を残す。
+    pub(crate) fn lint(&self, engine: &Engine, doc: Document) -> FileReport {
+        let coverage = self.coverage(&doc);
+        let mut report = engine.lint_with(doc, coverage);
+        if let Self::Lines(lines) = self {
+            let regions = line_regions(&lines.touched, &report.doc);
+            report.diagnostics.retain(|d| touches(d, &regions));
+        }
+        report
     }
 }
 
 /// 変更範囲が空白以外の原文をすべて覆っているか。
 /// 行の範囲には改行が入らないため、LF・CRLF・空行の隙間は全文の判定を妨げない。
-pub(crate) fn coverage(doc: &Document, regions: Option<&[Span]>) -> Coverage {
-    let Some(regions) = regions else {
-        return Coverage::Full;
-    };
+fn coverage(doc: &Document, regions: &[Span]) -> Coverage {
     if regions.is_empty() {
         return Coverage::Partial;
     }
@@ -66,13 +103,6 @@ pub(crate) fn coverage(doc: &Document, regions: Option<&[Span]>) -> Coverage {
         Coverage::Full
     } else {
         Coverage::Partial
-    }
-}
-
-pub(crate) fn coverage_lines(doc: &Document, lines: &Option<BTreeSet<usize>>) -> Coverage {
-    match lines {
-        None => Coverage::Full,
-        Some(lines) => coverage(doc, Some(&line_regions(lines, doc))),
     }
 }
 
@@ -130,28 +160,21 @@ fn failure(what: &str, out: &Output) -> String {
     }
 }
 
-/// git の差分 (HEAD との比較) で変わった行 (原文上の範囲)。git の外・追跡していないファイル・
-/// HEAD がない・git を実行できないときは全文。指摘の絞り込みの範囲と、追加・置換した行からの全文判定を返す。
-pub(crate) fn git_changed_regions(path: &Path, doc: &Document) -> (Option<Vec<Span>>, Coverage) {
-    let Some(lines) = git_changed_lines(path) else {
-        return (None, Coverage::Full);
-    };
-    let coverage = coverage_lines(doc, &lines.added);
-    (
-        lines.touched.map(|lines| line_regions(&lines, doc)),
-        coverage,
-    )
+/// HEAD との差分の範囲。git の外・追跡外・HEAD がない・git を実行できない場合は、
+/// 従来どおりファイル全体を対象にする。差分の解析失敗は `Unknown` として全文専用のルールを外す。
+pub(crate) fn git_changed_scope(path: &Path) -> ChangeScope {
+    git_changes(path).unwrap_or(ChangeScope::Whole)
 }
 
 /// 行番号 (1 始まり) の集まりを、原文上の範囲にする。
-pub(crate) fn line_regions(lines: &BTreeSet<usize>, doc: &Document) -> Vec<Span> {
+fn line_regions(lines: &BTreeSet<usize>, doc: &Document) -> Vec<Span> {
     lines
         .iter()
         .map(|&line| doc.lines.line_span(&doc.source, line))
         .collect()
 }
 
-fn git_changed_lines(path: &Path) -> Option<ChangedLines> {
+fn git_changes(path: &Path) -> Option<ChangeScope> {
     // git -C でファイルのディレクトリに移るので、相対パスのままでは指す先がずれる
     let path = std::path::absolute(path).ok()?;
     let dir = path.parent()?;
@@ -183,52 +206,34 @@ fn git_changed_lines(path: &Path) -> Option<ChangedLines> {
     if !diff.status.success() {
         return None;
     }
-    let diff = String::from_utf8_lossy(&diff.stdout);
-    Some(ChangedLines {
-        touched: unified_diff_lines(&diff),
-        // 読めない差分を全文とみなさない。従来の指摘の絞り込みは全文へ戻す。
-        added: Some(unified_diff_lines_with(&diff, false).unwrap_or_default()),
-    })
+    Some(unified_diff_lines(&String::from_utf8_lossy(&diff.stdout)))
 }
 
-/// `git diff -U0` の出力から、変わった後のファイルの行番号 (1 始まり) を集める。削除だけの箇所は、
-/// つなぎ目の前後の行を入れる。hunk の見出しの形が想定と違えば `None`。
-pub(crate) fn unified_diff_lines(diff: &str) -> Option<BTreeSet<usize>> {
-    unified_diff_lines_with(diff, true)
-}
-
-fn unified_diff_lines_with(
-    diff: &str,
-    include_deletion_neighbors: bool,
-) -> Option<BTreeSet<usize>> {
-    let mut lines = BTreeSet::new();
-    // -U0 では本文の行は + か - で始まるので、@@ で始まる行は hunk の見出しだけ
+/// `git diff -U0` の見出しを一度読み、絞り込みと全文判定の両方の行を収集する。
+fn unified_diff_lines(diff: &str) -> ChangeScope {
+    let mut lines = ChangedLines::default();
     for header in diff.lines().filter(|l| l.starts_with("@@ ")) {
-        hunk_lines(header, &mut lines, include_deletion_neighbors)?;
+        if hunk_lines(header, &mut lines).is_none() {
+            return ChangeScope::Unknown;
+        }
     }
-    Some(lines)
+    ChangeScope::Lines(lines)
 }
 
-/// hunk の見出し (`@@ -<旧の開始>[,<行数>] +<新の開始>[,<行数>] @@`) から、変わった後のファイルの
-/// 行番号を `lines` に足す。削除だけの hunk は、つなぎ目の前後の行を入れる。形が違えば `None`。
-fn hunk_lines(
-    header: &str,
-    lines: &mut BTreeSet<usize>,
-    include_deletion_neighbors: bool,
-) -> Option<()> {
+/// 削除だけの hunk は隣接行を絞り込みにだけ足す。追加・置換は両方に足す。
+fn hunk_lines(header: &str, lines: &mut ChangedLines) -> Option<()> {
     let new = header.split_whitespace().nth(2)?.strip_prefix('+')?;
     let (start, count) = match new.split_once(',') {
         Some((start, count)) => (start.parse::<usize>().ok()?, count.parse::<usize>().ok()?),
         None => (new.parse::<usize>().ok()?, 1),
     };
     if count == 0 {
-        // 削除だけ: start 行の後ろが消えた
-        if include_deletion_neighbors {
-            lines.insert(start.max(1));
-            lines.insert(start + 1);
-        }
+        lines.touched.insert(start.max(1));
+        lines.touched.insert(start + 1);
     } else {
-        lines.extend(start.max(1)..start + count);
+        let range = start.max(1)..start + count;
+        lines.touched.extend(range.clone());
+        lines.added.extend(range);
     }
     Some(())
 }
@@ -238,18 +243,8 @@ fn hunk_lines(
 pub(crate) struct ChangedFile {
     /// ファイルのパス (作業ツリーの最上位を付けたもの)。
     pub path: PathBuf,
-    /// 変わった行 (1 始まり)。`None` はファイル全体 (追跡していないファイルと、HEAD のない
-    /// リポジトリのファイル。hunk の見出しを読めなかったときも)。
-    pub lines: Option<BTreeSet<usize>>,
-    /// 実際に追加・置換した行。削除箇所の隣接行は全文対象の判定に含めない。
-    /// `None` は新規ファイルなど、全文が対象と分かる場合だけ。
-    pub added_lines: Option<BTreeSet<usize>>,
-}
-
-#[derive(Debug)]
-struct ChangedLines {
-    touched: Option<BTreeSet<usize>>,
-    added: Option<BTreeSet<usize>>,
+    /// 追跡外と HEAD がないときは全文。差分の見出しを読めないときは範囲不明。
+    pub scope: ChangeScope,
 }
 
 /// git の作業ツリー。
@@ -367,11 +362,7 @@ impl WorkTree {
             for (entry, path) in tracked {
                 // 差分に hunk のないファイルは、中身が変わっていない
                 if let Some(lines) = lines.remove(&entry.path) {
-                    files.push(ChangedFile {
-                        path,
-                        lines: lines.touched,
-                        added_lines: lines.added,
-                    });
+                    files.push(ChangedFile { path, scope: lines });
                 }
             }
             for rel in self.ls_files(&["--others", "--exclude-standard"])? {
@@ -379,8 +370,7 @@ impl WorkTree {
                 if select(&path) {
                     files.push(ChangedFile {
                         path,
-                        lines: None,
-                        added_lines: None,
+                        scope: ChangeScope::Whole,
                     });
                 }
             }
@@ -390,8 +380,7 @@ impl WorkTree {
                 if select(&path) {
                     files.push(ChangedFile {
                         path,
-                        lines: None,
-                        added_lines: None,
+                        scope: ChangeScope::Whole,
                     });
                 }
             }
@@ -437,7 +426,7 @@ impl WorkTree {
     fn changed_lines(
         &self,
         entries: &[&NameStatus],
-    ) -> Result<BTreeMap<Vec<u8>, ChangedLines>, String> {
+    ) -> Result<BTreeMap<Vec<u8>, ChangeScope>, String> {
         let mut lines = BTreeMap::new();
         for batch in batches(entries) {
             let mut cmd = git_in(&self.top);
@@ -470,17 +459,7 @@ impl WorkTree {
             if !out.status.success() {
                 return Err(failure("diff", &out));
             }
-            let mut added = patch_lines_by_path_with(&out.stdout, false);
-            for (path, touched) in patch_lines_by_path(&out.stdout) {
-                let added = added.remove(&path).flatten().unwrap_or_default();
-                lines.insert(
-                    path,
-                    ChangedLines {
-                        touched,
-                        added: Some(added),
-                    },
-                );
-            }
+            lines.extend(patch_lines_by_path(&out.stdout));
         }
         Ok(lines)
     }
@@ -553,21 +532,12 @@ fn batches<'a>(entries: &[&'a NameStatus]) -> Vec<Vec<&'a NameStatus>> {
     batches
 }
 
-/// `git diff -U0 --src-prefix=a/ --dst-prefix=b/` の出力 (複数のファイル) を、変わった後のパス
-/// (最上位からの相対パス) ごとの変わった行に分ける。消したファイル (`+++ /dev/null`) の hunk は
-/// 数えず、hunk のないファイルは入れない。hunk の見出しを読めないファイルは `None` (ファイル全体)。
-fn patch_lines_by_path(patch: &[u8]) -> BTreeMap<Vec<u8>, Option<BTreeSet<usize>>> {
-    patch_lines_by_path_with(patch, true)
-}
-
-fn patch_lines_by_path_with(
-    patch: &[u8],
-    include_deletion_neighbors: bool,
-) -> BTreeMap<Vec<u8>, Option<BTreeSet<usize>>> {
-    let mut files: BTreeMap<Vec<u8>, Option<BTreeSet<usize>>> = BTreeMap::new();
+/// 複数ファイルの差分を一度読み、後のパスごとに両方の行を収集する。
+/// 削除済みのファイルと hunk のないファイルは含めず、読めない見出しは `Unknown` とする。
+fn patch_lines_by_path(patch: &[u8]) -> BTreeMap<Vec<u8>, ChangeScope> {
+    let mut files = BTreeMap::new();
     let mut current: Option<Vec<u8>> = None;
-    // ファイルの見出し (`diff --git` から最初の hunk まで) の中か。本文の追加の行が `++ ` で
-    // 始まると `+++ ` に見えるので、パスは見出しの中でだけ読む
+    // 本文の追加行が `+++ ` に見える場合に備え、パスは最初の hunk より前でだけ読む。
     let mut in_header = false;
     for line in patch.split(|&b| b == b'\n') {
         if line.starts_with(b"diff --git ") {
@@ -576,23 +546,15 @@ fn patch_lines_by_path_with(
         } else if in_header && line.starts_with(b"+++ ") {
             current = new_side_path(&line[4..]);
         } else if line.starts_with(b"@@ ") {
-            // -U0 では本文の行は + か - (と「\ No newline」) で始まるので、@@ で始まる行は見出しだけ
             in_header = false;
-            let Some(path) = &current else {
-                continue;
-            };
+            let Some(path) = &current else { continue };
             let entry = files
                 .entry(path.clone())
-                .or_insert_with(|| Some(BTreeSet::new()));
-            if let Some(lines) = entry
-                && hunk_lines(
-                    &String::from_utf8_lossy(line),
-                    lines,
-                    include_deletion_neighbors,
-                )
-                .is_none()
+                .or_insert_with(|| ChangeScope::Lines(ChangedLines::default()));
+            if let ChangeScope::Lines(lines) = entry
+                && hunk_lines(&String::from_utf8_lossy(line), lines).is_none()
             {
-                *entry = None;
+                *entry = ChangeScope::Unknown;
             }
         }
     }
@@ -704,29 +666,28 @@ mod tests {
             @@ -3 +3 @@ 見出し\n-old\n+new\n\
             @@ -5,2 +6,0 @@\n-a\n-b\n\
             @@ -9,0 +10,2 @@\n+c\n+d\n";
-        let lines: Vec<usize> = unified_diff_lines(diff).unwrap().into_iter().collect();
-        // 3 行目の書き換え、6 行目の後ろの削除 (つなぎ目の 6・7 行目)、10〜11 行目の追加
-        assert_eq!(lines, vec![3, 6, 7, 10, 11]);
+        // 削除の隣接行は指摘の絞り込みにだけ使い、全文対象の判定には使わない。
         assert_eq!(
-            unified_diff_lines_with(diff, false),
-            Some([3, 10, 11].into_iter().collect())
+            unified_diff_lines(diff),
+            scope(&[3, 6, 7, 10, 11], &[3, 10, 11])
         );
         assert_eq!(
-            unified_diff_lines_with("@@ -2 +1,0 @@\n-old\n", false),
-            Some(BTreeSet::new())
+            unified_diff_lines("@@ -2 +1,0 @@\n-old\n"),
+            scope(&[1, 2], &[])
         );
-        // 新しいファイルの全行と、差分なし
-        let lines: Vec<usize> = unified_diff_lines("@@ -0,0 +1,3 @@\n+a\n+b\n+c\n")
-            .unwrap()
-            .into_iter()
-            .collect();
-        assert_eq!(lines, vec![1, 2, 3]);
-        assert_eq!(unified_diff_lines(""), Some(BTreeSet::new()));
-        assert_eq!(unified_diff_lines("@@ -1 +x @@\n"), None);
+        assert_eq!(
+            unified_diff_lines("@@ -0,0 +1,3 @@\n+a\n+b\n+c\n"),
+            scope(&[1, 2, 3], &[1, 2, 3])
+        );
+        assert_eq!(unified_diff_lines(""), scope(&[], &[]));
+        assert_eq!(unified_diff_lines("@@ -1 +x @@\n"), ChangeScope::Unknown);
     }
 
-    fn lines(v: &[usize]) -> Option<BTreeSet<usize>> {
-        Some(v.iter().copied().collect())
+    fn scope(touched: &[usize], added: &[usize]) -> ChangeScope {
+        ChangeScope::Lines(ChangedLines {
+            touched: touched.iter().copied().collect(),
+            added: added.iter().copied().collect(),
+        })
     }
 
     /// 複数のファイルの差分を、変わった後のパスごとに分ける。空白のあるパスの区切りのタブ、引用符で
@@ -769,9 +730,12 @@ mod tests {
             .map(|k| String::from_utf8(k.clone()).unwrap())
             .collect();
         assert_eq!(keys, vec!["broken.md", "my notes.md", "日 本.md"]);
-        assert_eq!(files[b"my notes.md".as_slice()], lines(&[2, 6, 7]));
-        assert_eq!(files["日 本.md".as_bytes()], lines(&[1, 2]));
-        assert_eq!(files[b"broken.md".as_slice()], None, "読めない見出しは全体");
+        assert_eq!(
+            files[b"my notes.md".as_slice()],
+            scope(&[2, 6, 7], &[2, 6, 7])
+        );
+        assert_eq!(files["日 本.md".as_bytes()], scope(&[1, 2], &[1, 2]));
+        assert_eq!(files[b"broken.md".as_slice()], ChangeScope::Unknown);
     }
 
     #[test]
@@ -851,43 +815,87 @@ mod coverage_tests {
             "本文です。\r\n\r\n処理する。\r\n",
         ] {
             let doc = Document::markdown(source);
-            let lines = Some([1, 3].into_iter().collect());
-            assert_eq!(coverage_lines(&doc, &lines), Coverage::Full);
+            let lines: BTreeSet<usize> = [1, 3].into_iter().collect();
             assert_eq!(
-                coverage_lines(&doc, &Some([3].into_iter().collect())),
+                ChangeScope::from_added(lines.clone()).coverage(&doc),
+                Coverage::Full
+            );
+            assert_eq!(
+                ChangeScope::from_added([3].into_iter().collect()).coverage(&doc),
                 Coverage::Partial
             );
             assert_eq!(
-                coverage_lines(&doc, &Some(BTreeSet::new())),
+                ChangeScope::from_added(BTreeSet::new()).coverage(&doc),
                 Coverage::Partial
             );
-            assert_eq!(coverage_lines(&doc, &None), Coverage::Full);
-            let mut spans = line_regions(lines.as_ref().unwrap(), &doc);
+            assert_eq!(ChangeScope::Whole.coverage(&doc), Coverage::Full);
+            let mut spans = line_regions(&lines, &doc);
             spans.reverse();
             spans.push(spans[0]);
-            assert_eq!(coverage(&doc, Some(&spans)), Coverage::Full);
+            assert_eq!(coverage(&doc, &spans), Coverage::Full);
         }
         let source = "---\nlabel: draft\n---\n\n本文です。\n";
         let doc = Document::markdown(source);
         assert_eq!(
-            coverage_lines(&doc, &Some([5].into_iter().collect())),
+            ChangeScope::from_added([5].into_iter().collect()).coverage(&doc),
             Coverage::Partial
         );
         assert_eq!(
-            coverage(&doc, Some(&[Span::new(0, source.len())])),
+            coverage(&doc, &[Span::new(0, source.len())]),
             Coverage::Full
         );
         assert_eq!(
-            coverage(&doc, Some(&[Span::new(1, source.len())])),
+            coverage(&doc, &[Span::new(1, source.len())]),
             Coverage::Partial
         );
         assert_eq!(
-            coverage(&doc, Some(&[Span::new(0, source.len() + 1)])),
+            coverage(&doc, &[Span::new(0, source.len() + 1)]),
             Coverage::Partial
+        );
+        assert_eq!(coverage(&Document::markdown(""), &[]), Coverage::Partial);
+    }
+
+    #[test]
+    fn unknown_scope_keeps_sentence_findings_without_whole_document_rules() {
+        use crate::engine::{EngineOptions, Selection};
+        let engine = Engine::new(EngineOptions {
+            selection: Selection {
+                only: Some(vec!["R20".into(), "P27".into()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        let doc = || {
+            Document::markdown(
+                "設定です。項目です。\n\n処理する。表示する。\n\n参考になれば幸いです。\n",
+            )
+        };
+        let ids = |scope: ChangeScope| {
+            scope
+                .lint(&engine, doc())
+                .diagnostics
+                .into_iter()
+                .map(|d| d.rule_id)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            ids(ChangeScope::Whole),
+            ["P27".into(), "R20".into()].into_iter().collect()
         );
         assert_eq!(
-            coverage(&Document::markdown(""), Some(&[])),
-            Coverage::Partial
+            ids(ChangeScope::Unknown),
+            ["P27".into()].into_iter().collect()
         );
+        assert_eq!(
+            ids(ChangeScope::from_added([5].into_iter().collect())),
+            ["P27".into()].into_iter().collect()
+        );
+        assert!(ids(ChangeScope::from_added(BTreeSet::new())).is_empty());
+        for source in ["", "本文です。"] {
+            let doc = Document::markdown(source);
+            assert_eq!(ChangeScope::Unknown.coverage(&doc), Coverage::Partial);
+            assert_eq!(ChangeScope::Whole.coverage(&doc), Coverage::Full);
+        }
     }
 }

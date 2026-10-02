@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::{CONTEXT_BUDGET_CHARS, KEEP_NOTE, read_input, review, truncate_lines};
+use crate::changed::{ChangeScope, ChangedLines};
 use crate::cli::{self, HookArgs};
-use crate::diagnostic::Span;
 use crate::document::Document;
 
 /// PostToolUse で検査するツール。
@@ -103,19 +103,10 @@ fn post_tool_use(
 
     let changed = |doc: &Document| {
         if args.whole_file {
-            return (None, crate::engine::Coverage::Full);
-        }
-        let changed = changed_regions(tool, event, doc, true);
-        let added = changed_regions(tool, event, doc, false);
-        let full_write = tool == "Write"
-            && (event.get("tool_response").is_none()
-                || event.pointer("/tool_response/type").and_then(Value::as_str) == Some("create"));
-        let coverage = if added.is_none() && !full_write {
-            crate::engine::Coverage::Partial
+            ChangeScope::Whole
         } else {
-            crate::changed::coverage(doc, added.as_deref())
-        };
-        (changed, coverage)
+            change_scope(tool, event, doc)
+        }
     };
     let Some(review) = review(&path, cwd.as_deref(), args, env, changed)? else {
         return Ok(None);
@@ -138,65 +129,47 @@ fn post_tool_use(
     Ok(Some(output.to_string()))
 }
 
-/// 今回のツール呼び出しで変わった行 (原文上の範囲)。決められないときは `None` (ファイル全体)。
-fn changed_regions(
-    tool: &str,
-    event: &Value,
-    doc: &Document,
-    include_deletion_neighbors: bool,
-) -> Option<Vec<Span>> {
+/// ツールの結果か挿入した文字列から、変更範囲を一度だけ求める。
+fn change_scope(tool: &str, event: &Value, doc: &Document) -> ChangeScope {
     if tool == "Write"
         && event.pointer("/tool_response/type").and_then(Value::as_str) == Some("create")
     {
-        return None;
+        return ChangeScope::Whole;
     }
     if let Some(lines) = event
         .pointer("/tool_response/structuredPatch")
-        .and_then(|patch| {
-            if include_deletion_neighbors {
-                patch_lines(patch)
-            } else {
-                patch_lines_with(patch, false)
-            }
-        })
+        .and_then(patch_lines)
     {
-        return Some(
-            lines
-                .into_iter()
-                .map(|line| doc.lines.line_span(&doc.source, line))
-                .collect(),
-        );
+        return ChangeScope::Lines(lines);
     }
     match tool {
-        "Edit" | "MultiEdit" => inserted_regions(event.get("tool_input")?, doc),
-        _ => None,
+        "Edit" | "MultiEdit" => event
+            .get("tool_input")
+            .and_then(|input| inserted_lines(input, doc))
+            .map(ChangeScope::from_added)
+            .unwrap_or(ChangeScope::Unknown),
+        "Write" if event.get("tool_response").is_none() => ChangeScope::Whole,
+        _ => ChangeScope::Unknown,
     }
 }
 
-/// 差分の hunk の配列 (`structuredPatch`) から、変わった後のファイルの行番号 (1 始まり) を集める。
-/// 削除だけの箇所は、つなぎ目の前後の行を入れる。形が想定と違えば `None`。
-fn patch_lines(patch: &Value) -> Option<BTreeSet<usize>> {
-    patch_lines_with(patch, true)
-}
-
-fn patch_lines_with(patch: &Value, include_deletion_neighbors: bool) -> Option<BTreeSet<usize>> {
+/// structuredPatch を一度読み、削除の隣接行と実際の追加行を分けて収集する。
+fn patch_lines(patch: &Value) -> Option<ChangedLines> {
     let hunks = patch.as_array().filter(|h| !h.is_empty())?;
-    let mut lines = BTreeSet::new();
+    let mut lines = ChangedLines::default();
     for hunk in hunks {
         let mut line = usize::try_from(hunk.get("newStart")?.as_u64()?).ok()?;
         for text in hunk.get("lines")?.as_array()? {
             match text.as_str()?.chars().next() {
                 Some('+') => {
-                    lines.insert(line.max(1));
+                    lines.touched.insert(line.max(1));
+                    lines.added.insert(line.max(1));
                     line += 1;
                 }
                 Some('-') => {
-                    if include_deletion_neighbors {
-                        lines.insert(line.saturating_sub(1).max(1));
-                        lines.insert(line.max(1));
-                    }
+                    lines.touched.insert(line.saturating_sub(1).max(1));
+                    lines.touched.insert(line.max(1));
                 }
-                // 「\ No newline at end of file」
                 Some('\\') => {}
                 _ => line += 1,
             }
@@ -207,7 +180,7 @@ fn patch_lines_with(patch: &Value, include_deletion_neighbors: bool) -> Option<B
 
 /// Edit / MultiEdit の `new_string` が入った行。位置を 1 つに決められないとき (同じ文字列が
 /// ほかにもある、削除だけの編集、別のフックが整形して見つからない) は `None`。
-fn inserted_regions(input: &Value, doc: &Document) -> Option<Vec<Span>> {
+fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
     let replace_all = |v: &Value| v.get("replace_all").and_then(Value::as_bool) == Some(true);
     let mut edits: Vec<(&str, bool)> = Vec::new();
     if let Some(s) = input.get("new_string").and_then(Value::as_str) {
@@ -222,7 +195,7 @@ fn inserted_regions(input: &Value, doc: &Document) -> Option<Vec<Span>> {
         return None;
     }
     let source = &doc.source;
-    let mut regions = Vec::new();
+    let mut lines = BTreeSet::new();
     for (text, all) in edits {
         let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
         if text.trim().is_empty() {
@@ -235,10 +208,10 @@ fn inserted_regions(input: &Value, doc: &Document) -> Option<Vec<Span>> {
         for start in starts {
             let first = doc.lines.line(start);
             let last = doc.lines.line(start + text.len() - 1);
-            regions.extend((first..=last).map(|line| doc.lines.line_span(source, line)));
+            lines.extend(first..=last);
         }
     }
-    Some(regions)
+    Some(lines)
 }
 
 #[cfg(test)]
@@ -456,8 +429,13 @@ mod tests {
             { "newStart": 2, "lines": [" a", "-b", "+B", " c", "\\ No newline at end of file"] },
             { "newStart": 10, "lines": ["-x"] }
         ]);
-        let lines: Vec<usize> = patch_lines(&patch).unwrap().into_iter().collect();
-        assert_eq!(lines, vec![2, 3, 9, 10]);
+        assert_eq!(
+            patch_lines(&patch),
+            Some(ChangedLines {
+                touched: [2, 3, 9, 10].into_iter().collect(),
+                added: [3].into_iter().collect(),
+            })
+        );
         assert_eq!(patch_lines(&json!([])), None);
         assert_eq!(patch_lines(&json!([{ "lines": ["+a"] }])), None);
         assert_eq!(patch_lines(&json!("diff")), None);
