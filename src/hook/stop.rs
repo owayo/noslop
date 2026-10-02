@@ -21,7 +21,7 @@ use rayon::prelude::*;
 use serde_json::{Value, json};
 
 use super::{CONTEXT_BUDGET_CHARS, Reviewer, display_name, followup_command, truncate_lines};
-use crate::changed::{ChangedFile, WorkTree, is_regular_file, retain_changed};
+use crate::changed::{ChangeScope, ChangedFile, WorkTree, is_regular_file};
 use crate::cli::{self, GitDiffHookArgs, HookArgs};
 use crate::engine::FileReport;
 
@@ -156,16 +156,12 @@ fn lint(
             return None;
         }
     };
-    let coverage = if whole_file {
-        crate::engine::Coverage::Full
+    let scope = if whole_file {
+        &ChangeScope::Whole
     } else {
-        crate::changed::coverage_lines(&doc, &file.added_lines)
+        &file.scope
     };
-    let mut report = reviewer.engine.lint_with(doc, coverage);
-    if !whole_file {
-        retain_changed(&mut report, &file.lines);
-    }
-    Some(report)
+    Some(scope.lint(&reviewer.engine, doc))
 }
 
 /// 改稿指示と注記を `budget` 文字に収める。注記は残し、改稿指示の後ろを行の単位で省く。上限が

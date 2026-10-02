@@ -1093,9 +1093,7 @@ fn check_changed(
             let mut report = crate::engine::RunReport::default();
             match engine.read_input(Input::Path(path)) {
                 Ok(doc) => {
-                    let coverage = crate::changed::coverage_lines(&doc, &file.added_lines);
-                    let mut result = engine.lint_with(doc, coverage);
-                    crate::changed::retain_changed(&mut result, &file.lines);
+                    let result = file.scope.lint(engine, doc);
                     report.files.push(result);
                 }
                 Err(err) => report.errors.push(err),
