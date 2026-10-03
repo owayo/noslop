@@ -28,7 +28,7 @@ pub const IGNORE_FILE_NAME: &str = ".noslopignore";
 pub struct WalkOptions {
     /// 文書の拡張子 (小文字、ドットなし)。
     pub extensions: Vec<String>,
-    /// コメントを検査するコードの拡張子 (小文字、ドットなし。設定の `[code] extensions`)。
+    /// コードの文言を検査する拡張子 (小文字、ドットなし。設定の `[code] extensions`)。
     pub code_extensions: Vec<String>,
     pub exclude: Option<ExcludeRule>,
 }

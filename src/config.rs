@@ -109,12 +109,14 @@ pub struct FilesSection {
     pub exclude: Option<Vec<String>>,
 }
 
-/// `[code]` セクション。コードのファイルのコメントを検査する。
+/// `[code]` セクション。コードのコメントと静的な文言を検査する。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeSection {
-    /// コメントを検査するコードの拡張子 (ドットなし)。ディレクトリをたどるときとフックで集める。
-    /// 直接指定したファイルは、ここに書かなくても拡張子から言語が分かればコメントを検査する。
+    /// 静的な文字列・表示文言も検査する (既定は真)。
+    pub static_text: Option<bool>,
+    /// 文言を検査するコードの拡張子 (ドットなし)。ディレクトリをたどるときとフックで集める。
+    /// 直接指定したファイルは、ここに書かなくても拡張子から言語が分かれば文言を検査する。
     pub extensions: Option<Vec<String>>,
 }
 
@@ -426,9 +428,11 @@ const TEMPLATE: &str = r#"# noslop の設定ファイル
 # exclude = ["CHANGELOG.md", "vendor/"]
 
 [code]
-# コメントを検査するコードの拡張子 (既定は空で、ディレクトリをたどるときにコードは集めない)。
-# noslop check に直接渡したコードのファイルは、ここに書かなくてもコメントを検査します。
-# コメントは短い断片なので、1 文ずつ判定するルールだけを当てます。
+# 静的な文字列・JSX/HTML の文言も読む (既定)。false ならコメントと Python の docstring だけ。
+# static_text = true
+# コードの文言を検査する拡張子 (既定は空で、ディレクトリをたどるときにコードは集めない)。
+# noslop check に直接渡したコードのファイルは、ここに書かなくてもコメントと静的な文言を検査します。
+# コメントと静的な文言は短い断片なので、1 文ずつ判定するルールだけを当てます。
 # 次は noslop がコメントを読めるすべての拡張子です。使うものだけを残して、行頭の # を外してください
 @CODE_EXTENSIONS@
 
@@ -509,7 +513,9 @@ const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/nosl
 # exclude = ["drafts/"]
 
 [code]
-# コメントを検査するコードの拡張子 (フックと、ディレクトリをたどるときに集める。既定は空)。
+# 静的な文字列・JSX/HTML の文言も読む (既定)。false ならコメントと Python の docstring だけ。
+# static_text = true
+# コードの文言を検査する拡張子 (フックと、ディレクトリをたどるときに集める。既定は空)。
 # プロジェクトの設定に extensions があれば、こちらは使いません。
 # 次は noslop がコメントを読めるすべての拡張子です。使うものだけを残して、行頭の # を外してください
 @CODE_EXTENSIONS@

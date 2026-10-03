@@ -199,6 +199,7 @@ mod tests {
                 SourceFormat::Markdown,
                 &ParseOptions {
                     line_breaks: LineBreakMode::Sentence,
+                    ..ParseOptions::default()
                 },
             );
             assert_eq!(matched(&md, &run_doc(get(id), &doc, all)), [phrase]);

@@ -74,16 +74,24 @@ fn grammar(language: CodeLanguage) -> tree_sitter::Language {
     }
 }
 
-/// `source` をこの言語の文法で読み、コメントを原文の順に返す。構文木を作れなければ `None`。
+/// `source` をこの言語の文法で読み、構文木を返す。作れなければ `None`。
 ///
 /// 構文の誤りがあっても、読めたところのコメントは返す (tree-sitter は誤りを含む木も作る)。
-pub(super) fn comments(source: &str, language: CodeLanguage) -> Option<Vec<RawComment>> {
+pub(super) fn tree(source: &str, language: CodeLanguage) -> Option<tree_sitter::Tree> {
     let grammar = grammar(language);
     let mut parser = Parser::new();
     parser
         .set_language(&grammar)
         .unwrap_or_else(|e| panic!("{} の文法を読み込めません: {e}", language.name()));
-    let tree = parser.parse(source, None)?;
+    parser.parse(source, None)
+}
+
+/// 共有の構文木からコメントと docstring を原文の順に返す。
+pub(super) fn comments(
+    source: &str,
+    language: CodeLanguage,
+    tree: &tree_sitter::Tree,
+) -> Vec<RawComment> {
     let mut out = Vec::new();
     // 深く入れ子になったコードでもスタックを使い切らないよう、再帰せずにカーソルでたどる
     let mut cursor = tree.walk();
@@ -106,7 +114,7 @@ pub(super) fn comments(source: &str, language: CodeLanguage) -> Option<Vec<RawCo
     }
     out.sort_by_key(|c| c.span.start);
     out.dedup_by_key(|c| c.span.start);
-    Some(out)
+    out
 }
 
 /// `//`・`/* */` で書く言語の、文書のコメントの記号と読み方 (`None` はその記号を文書のコメントに
