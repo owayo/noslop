@@ -92,7 +92,7 @@ R20 は `--enable-rules R20` または `[rules] enable = ["R20"]` で有効に�
 
 | 目的 | 移行後 |
 | --- | --- |
-| 明示的な有効化・無効化 | `--enable-rules P27` / `--disable-rules P27`、設定の `enable` / `disable` に `P27` を指定する |
+| 明示的な有効化・無効化 | `--enable-rules P27` / `--ignore-rules P27`、設定の `enable` / `disable` に `P27` を指定する |
 | 重大度の上書き | `[rules.P27] severity = "info"` などを指定する |
 | 抑制コメント | `noslop-disable` / `noslop-disable-next-line` / `noslop-enable` で、結びの定型を扱う ID を `P27` にする |
 
