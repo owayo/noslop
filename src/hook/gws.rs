@@ -1256,7 +1256,10 @@ severity = "info"
             let (doc, places) = fragments_document(
                 "断片".to_string(),
                 &refs,
-                &ParseOptions { line_breaks: mode },
+                &ParseOptions {
+                    line_breaks: mode,
+                    ..ParseOptions::default()
+                },
             );
             assert_eq!(doc.kind, DocumentKind::Fragments);
             assert_eq!(doc.source, "一行目\n\u{3000}二行目 \n  \nabc\ndef");

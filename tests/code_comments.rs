@@ -49,6 +49,11 @@ fn empty_dir() -> &'static Path {
 /// 設定ファイル (`extra` を足したもの) と、Markdown の文書と Bash のスクリプトを置いたディレクトリ。
 fn workspace(extra: &str) -> TempDir {
     let dir = tempfile::tempdir().unwrap();
+    let extra = if extra.contains("[code]") {
+        extra.replace("[code]", "[code]\nstatic_text = false")
+    } else {
+        format!("{extra}\n[code]\nstatic_text = false\n")
+    };
     fs::write(dir.path().join("noslop.toml"), format!("{CONFIG}{extra}")).unwrap();
     fs::create_dir_all(dir.path().join("docs")).unwrap();
     fs::create_dir_all(dir.path().join("scripts")).unwrap();

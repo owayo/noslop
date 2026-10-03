@@ -808,6 +808,7 @@ pub(crate) fn config_engine_options(cfg: &ConfigLayers, env: &Environment) -> En
         },
         parse: ParseOptions {
             line_breaks: cfg.pick(|f| f.line_breaks).unwrap_or_default(),
+            static_text: cfg.pick(|f| f.code.static_text).unwrap_or(true),
         },
         selection: Selection {
             user_enable: user_rules.enable,
