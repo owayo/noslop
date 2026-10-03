@@ -41,7 +41,7 @@ pub(super) struct StockCloser(PhraseRule);
 
 impl StockCloser {
     pub(super) fn new(genre: Genre) -> Self {
-        Self(PhraseRule::new(for_genre(genre)))
+        Self(PhraseRule::new(for_genre(genre)).excluding_quoted_mentions())
     }
 }
 
@@ -53,41 +53,7 @@ impl Rule for StockCloser {
         self.0.unit()
     }
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
-        let mut findings = Vec::new();
-        self.0.check(ctx, &mut findings);
-        if findings.is_empty() {
-            return;
-        }
-        let mut quotes = Vec::new();
-        for (_, block) in ctx.scoped_blocks() {
-            let mut stack = Vec::new();
-            for (offset, c) in block.text.char_indices() {
-                if let Some(position) = stack.iter().rposition(|&(_, close)| close == c) {
-                    let (start, _) = stack[position];
-                    stack.truncate(position);
-                    quotes.push(block.to_source(start..offset + c.len_utf8()));
-                } else if let Some(close) = match c {
-                    '「' => Some('」'),
-                    '『' => Some('』'),
-                    '“' => Some('”'),
-                    '"' if !block.text[..offset]
-                        .chars()
-                        .next_back()
-                        .is_some_and(|c| c.is_ascii_digit()) =>
-                    {
-                        Some('"')
-                    }
-                    _ => None,
-                } {
-                    stack.push((offset, close));
-                }
-            }
-        }
-        out.extend(findings.into_iter().filter(|d| {
-            !quotes
-                .iter()
-                .any(|q| q.start <= d.span.start && d.span.end <= q.end)
-        }));
+        self.0.check(ctx, out);
     }
 }
 
