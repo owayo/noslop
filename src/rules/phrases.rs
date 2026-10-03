@@ -17,6 +17,7 @@ mod engine;
 mod jargon;
 mod markup;
 mod permission;
+mod quotes;
 mod reading;
 mod stance;
 mod syntax;
@@ -29,9 +30,9 @@ use engine::PhraseRule;
 /// 語句パターン系の組み込みルール (ID 順)。
 pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
     vec![
-        Box::new(PhraseRule::new(&catalog::P01)),
+        Box::new(PhraseRule::new(&catalog::P01).excluding_quoted_mentions()),
         Box::new(PhraseRule::new(&catalog::P02)),
-        Box::new(PhraseRule::new(&catalog::P03)),
+        Box::new(PhraseRule::new(&catalog::P03).excluding_quoted_mentions()),
         Box::new(PhraseRule::new(&catalog::P04)),
         Box::new(PhraseRule::new(&catalog::P05)),
         Box::new(PhraseRule::new(&catalog::P06)),
@@ -148,6 +149,76 @@ mod tests {
             metric(&d[0], "matched"),
             "この事実は、利用者の関心が移ったことを示し"
         );
+    }
+
+    #[test]
+    fn conclusion_and_conjunction_skip_quoted_mentions() {
+        use crate::rules::testing::{matched, run};
+        let rules = rules(Genre::Tech);
+        for (id, phrase) in [("P01", "と言えるでしょう"), ("P03", "このように")] {
+            let rule = rules.iter().find(|r| r.meta().id == id).unwrap();
+            for (open, close) in [("「", "」"), ("『", "』"), ("“", "”"), ("\"", "\"")] {
+                for md in [
+                    format!("{open}{phrase}{close}という語を見直します。"),
+                    format!("{open}例として、**{phrase}**と書きます。{close}という説明です。"),
+                    format!("{open}準備は済みました。\n{phrase}と書きます。{close}という例です。"),
+                ] {
+                    assert!(run(rule.as_ref(), &md).is_empty(), "{id}: {md}");
+                }
+            }
+            let md = format!("「{phrase}」という語です。続いて{phrase}、確認します。");
+            assert_eq!(matched(&md, &run(rule.as_ref(), &md)), [phrase]);
+            let md = format!("「{phrase}という語を見直します。");
+            assert!(run(rule.as_ref(), &md).is_empty(), "{id}: {md}");
+            let md = format!("「前の例です。別の説明に{phrase}、確認します。");
+            assert_eq!(matched(&md, &run(rule.as_ref(), &md)), [phrase]);
+        }
+    }
+
+    #[test]
+    fn quoted_mentions_respect_scope_experiments_and_fragment_boundaries() {
+        use crate::document::{Document, ParseOptions, SourceFormat};
+        use crate::rules::Scope;
+        use crate::rules::testing::{Options, matched, run, run_doc, run_with};
+        use crate::segment::LineBreakMode;
+        let rules = rules(Genre::Tech);
+        let get = |id: &str| rules.iter().find(|r| r.meta().id == id).unwrap().as_ref();
+        let all = Options {
+            scope: Scope::ALL,
+            experimental: true,
+            ..Options::default()
+        };
+        for (id, phrase) in [("P01", "と言えるでしょう"), ("P03", "このように")] {
+            let md = format!("- 「{phrase}」という語です。\n\n> 実際に{phrase}、確認します。\n");
+            assert!(run(get(id), &md).is_empty());
+            assert_eq!(matched(&md, &run_with(get(id), &md, all)), [phrase]);
+            let md = format!("「先の例です。\n{phrase}と書きます。」\n\n{phrase}、確認します。");
+            let doc = Document::parse(
+                "<input>",
+                &md,
+                SourceFormat::Markdown,
+                &ParseOptions {
+                    line_breaks: LineBreakMode::Sentence,
+                },
+            );
+            assert_eq!(matched(&md, &run_doc(get(id), &doc, all)), [phrase]);
+            let md = format!("「閉じない例。\n\n{phrase}、確認します。");
+            assert_eq!(matched(&md, &run(get(id), &md)), [phrase]);
+            for prefix in ["\"説明\"", "5\"", "」"] {
+                let md = format!("{prefix}{phrase}、確認します。");
+                assert_eq!(matched(&md, &run(get(id), &md)), [phrase]);
+            }
+        }
+        for (id, md) in [
+            ("P01", "「結論から述べると、準備が必要です。」という例。"),
+            ("P03", "「つまり、確認が必要ということです」と書きます。"),
+        ] {
+            assert!(run_with(get(id), md, all).is_empty(), "{id}");
+        }
+        let md = "「それでは、確認していきます」という例です。";
+        assert_eq!(matched(md, &run(get("P02"), md)), ["それでは、"]);
+        let md = "「このように」は避けます。**このように**、確認します。";
+        assert_eq!(matched(md, &run(get("P03"), md)), ["このように"]);
     }
 
     #[test]

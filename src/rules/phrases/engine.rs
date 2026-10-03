@@ -5,6 +5,8 @@
 
 use std::ops::Range;
 
+use super::quotes::QuoteRanges;
+
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use regex::Regex;
 
@@ -291,6 +293,7 @@ pub(super) struct PhraseRule {
     stable: Matcher,
     /// 実験的な項目も含む照合器。
     full: Matcher,
+    exclude_quoted_mentions: bool,
 }
 
 impl PhraseRule {
@@ -299,7 +302,14 @@ impl PhraseRule {
             spec,
             stable: Matcher::new(spec.entries, false),
             full: Matcher::new(spec.entries, true),
+            exclude_quoted_mentions: false,
         }
+    }
+
+    /// 対応する引用符の内側と、開き引用符の直後にある語句を言及として除く。
+    pub fn excluding_quoted_mentions(mut self) -> Self {
+        self.exclude_quoted_mentions = true;
+        self
     }
 }
 
@@ -317,6 +327,9 @@ impl Rule for PhraseRule {
         let use_full = self.spec.meta.status == RuleStatus::Experimental || ctx.experimental;
         let matcher = if use_full { &self.full } else { &self.stable };
         for (idx, block) in ctx.scoped_blocks() {
+            let quotes = self
+                .exclude_quoted_mentions
+                .then(|| QuoteRanges::new(&block.text));
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
                 for hit in matcher.find(text) {
@@ -324,6 +337,9 @@ impl Rule for PhraseRule {
                     let matched = &text[hit.range.clone()];
                     let abs = (sentence.range.start + hit.range.start)
                         ..(sentence.range.start + hit.range.end);
+                    if quotes.as_ref().is_some_and(|q| q.excludes(&abs)) {
+                        continue;
+                    }
                     let mut message = self.spec.message.replace("{m}", &quote(matched));
                     if let Some(note) = entry.note {
                         message.push_str(&format!("（{note}）"));
