@@ -1,9 +1,9 @@
-//! コードのファイルのコメントを、文章として検査するためのブロックにする (tree-sitter)。
+//! コードのコメントと静的な文言を、文章として検査するためのブロックにする (tree-sitter)。
 //!
 //! 言語ごとの文法でコメント (と Python の docstring) を取り出し、コメントの記号を外した本文を
 //! ブロックにする。位置は原文 (コードのファイル) のバイト位置に戻す。コードのファイルの文書は
 //! 互いに独立した断片の集まり ([`DocumentKind::Fragments`](crate::document::DocumentKind)) として
-//! 扱い、文ごとに判定するルールだけを当てる。文字列のリテラルは読まない。
+//! 扱い、文ごとに判定するルールだけを当てる。静的な文字列と JSX/HTML の文言も独立した断片として読む。
 //!
 //! 流れは次のとおり。
 //!
@@ -18,8 +18,9 @@
 mod body;
 mod build;
 mod extract;
+mod static_text;
 
-use crate::document::{Block, Directive};
+use crate::document::{Block, Directive, ParseOptions};
 
 /// コメントを読める言語。
 ///
@@ -141,18 +142,37 @@ impl CodeLanguage {
     }
 }
 
-/// コードのファイルから、コメントの本文のブロックと抑制のコメントを取り出す。
+/// コードからコメントと静的な文言のブロック、抑制のコメントを取り出す。
 ///
 /// ブロックの解析用テキストはコメントの記号を外した本文で、[`Block::to_source`] で原文
 /// (`source`) のバイト位置に戻る。
 pub fn parse(source: &str, language: CodeLanguage) -> (Vec<Block>, Vec<Directive>) {
-    let Some(raws) = extract::comments(source, language) else {
+    parse_with_options(source, language, &ParseOptions::default())
+}
+
+/// 設定を指定して、コメントと静的な文言を取り出す。
+pub fn parse_with_options(
+    source: &str,
+    language: CodeLanguage,
+    options: &ParseOptions,
+) -> (Vec<Block>, Vec<Directive>) {
+    let Some(tree) = extract::tree(source, language) else {
         return (Vec::new(), Vec::new());
     };
+    let raws = extract::comments(source, language, &tree);
+    let owned: Vec<_> = raws.iter().map(|c| c.span).collect();
     let (comments, mut directives) = body::prepare(source, raws);
     let mut blocks = Vec::new();
     for group in body::group(source, comments) {
         build::build(source, &group, &mut blocks, &mut directives);
+    }
+    if options.static_text {
+        blocks.extend(static_text::extract(
+            source,
+            language,
+            tree.root_node(),
+            &owned,
+        ));
     }
     blocks.sort_by_key(|b| b.span.start);
     directives.sort_by_key(|d| d.span.start);

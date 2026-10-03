@@ -105,7 +105,7 @@ noslop skill-install claude --dir .claude/skills  # プロジェクトに置く
 
 | ツール | 引数 | 返すもの |
 |---|---|---|
-| `check` | `text` (必須)、`filename` (拡張子で Markdown・テキスト・コードを判断。コードならコメントだけを検査する)、`genre`、`experimental`、`report` (`brief` 既定 / `full`)、`format` (`markdown` / `json` / `toon`) | `report: brief` は改稿指示 (`format` の既定は `markdown`)、`report: full` は `check --format json` と同じ全指摘のレポート (`format` の既定は `json`)。`markdown` は `brief` のときだけ |
+| `check` | `text` (必須)、`filename` (拡張子で Markdown・テキスト・コードを判断。コードならコメント・静的な文字列・JSX/HTML の文言を検査する。`[code] static_text = false` でコメント/docstring のみにできる)、`genre`、`experimental`、`report` (`brief` 既定 / `full`)、`format` (`markdown` / `json` / `toon`) | `report: brief` は改稿指示 (`format` の既定は `markdown`)、`report: full` は `check --format json` と同じ全指摘のレポート (`format` の既定は `json`)。`markdown` は `brief` のときだけ |
 | `diff` | `before`・`after` (必須)、`filename`、`genre`、`experimental`、`format` (`text` 既定 / `json` / `toon`) | `noslop diff` と同じ確認事項 (新しく出た指摘・事実の変化・改稿の偏り)。text は端末向けの書式を外して返す |
 | `explain` | `rule` (必須、ID か名前)、`genre` | `noslop explain` と同じ説明 |
 | `rules` | `genre`、`experimental` | `noslop rules` と同じ一覧 |
@@ -221,7 +221,7 @@ Claude Code のフックとして、次の 3 つのイベントを検査しま�
 
 ### 書き換えたファイル (PostToolUse)
 
-- 対象は Write / Edit / MultiEdit で、設定の `[files] extensions` (既定 `md` / `markdown` / `txt`) か `[code] extensions` (コメントを検査するコードの拡張子。既定は空) の拡張子を持ち、`[files] exclude` と `.noslopignore` に当たらないファイルだけです
+- 対象は Write / Edit / MultiEdit で、設定の `[files] extensions` (既定 `md` / `markdown` / `txt`) か `[code] extensions` (コードの文言を検査する拡張子。既定は空) の拡張子を持ち、`[files] exclude` と `.noslopignore` に当たらないファイルだけです
 - 返すのは、今回のツール呼び出しで変わった行に、指摘の箇所か文脈 (文・段落) が重なるものだけです。編集のたびに同じ指摘を渡して、残すと決めた箇所まで直させないためです。変わった行は、ツールの結果にある差分 (`tool_response.structuredPatch`) から求めます。差分がなければ Edit / MultiEdit の `new_string` の位置から求め、同じ文字列がほかにもある・削除だけの編集・見つからない (別のフックが整形したなど) ときは、ファイル全体の指摘を返します。新しく作ったファイルも全体を見ます。常にファイル全体を見るなら `--whole-file` を付けます
 - 返す改稿指示は、1 行目で指摘をレーンごとに数え (「noslop が draft.md に AI 臭さの疑いを 2 件、独自ルールの指摘を 1 件見つけました。」。0 件のレーンは出しません)、改稿のルールに続けて、ルールごとの件数 (「AI 臭さ・警告 1 件」)・直し方の方向・該当箇所を並べます
 - 8 MiB を超えるファイルは検査せずに飛ばします。編集のたびに指摘が出るのが煩わしいときは、1 ルールあたりの箇所を減らす (`--brief-limit 1`) か、読みやすさのルールを止めたまま (既定) にします
@@ -289,7 +289,7 @@ printf '{"hook_event_name":"Stop","cwd":"%s","stop_hook_active":false}' "$PWD" |
 
 - 拡張子のキーにも noslop を書くと、そのファイルでは 2 回動きます (`claw-hooks check` が警告します)
 - `"*"` は claw-hooks v26.9.103 以上で書けます。古い版は設定の誤りとして扱い、シェルのコマンドをすべて止めるので、入っている claw-hooks をすべて上げてから書いてください。古い版では、拡張子ごとのキー (`".md" = ["noslop hook file --max-chars 900 {file}"]` など) に並べます
-- コードのコメントも見るなら、noslop の設定の `[code] extensions` にコードの拡張子を書きます (`noslop init` のひな形に、読める拡張子すべてを並べてあります)
+- コードのコメントと静的な文言も見るなら、noslop の設定の `[code] extensions` にコードの拡張子を書きます (`noslop init` のひな形に、読める拡張子すべてを並べてあります)
 
 ### 動き
 

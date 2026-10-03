@@ -17,12 +17,12 @@ use crate::text;
 pub enum SourceFormat {
     Markdown,
     PlainText,
-    /// コードのファイル。コメントだけを読む ([`crate::code`])。
+    /// コードのファイル。コメントと静的な文言を読む ([`crate::code`])。
     Code(CodeLanguage),
 }
 
 impl SourceFormat {
-    /// 拡張子から形式を推定する。Markdown 系の拡張子は Markdown、コードの拡張子はコード (コメントだけを
+    /// 拡張子から形式を推定する。Markdown 系の拡張子は Markdown、コードの拡張子はコード (コメントと静的な文言を
     /// 読む)、ほかはテキストとして扱う。
     pub fn from_path(path: &Path) -> Self {
         let Some(ext) = path
@@ -61,9 +61,20 @@ pub enum DocumentKind {
 }
 
 /// 文書の読み込み方の設定。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct ParseOptions {
     pub line_breaks: LineBreakMode,
+    /// コード内の静的な日本語の文字列と表示文言を読む。
+    pub static_text: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self {
+            line_breaks: LineBreakMode::default(),
+            static_text: true,
+        }
+    }
 }
 
 /// ブロックの種類。
@@ -426,7 +437,9 @@ impl Document {
         let (mut blocks, directives) = match format {
             SourceFormat::Markdown => crate::markdown::parse(&source),
             SourceFormat::PlainText => crate::plaintext::parse(&source),
-            SourceFormat::Code(language) => crate::code::parse(&source, language),
+            SourceFormat::Code(language) => {
+                crate::code::parse_with_options(&source, language, options)
+            }
         };
         let sentences = split_sentences(&mut blocks, options);
         let lines = LineIndex::new(&source);
@@ -626,7 +639,13 @@ mod tests {
         blocks.insert(1, empty);
 
         for (mode, first_count) in [(LineBreakMode::Space, 1), (LineBreakMode::Sentence, 2)] {
-            let sentences = split_sentences(&mut blocks, &ParseOptions { line_breaks: mode });
+            let sentences = split_sentences(
+                &mut blocks,
+                &ParseOptions {
+                    line_breaks: mode,
+                    ..ParseOptions::default()
+                },
+            );
             assert_eq!(blocks[0].sentences, 0..first_count);
             assert_eq!(blocks[1].sentences, first_count..first_count);
             assert_eq!(blocks[2].sentences, first_count..first_count + 2);

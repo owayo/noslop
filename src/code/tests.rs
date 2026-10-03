@@ -4,13 +4,48 @@ use super::*;
 use crate::document::{BlockKind, DirectiveKind, Document, ParseOptions, SourceFormat};
 use crate::text;
 
+#[test]
+fn static_display_text_is_read_from_tsx_and_html() {
+    for (lang, src, expected) in [
+        (
+            CodeLanguage::Tsx,
+            "const message = \"保存を確認します。\"; const view = <div title=\"操作の説明です。\"><p>結果を表示します。</p></div>;",
+            vec![
+                "保存を確認します。",
+                "操作の説明です。",
+                "結果を表示します。",
+            ],
+        ),
+        (
+            CodeLanguage::Html,
+            "<html><body><p>結果を表示します。</p></body></html>",
+            vec!["結果を表示します。"],
+        ),
+    ] {
+        let d = Document::parse(
+            "sample",
+            src,
+            SourceFormat::Code(lang),
+            &ParseOptions::default(),
+        );
+        assert_eq!(
+            d.blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(),
+            expected
+        );
+        assert_exact(&d);
+    }
+}
+
 /// コードとして読んだ文書 (解析用テキストの日本語の字が原文の同じ字に戻ることも確かめる)。
 fn doc(src: &str, lang: CodeLanguage) -> Document {
     let doc = Document::parse(
         format!("<input>.{}", lang.extensions()[0]),
         src,
         SourceFormat::Code(lang),
-        &ParseOptions::default(),
+        &ParseOptions {
+            static_text: false,
+            ..ParseOptions::default()
+        },
     );
     assert_exact(&doc);
     doc
