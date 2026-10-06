@@ -300,7 +300,12 @@ const P06_ENTRIES: &[Entry] = &[
     Entry::lit("言うまでもありません", Warning),
     Entry::lit("まさしく", Warning),
     Entry::weak("重要なのは"),
-    Entry::weak("ポイントは"),
+    // カタカナ複合語の一部を除く。長音・濁点は半角と分解された表記も含める。
+    Entry::re(
+        r"(?:^|[^\p{sc=Katakana}ーｰ゛゜ﾞﾟ\x{3099}\x{309A}])(?P<m>ポイントは)",
+        Info,
+    )
+    .with_note(WEAK_SIGNAL_NOTE),
     // 「非常に重要です」のように前に強調語があれば、先に始まる長い一致が優先される
     Entry::exp_lit("重要です", Info),
     // 「〜なのは、」で要点を先回りして持ち上げる形 (擬似分裂文)。「大切」「重要」は校正済みの
@@ -330,6 +335,8 @@ pub(super) static P06: PhraseSpec = PhraseSpec {
         explanation: r"### 何を見るか
 
 「非常に重要」「極めて重要」「大切なのは」「言うまでもなく」のように、重要さを語で言い立てる表現を探します。
+
+「ポイントは」は、直前がカタカナ (半角・長音・濁点・半濁点を含む) なら複合語の一部として除きます。「エンドポイントは」「エントリーポイントは」「キーポイントは」などは指摘しません。文頭や、ひらがな・漢字・読点・中黒・括弧の後では指摘します。
 
 実験的な項目として、次の 2 つも探します。
 
@@ -1163,6 +1170,61 @@ mod tests {
             vec!["非常に重要", "言うまでもなく", "ポイントは"]
         );
         assert_eq!(d[2].severity, Severity::Info);
+    }
+
+    #[test]
+    fn p06_point_phrase_ignores_katakana_compounds() {
+        for prefix in [
+            "エンド",
+            "エントリー",
+            "ブレーク",
+            "チェック",
+            "アクセス",
+            "ｴﾝﾄﾞ",
+            "ｴﾝﾄﾘｰ",
+            "ｱｸｾｽ",
+            "ロク\u{3099}",
+            "サンフ\u{309A}",
+            "キーホ゛",
+            "サンフ゜",
+            "ｻﾝﾌﾟ",
+            "キー",
+            "ㇰ",
+        ] {
+            let md = format!("{prefix}ポイントは設定画面で確認する。\n");
+            for options in [Options::default(), experimental()] {
+                assert!(run_with(&rule(&P06), &md, options).is_empty(), "{md}");
+            }
+        }
+    }
+
+    #[test]
+    fn p06_standalone_point_phrase_keeps_its_span_and_weak_signal() {
+        for (md, expected) in [
+            ("ポイントは保存先を分けることだ。\n", 1),
+            ("このポイントは保存先を分けることだ。\n", 1),
+            ("最大のポイントは保存先を分けることだ。\n", 1),
+            ("注目ポイントは保存先を分けることだ。\n", 1),
+            ("確認したい点、ポイントは保存先を分けることだ。\n", 1),
+            ("設定・ポイントは保存先を分けることだ。\n", 1),
+            ("「ポイントは保存先を分けることだ」と伝える。\n", 1),
+            ("この**ポイントは**保存先を分けることだ。\n", 1),
+            (
+                "エンドポイントは別々に指定する。ポイントは保存先を分けることだ。\n",
+                1,
+            ),
+            ("ポイントは、ポイントは保存先だ。\n", 2),
+        ] {
+            for options in [Options::default(), experimental()] {
+                let d = run_with(&rule(&P06), md, options);
+                assert_eq!(matched(md, &d), vec!["ポイントは"; expected], "{md}");
+                assert!(d.iter().all(|d| {
+                    d.status == RuleStatus::Stable
+                        && d.severity == Severity::Info
+                        && d.message.contains(WEAK_SIGNAL_NOTE)
+                }));
+            }
+        }
     }
 
     #[test]

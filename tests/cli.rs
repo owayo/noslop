@@ -32,6 +32,60 @@ const DOC_WITH_TERM: &str =
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
 #[test]
+fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
+    for (filename, source) in [
+        (
+            "sample.md",
+            "エンド**ポイントは**設定画面で確認する。\n\nこの**ポイントは**保存先を分けることだ。\n",
+        ),
+        (
+            "sample.txt",
+            "チェックポイントは設定画面で確認する。\n\nポイントは保存先を分けることだ。\n",
+        ),
+        (
+            "sample.rs",
+            "// ブレークポイントは設定画面で確認する。\nconst MESSAGE: &str = \"このポイントは保存先を分けることだ。\";\n",
+        ),
+        (
+            "sample.tsx",
+            "const view = <p>エントリーポイントは設定画面で確認する。</p>;\nconst tip = <p>ポイントは保存先を分けることだ。</p>;\n",
+        ),
+    ] {
+        let output = noslop()
+            .args([
+                "check",
+                "-",
+                "--stdin-filename",
+                filename,
+                "--no-config",
+                "--no-dict",
+                "--only-rules",
+                "P06",
+                "--format",
+                "json",
+            ])
+            .write_stdin(source)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&output);
+        assert_eq!(rule_count(&report, "P06"), 1, "{filename}: {report}");
+        let diagnostic = &report["files"][0]["diagnostics"][0];
+        assert_eq!(diagnostic["metrics"]["matched"], "ポイントは");
+        assert_eq!(diagnostic["severity"], "info");
+        assert_eq!(diagnostic["status"], "stable");
+        let start = source.rfind("ポイントは").unwrap();
+        assert_eq!(diagnostic["range"]["start"]["offset"], start);
+        assert_eq!(
+            diagnostic["range"]["end"]["offset"],
+            start + "ポイントは".len()
+        );
+    }
+}
+
+#[test]
 fn closing_call_to_action_respects_opt_in_genre_and_document_kind() {
     for (filename, genre, flags, expected) in [
         ("draft.md", "general", vec![], 0),
