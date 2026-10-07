@@ -4,9 +4,9 @@
 //! 辞書だけでは誤爆する構文の型 ([`syntax`]) と、読みやすさのルール ([`reading`]) は
 //! 個別に実装している。
 //!
-//! どのルールも `RuleContext::scoped_blocks` が返すブロック (既定は地の文の段落だけ) の
-//! 文ごとに照合し、文をまたぐ一致はしない。記法の残骸 ([`markup`]、P23) だけは、置き場所を
-//! 問わず見える記号を拾うので、スコープに従わず全ブロックを行ごとに見る。
+//! 多くのルールは `RuleContext::scoped_blocks` が返すブロック (既定は地の文の段落だけ) の
+//! 文ごとに照合し、文をまたぐ一致はしない。引用マーカーと記法の残骸 ([`artifacts`]、P22・
+//! [`markup`]、P23) は、置き場所を問わず見える記号を拾うので、スコープに従わず全ブロックを行ごとに見る。
 
 mod artifacts;
 mod attribution;
@@ -51,7 +51,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(PhraseRule::new(&catalog::P19)),
         Box::new(syntax::ColonContinuation),
         Box::new(attribution::VagueAttribution),
-        Box::new(PhraseRule::new(&artifacts::P22)),
+        Box::new(artifacts::CitationArtifact::new()),
         Box::new(markup::MarkupResidue),
         Box::new(PhraseRule::new(&effect::P24)),
         Box::new(stance::SourceStance),
