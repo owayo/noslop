@@ -3,9 +3,11 @@
 use std::collections::HashSet;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::document::{Block, Document};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 
 use super::engine::{Entry, Matcher, PhraseSpec, diagnostic};
+use super::location::{line_offsets, sentence_context, single_line_span};
 
 static P22: PhraseSpec = PhraseSpec {
     meta: RuleMeta {
@@ -70,6 +72,41 @@ impl CitationArtifact {
             matcher: Matcher::new(P22.entries, true),
         }
     }
+
+    /// 見出しの属性として除かれた引用記号の末尾を、同じ原文位置の本文から補う。
+    fn check_heading(
+        &self,
+        doc: &Document,
+        block: &Block,
+        seen: &mut HashSet<Span>,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        if !block.is_heading() {
+            return;
+        }
+        let source = doc.slice(block.span);
+        for hit in self.matcher.find(source) {
+            let matched = &source[hit.range.clone()];
+            let Some((prefix, _)) = matched.rsplit_once("{index=") else {
+                continue;
+            };
+            let span = Span::new(
+                block.span.start + hit.range.start,
+                block.span.start + hit.range.end,
+            );
+            let prefix_span = Span::new(span.start, span.start + prefix.len());
+            // 原文だけを広く走査すると、コード・コメント・URL の中まで拾ってしまう。
+            if !seen.contains(&span)
+                && block
+                    .text
+                    .match_indices(prefix)
+                    .any(|(start, _)| block.to_source(start..start + prefix.len()) == prefix_span)
+            {
+                seen.insert(span);
+                out.push(finding(span, block.span, matched, &P22.entries[hit.entry]));
+            }
+        }
+    }
 }
 
 fn finding(span: Span, context: Span, matched: &str, entry: &Entry) -> Diagnostic {
@@ -99,54 +136,22 @@ impl Rule for CitationArtifact {
         let doc = ctx.doc;
         let mut seen = HashSet::new();
         for (idx, block) in doc.blocks.iter().enumerate() {
-            let mut line_start = 0;
-            for line in block.text.split('\n') {
+            for (line_start, line) in line_offsets(&block.text) {
                 for hit in self.matcher.find(line) {
                     let range = line_start + hit.range.start..line_start + hit.range.end;
-                    let span = block.to_source(range.clone());
-                    // Markdown の折り返しが解析用本文で空白になっていても、原文の行をまたがない。
-                    if span.is_empty()
-                        || doc.lines.line(span.start) != doc.lines.line(span.end - 1)
-                        || !seen.insert(span)
-                    {
+                    let Some(span) = single_line_span(doc, block, range.clone()) else {
+                        continue;
+                    };
+                    if !seen.insert(span) {
                         continue;
                     }
                     let entry = &P22.entries[hit.entry];
                     let matched = &block.text[range.clone()];
-                    let context = doc
-                        .block_sentences(idx)
-                        .iter()
-                        .find(|s| s.range.start <= range.start && range.start < s.range.end)
-                        .map_or(block.span, |s| s.span);
+                    let context = sentence_context(doc, idx, range.start);
                     out.push(finding(span, context, matched, entry));
                 }
-                line_start += line.len() + 1;
             }
-            if block.is_heading() {
-                // 見出しの末尾の {index=…} は Markdown の属性として本文から除かれることがある。
-                // 原文に完全な記号があり、属性より前の部分が同じ位置の本文に残るときだけ補う。
-                // 原文だけを広く走査すると、コード・コメント・URL の中まで拾ってしまう。
-                let source = doc.slice(block.span);
-                for hit in self.matcher.find(source) {
-                    let matched = &source[hit.range.clone()];
-                    let Some((prefix, _)) = matched.rsplit_once("{index=") else {
-                        continue;
-                    };
-                    let span = Span::new(
-                        block.span.start + hit.range.start,
-                        block.span.start + hit.range.end,
-                    );
-                    let prefix_span = Span::new(span.start, span.start + prefix.len());
-                    if !seen.contains(&span)
-                        && block.text.match_indices(prefix).any(|(start, _)| {
-                            block.to_source(start..start + prefix.len()) == prefix_span
-                        })
-                    {
-                        seen.insert(span);
-                        out.push(finding(span, block.span, matched, &P22.entries[hit.entry]));
-                    }
-                }
-            }
+            self.check_heading(doc, block, &mut seen, out);
         }
     }
 }
