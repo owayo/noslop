@@ -191,10 +191,16 @@ noslop explain R01
 
 ユーザーの設定は `~/.config/noslop/config.toml`、プロジェクトの設定は `noslop.toml`（または `.noslop.toml`）に置きます。既定値 → ユーザーの設定 → プロジェクトの設定 → CLI の順に、書いた項目を上書きします。
 
+設定ファイルのひな形は `noslop init` で作れます。
+
 ```bash
-noslop init --user
-noslop init
+noslop init --user   # ~/.config/noslop/config.toml のひな形を作る (ディレクトリがなければ作る)
+noslop init          # カレントディレクトリに noslop.toml のひな形を作る
 ```
+
+ひな形は項目をすべてコメントにしてあり、そのままでは何も設定しません。項目ごとの説明もコメントで添えてあるので、変えたい項目だけ行頭の `#` を外して書き換えます。ファイルがすでにあるときは上書きせずに止まります。上書きするには `--force` を付けます。
+
+ジャンルと辞書を指定するなら、次のように書きます。
 
 ```toml
 genre = "tech"
