@@ -46,8 +46,13 @@ static META: RuleMeta = RuleMeta {
 pub(super) struct SourceStance;
 
 static SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?P<noun>(?:本書|この本|書籍|(?:この|その|本)?(?:記事|論文|資料|ドキュメント))の筆者|本書|この本|本|著者|この章|本章|(?:この|本)?(?:記事|論文|資料|ドキュメント))(?:では|は|が)")
-        .expect("出典の主語")
+    Regex::new(concat!(
+        // 出典を直接添えた「筆者」を、通常の主語より先に照合する。
+        r"(?P<noun>(?:本書|この本|書籍|(?:この|その|本)?(?:記事|論文|資料|ドキュメント))の筆者|",
+        r"本書|この本|本|著者|この章|本章|(?:この|本)?(?:記事|論文|資料|ドキュメント))",
+        r"(?:では|は|が)",
+    ))
+    .expect("出典の主語")
 });
 
 static PREDICATE: LazyLock<Regex> = LazyLock::new(|| {

@@ -15,6 +15,7 @@ mod closer;
 mod effect;
 mod engine;
 mod jargon;
+mod location;
 mod markup;
 mod permission;
 mod quotes;
