@@ -12,7 +12,7 @@
 | `noslop diff <BEFORE> <AFTER>` | 改稿の前後を比べる（新しく出た指摘・消えた事実・改稿の偏り） |
 | `noslop rules` | ルールの一覧を表示する |
 | `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
-| `noslop init` | プロジェクトの設定ファイル `noslop.toml` の雛形を作る。`--user` ならユーザーの設定 `~/.config/noslop/config.toml` の雛形を作る |
+| `noslop init` | プロジェクトの設定ファイル `noslop.toml` のひな形を作る。`--user` ならユーザーの設定 `~/.config/noslop/config.toml` のひな形を作る |
 | `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
 | `noslop hook claude-code` | Claude Code のフックとして、書き換えたファイル（PostToolUse）・gws で書き込む値（PreToolUse）・コミットしていない変更（Stop）の指摘を返す |
 | `noslop hook command` | claw-hooks のコマンドフックの判定器として、gws で Google ドキュメント・スプレッドシートに書き込む値を書き込む前に検査する |
