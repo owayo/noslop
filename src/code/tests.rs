@@ -390,6 +390,39 @@ x=${y#pre} # 展開の後ろのコメントです。
 }
 
 #[test]
+fn bash_commented_commands_do_not_become_prose() {
+    let src = "#!/bin/sh\n# 実行前に入力を確認する。\n# uv run convert ~/books/庭の観察記録.htmlz\n# uv run convert ./books/朝の庭で見つけた葉の形と色を順に書き留めた秋の観察記録_sample.htmlz --toc-selector \"#entry-3\"\n# uv run convert \"~/My Books/日本語.htmlz\"\n# uv run convert \\\n#   --out ~/出力 \\\n#   ~/books/入力.htmlz\n# uv run convert --title=日本語\n# ./日本語.sh\n# 変換後の結果を確認する。\n# uv を使って変換する理由を説明する。\n# uv --version で版を確認する\n";
+    assert_eq!(
+        outline(src, CodeLanguage::Bash),
+        [
+            "P:実行前に入力を確認する。",
+            "P:変換後の結果を確認する。 uv を使って変換する理由を説明する。 uv --version で版を確認する",
+        ]
+    );
+    assert_eq!(
+        outline(
+            "# uv run convert ~/books/日本語.htmlz\n",
+            CodeLanguage::Python
+        ),
+        ["P:uv run convert ~/books/日本語.htmlz"]
+    );
+    assert_eq!(
+        outline(
+            "echo done # uv run convert ~/books/日本語.htmlz\n",
+            CodeLanguage::Bash
+        ),
+        ["P:uv run convert ~/books/日本語.htmlz"]
+    );
+    assert_eq!(
+        outline(
+            "# make ./distを作ってから配布する\n# --releaseを付けると速くなるが\n# 次の手順を先に確認する。\n",
+            CodeLanguage::Bash
+        ),
+        ["P:make ./distを作ってから配布する --releaseを付けると速くなるが次の手順を先に確認する。"]
+    );
+}
+
+#[test]
 fn yaml_and_toml_comments_skip_strings() {
     let src = "# 先頭のコメントです。\nkey: \"# 文字列の中\" # 行末のコメントです。\ntext: |\n  # ブロックの文字列の中\n";
     assert_eq!(

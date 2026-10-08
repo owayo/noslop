@@ -12,10 +12,12 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::CodeLanguage;
 use super::extract::{RawComment, Reading, Shape};
 use crate::diagnostic::Span;
 use crate::directive;
 use crate::document::{Directive, LineIndex};
+use crate::text;
 
 /// ツールへの指示で始まるコメント (リンター・整形・型検査・カバレッジ・エディタの設定など)。
 ///
@@ -80,13 +82,19 @@ pub(super) struct Group {
 }
 
 /// コメントを本文の行にし、検査から外すものを除く。抑制コメントは [`Directive`] にして返す。
-pub(super) fn prepare(source: &str, raws: Vec<RawComment>) -> (Vec<Comment>, Vec<Directive>) {
+pub(super) fn prepare(
+    source: &str,
+    language: CodeLanguage,
+    raws: Vec<RawComment>,
+) -> (Vec<Comment>, Vec<Directive>) {
     let index = LineIndex::new(source);
     let mut comments = Vec::new();
     let mut directives = Vec::new();
     for raw in raws {
         let lines = body_lines(source, &raw);
         let body = joined(source, &lines);
+        let line_start = source[..raw.span.start].rfind('\n').map_or(0, |i| i + 1);
+        let trailing = !source[line_start..raw.span.start].trim().is_empty();
         if raw.shape != Shape::Docstring {
             // shebang (ファイルの 1 行目の `#!`)
             if raw.span.start == 0 && source.starts_with("#!") {
@@ -99,18 +107,132 @@ pub(super) fn prepare(source: &str, raws: Vec<RawComment>) -> (Vec<Comment>, Vec
             if TOOL_DIRECTIVE.is_match(body.trim_start()) {
                 continue;
             }
+            if language == CodeLanguage::Bash
+                && raw.shape == Shape::Line
+                && !trailing
+                && is_shell_command(&body)
+            {
+                continue;
+            }
         }
-        let line_start = source[..raw.span.start].rfind('\n').map_or(0, |i| i + 1);
         comments.push(Comment {
             first_line: index.line(raw.span.start),
             last_line: index.line(raw.span.end.saturating_sub(1).max(raw.span.start)),
             column: raw.span.start - line_start,
-            trailing: !source[line_start..raw.span.start].trim().is_empty(),
+            trailing,
             lines,
             raw,
         });
     }
     (comments, directives)
+}
+
+/// コマンドをコメントアウトした行か。説明文にあるコマンド名だけでは除外しない。
+fn is_shell_command(body: &str) -> bool {
+    let body = body.trim();
+    if body.ends_with(['。', '！', '？']) {
+        return false;
+    }
+    let words = shell_words(body);
+    let Some(command) = words.first() else {
+        return false;
+    };
+    let option = |word: &ShellWord| {
+        let Some(rest) = word.text.strip_prefix("--") else {
+            return false;
+        };
+        let name = rest.split_once('=').map_or(rest, |(name, _)| name);
+        name.chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    };
+    let path = |word: &ShellWord| {
+        let has_extension = word
+            .text
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.rsplit_once('.'))
+            .is_some_and(|(_, ext)| {
+                !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            });
+        ["~/", "./", "../", "/"]
+            .iter()
+            .any(|prefix| word.text.starts_with(prefix) && word.text.len() > prefix.len())
+            && (!text::contains_japanese(&word.text)
+                || word.quoted
+                || body.ends_with('\\')
+                || option(command)
+                || word.text.ends_with('/')
+                || has_extension)
+    };
+    let name = command
+        .text
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase() || first == '_')
+        && command
+            .text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | '/'));
+    if !name && !path(command) && !option(command) {
+        return false;
+    }
+    if words
+        .iter()
+        .any(|word| text::contains_japanese(&word.text) && !path(word) && !option(word))
+    {
+        return false;
+    }
+    words.iter().any(|word| option(word) || path(word))
+}
+
+struct ShellWord {
+    text: String,
+    quoted: bool,
+}
+
+/// 引用符の内側の空白を保って、コマンドらしさの判定に使う語へ分ける。
+fn shell_words(body: &str) -> Vec<ShellWord> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut quote = None;
+    let mut escaped = false;
+    for c in body.chars() {
+        if escaped {
+            word.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if quote != Some('\'') => escaped = true,
+            '\'' | '"' if quote == Some(c) => quote = None,
+            '\'' | '"' if quote.is_none() => {
+                quote = Some(c);
+                quoted = word.is_empty();
+            }
+            c if c.is_whitespace() && quote.is_none() => {
+                if !word.is_empty() {
+                    words.push(ShellWord {
+                        text: std::mem::take(&mut word),
+                        quoted,
+                    });
+                    quoted = false;
+                }
+            }
+            _ => word.push(c),
+        }
+    }
+    if escaped {
+        word.push('\\');
+    }
+    if !word.is_empty() {
+        words.push(ShellWord { text: word, quoted });
+    }
+    words
 }
 
 /// 同じ記号の行のコメントが同じ列から隣り合う行に続くものをまとめ、著作権・ライセンスの表記を除く。
@@ -347,6 +469,35 @@ mod tests {
             "設定を読む",
         ] {
             assert!(!TOOL_DIRECTIVE.is_match(body), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn shell_commands_need_a_path_or_a_long_option() {
+        for body in [
+            "uv run convert ~/books/日本語.htmlz",
+            "uv run convert \"~/My Books/日本語.htmlz\"",
+            "uv run convert \"~/日本語\"",
+            "uv run convert --title=日本語",
+            "--out ~/出力 \\",
+            "--out ~/出力",
+            "./日本語.sh",
+        ] {
+            assert!(is_shell_command(body), "{body:?}");
+        }
+        for body in [
+            "Use ./日本語.md for setup",
+            "uv --version で版を確認する",
+            "uv run convert ~/books/日本語.htmlz を実行する。",
+            "make ./distを作ってから配布する",
+            "make ./distを作るabc",
+            "--releaseを付けると速くなるが",
+            "uv run convert ~/books/日本語.htmlzを変換する",
+            "run ---",
+            "run --",
+            "run /",
+        ] {
+            assert!(!is_shell_command(body), "{body:?}");
         }
     }
 }
