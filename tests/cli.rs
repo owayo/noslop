@@ -86,6 +86,72 @@ fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
 }
 
 #[test]
+fn citation_artifacts_check_visible_blocks_and_keep_exact_offsets() {
+    for (filename, source, expected) in [
+        (
+            "sample.md",
+            "# 案内 [cite: 0]\n\n- 結果 [cite: 1]\n\n> 根拠 [cite: 2]\n\n| 根拠 |\n| --- |\n| [cite: 3] |\n\n`[cite: 4]` は記法の説明です。\n",
+            vec!["[cite: 0]", "[cite: 1]", "[cite: 2]", "[cite: 3]"],
+        ),
+        (
+            "sample.rs",
+            "// 結果 [cite: 1]\nconst TEXT: &str = \"根拠 [cite: 2]\";\n",
+            vec!["[cite: 1]", "[cite: 2]"],
+        ),
+        (
+            "sample.txt",
+            "根拠 [cite: 1]\r\n結果 [cite: 2]\r\n",
+            vec!["[cite: 1]", "[cite: 2]"],
+        ),
+    ] {
+        for selected in [false, true] {
+            let mut cmd = noslop();
+            cmd.args([
+                "check",
+                "-",
+                "--stdin-filename",
+                filename,
+                "--no-config",
+                "--no-dict",
+                "--format",
+                "json",
+                "--fail-on",
+                "never",
+            ]);
+            if selected {
+                cmd.args(["--only-rules", "P22"]);
+            }
+            let output = cmd
+                .write_stdin(source)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let report = json(&output);
+            let findings: Vec<_> = report["files"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["ruleId"] == "P22")
+                .collect();
+            if !selected {
+                assert!(findings.is_empty(), "{filename}");
+                continue;
+            }
+            assert_eq!(findings.len(), expected.len(), "{filename}");
+            for (d, marker) in findings.iter().zip(&expected) {
+                let start = source.find(marker).unwrap();
+                assert_eq!(d["range"]["start"]["offset"], start, "{filename}");
+                assert_eq!(d["range"]["end"]["offset"], start + marker.len());
+                assert_eq!(d["status"], "experimental");
+                assert_eq!(d["metrics"]["matched"], *marker);
+            }
+        }
+    }
+}
+
+#[test]
 fn closing_call_to_action_respects_opt_in_genre_and_document_kind() {
     for (filename, genre, flags, expected) in [
         ("draft.md", "general", vec![], 0),
