@@ -13,6 +13,7 @@ use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
 
 use super::engine::diagnostic;
+use super::location::{line_offsets, sentence_context, single_line_span};
 
 static P23_META: RuleMeta = RuleMeta {
     id: "P23",
@@ -137,28 +138,20 @@ impl Rule for MarkupResidue {
         let mut seen = HashSet::new();
         // 記号の残骸は置き場所を問わず見えるので、語句ルールのスコープに従わず全ブロックを見る
         for (idx, block) in doc.blocks.iter().enumerate() {
-            let mut line_start = 0;
-            for line in block.text.split('\n') {
+            for (line_start, line) in line_offsets(&block.text) {
                 for pair in Self::find_pairs(line) {
                     let range = (line_start + pair.start)..(line_start + pair.end);
-                    let span = block.to_source(range.clone());
+                    let Some(span) = single_line_span(doc, block, range.clone()) else {
+                        continue;
+                    };
                     // 原文でも `**` で始まり `**` で終わる、1 行の中の範囲に限る
                     // (エスケープした `\*\*` や、解析用テキストでだけ隣り合った記号を外す)
                     let source = doc.slice(span);
-                    if span.is_empty()
-                        || !source.starts_with("**")
-                        || !source.ends_with("**")
-                        || doc.lines.line(span.start) != doc.lines.line(span.end - 1)
-                        || !seen.insert((span.start, span.end))
-                    {
+                    if !source.starts_with("**") || !source.ends_with("**") || !seen.insert(span) {
                         continue;
                     }
                     let matched = &block.text[range.clone()];
-                    let context = doc
-                        .block_sentences(idx)
-                        .iter()
-                        .find(|s| s.range.start <= range.start && range.start < s.range.end)
-                        .map_or(block.span, |s| s.span);
+                    let context = sentence_context(doc, idx, range.start);
                     let message = if markdown {
                         format!(
                             "「{}」は強調として解釈されず、`**` が記号のまま表示されます",
@@ -184,7 +177,6 @@ impl Rule for MarkupResidue {
                         .with_metric("item", item),
                     );
                 }
-                line_start += line.len() + 1;
             }
         }
     }
