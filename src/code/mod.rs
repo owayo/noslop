@@ -161,7 +161,7 @@ pub fn parse_with_options(
     };
     let raws = extract::comments(source, language, &tree);
     let owned: Vec<_> = raws.iter().map(|c| c.span).collect();
-    let (comments, mut directives) = body::prepare(source, raws);
+    let (comments, mut directives) = body::prepare(source, language, raws);
     let mut blocks = Vec::new();
     for group in body::group(source, comments) {
         build::build(source, &group, &mut blocks, &mut directives);
