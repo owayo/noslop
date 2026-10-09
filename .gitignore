@@ -31,3 +31,8 @@ target
 # mise の個人用の上書き (ツールの版の正は mise.toml)
 mise.local.toml
 .mise.local.toml
+
+# ビルド前に取得する同梱辞書。本体と作業用ファイルを Git に入れない。
+*.hsd
+*.hsd.zst
+*.hsd.tmp

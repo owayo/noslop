@@ -741,8 +741,9 @@ mod tests {
         );
     }
 
-    /// 同梱の辞書は hasami の IPAdic (出所と更新の手順は dict/README.md)。辞書を差し替えたら、
-    /// 手元の文書で P15・P16 の指摘の差分を確かめてから、語数と出典が変わっていれば、ここに固定した値を書き換える。
+    /// 同梱の辞書は、依存の hasami と同じリリースの IPAdic (出所と更新の手順は dict/README.md)。
+    /// hasami を上げて同梱の辞書を上げ忘れると、ここで落ちる (`make dict-bundled` で同じリリースの辞書にする)。
+    /// 語数・出典は dict/README.md の表と照らす (`dictionaries::tests::the_bundled_dictionary_matches_dict_readme`)。
     #[cfg(feature = "bundled-dict")]
     #[test]
     fn the_bundled_dictionary_is_ipadic_from_hasami() {
@@ -751,10 +752,14 @@ mod tests {
         assert_eq!(m.info().source, DictionarySource::Bundled);
         assert_eq!(m.info().path, None);
         assert_eq!(
-            m.dictionary.meta().get("sources"),
-            Some("ipadic@61b90ba6e669")
+            m.dictionary
+                .meta()
+                .get(hasami::hsd::meta::KEY_HASAMI_VERSION)
+                .map(|version| format!("v{version}"))
+                .as_deref(),
+            Some(hasami::download::CURRENT_TAG),
+            "同梱の辞書が依存の hasami と同じリリースのものではない。make dict-bundled で上げる"
         );
-        assert_eq!(m.dictionary.entry_count(), 390_849);
         // 2 度目からは同じ辞書を共有する
         let again = Morphology::bundled().unwrap();
         assert!(Arc::ptr_eq(&m.dictionary, &again.dictionary));

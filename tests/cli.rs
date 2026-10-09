@@ -1778,13 +1778,6 @@ fn dictionary_settings_are_checked_and_auto_falls_back() {
 // 配布辞書の取得 (noslop dict)
 // ---------------------------------------------------------------------------
 
-/// リポジトリに同梱した辞書 (hasami の配布辞書 ipadic と同じもの)。
-fn bundled_dictionary() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("dict")
-        .join("ipadic.hsd")
-}
-
 /// プロキシの環境変数を外した noslop (通信は 127.0.0.1 のテスト用のサーバーとだけ行う)。
 fn noslop_offline() -> Command {
     let mut cmd = noslop();
@@ -2121,7 +2114,12 @@ fn share_specs_point_to_the_share_directory() {
 
     let placed = data.path().join("hasami").join("ipadic.hsd");
     fs::create_dir_all(placed.parent().unwrap()).unwrap();
-    fs::copy(bundled_dictionary(), &placed).unwrap();
+    write_dictionary(&placed);
+    let dictionary_name = hasami::Dictionary::load(&placed)
+        .unwrap()
+        .meta()
+        .name()
+        .to_owned();
     let out = check().output().unwrap();
     assert_eq!(
         out.status.code(),
@@ -2132,7 +2130,7 @@ fn share_specs_point_to_the_share_directory() {
     let v = json(&out.stdout);
     let morphology = &v["settings"]["morphology"];
     assert_eq!(morphology["method"], "dictionary");
-    assert_eq!(morphology["dictionary"]["name"], "ipadic");
+    assert_eq!(morphology["dictionary"]["name"], dictionary_name);
     assert_eq!(morphology["dictionary"]["source"], "file");
     assert_eq!(
         morphology["dictionary"]["path"].as_str(),
@@ -2167,7 +2165,7 @@ fn share_specs_point_to_the_share_directory() {
     // HASAMI_DATA_DIR は置き場そのもので、下に hasami を足さない
     let preferred = tempfile::tempdir().unwrap();
     let placed_in_preferred = preferred.path().join("ipadic.hsd");
-    fs::copy(bundled_dictionary(), &placed_in_preferred).unwrap();
+    write_dictionary(&placed_in_preferred);
     let out = check()
         .env("HASAMI_DATA_DIR", preferred.path())
         .output()

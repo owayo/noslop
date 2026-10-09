@@ -230,6 +230,10 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
+      # 全ターゲットで同じ辞書を使う。Cargo の build.rs は通信せず、取得済みの本体を再照合する。
+      - name: Prepare bundled dictionary
+        run: cargo run --locked -p noslop-xtask -- prepare
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 

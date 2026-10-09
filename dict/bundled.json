@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "hasami_tag": "v26.10.101",
+  "file": "ipadic.hsd",
+  "size": 16498338,
+  "sha256": "2f8d87dc4fff0d4daeb7beb9e90f64f19f560191e15bd8d387c16c744d002409",
+  "format_version": 5,
+  "sources": "ipadic@61b90ba6e669",
+  "entries": 390860,
+  "ipadic_patch": "char.def SYMBOL 0 0 0, HIRAGANA 0 0 2, ALPHA 1 1 1, NUMERIC 1 1 1, U+30FB/U+00D7/U+00F7 SYMBOL, 0x000D SPACE (not 0x00D0); unk.def SYMBOL=記号,一般; 33 CP932-side variants of dashes, tildes and minus signs; 181 unit symbols as 名詞,接尾,助数詞"
+}

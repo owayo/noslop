@@ -15,7 +15,7 @@
 # macOS 標準の GNU Make 3.81 で動く書き方に限っている
 # (.ONESHELL / .SHELLFLAGS / $(file ...) / != は使わない)。
 
-.PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean dict-catalog dict-check
+.PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean hasami-update dict-bundled dict-bundled-update dict-catalog dict-check
 
 # 引数なしの make はヘルプを表示する
 .DEFAULT_GOAL := help
@@ -31,7 +31,8 @@ SKILL_TARGETS ?= claude codex
 # docs と docs-check が生成したルールの一覧を置く場所。生成に失敗したときに
 # docs/rules.md を空にしないよう、いったんここに書く
 RULES_MD_TMP := target/rules.md
-# make dict-catalog で取り込む hasami のリリースのタグ (例: TAG=v26.9.110。空なら最新のリリース)
+# make hasami-update で上げる・make dict-catalog で取り込む hasami のリリースのタグ
+# (例: TAG=v26.9.110。空なら最新のリリース)
 TAG ?=
 
 # ---- ツールチェーン -----------------------------------------------------------
@@ -55,19 +56,20 @@ endif
 
 ## セットアップ
 
-setup: ## ツールチェーン (mise) と依存を取得する
+setup: ## ツールチェーン (mise)・依存・同梱辞書を取得する
 	@if [ -n "$(MISE)" ]; then "$(MISE)" install; fi
 	$(RUN) cargo fetch $(CARGO_FLAGS)
+	$(MAKE) dict-bundled
 
 ## ビルド
 
-build: ## デバッグ版をビルドする
+build: dict-bundled ## デバッグ版をビルドする
 	$(RUN) cargo build $(CARGO_FLAGS)
 
-release: ## リリース版をビルドする
+release: dict-bundled ## リリース版をビルドする
 	$(RUN) cargo build --release $(CARGO_FLAGS)
 
-run: ## デバッグ版を実行する (引数は ARGS="...")
+run: dict-bundled ## デバッグ版を実行する (引数は ARGS="...")
 	$(RUN) cargo run $(CARGO_FLAGS) -- $(ARGS)
 
 ## インストール
@@ -94,17 +96,17 @@ uninstall: ## INSTALL_PATH から取り除く (スキルは残す)
 ## 開発
 
 test: ## テストを実行する
-	$(RUN) cargo test $(CARGO_FLAGS)
+	$(RUN) cargo test $(CARGO_FLAGS) --workspace
 
 # 辞書を同梱しないビルド (#[cfg(not(feature = "bundled-dict"))] の側) をコンパイルしてテストする。
 # cargo は feature を切り替えるたびに target/debug/noslop を置き直すので、これを単独で
 # 回した後の target/debug/noslop は辞書を同梱しない版になる (次に既定の feature で
 # build・run・test すると、作り直さずに既定の版へ戻る)
 test-no-default-features: ## 辞書を同梱しないビルドでテストする (--no-default-features)
-	$(RUN) cargo test $(CARGO_FLAGS) --no-default-features
+	$(RUN) cargo test $(CARGO_FLAGS) --workspace --no-default-features
 
 lint: ## clippy を警告ゼロで通す
-	$(RUN) cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
+	$(RUN) cargo clippy $(CARGO_FLAGS) --workspace --all-targets -- -D warnings
 
 clippy: lint ## lint の別名
 
@@ -135,6 +137,21 @@ ci: check test-no-default-features test docs-check ## CI と同じ検査 (書き
 
 clean: ## ビルド成果物を消す
 	$(RUN) cargo clean
+
+## hasami と同梱の辞書
+
+# 同梱の辞書 (dict/ipadic.hsd) は、依存の hasami と常に同じリリースのものにする (テストが確かめる)。
+# hasami を上げるときは hasami-update を使う。依存のタグだけが上がったときは、
+# dict-bundled-update で固定情報と表示を追いつかせる。更新には gh (GitHub CLI) と通信が要る。
+# 通常の準備 (dict-bundled) は gh を使わず、取得済みの本体が固定情報と一致すれば通信しない。
+hasami-update: ## 依存の hasami を TAG の版 (省くと最新のリリース) に上げ、同梱の辞書も同じリリースにそろえる
+	CARGO="$(strip $(RUN) cargo)" CARGO_FLAGS="$(CARGO_FLAGS)" tools/hasami-update.sh $(TAG)
+
+dict-bundled: ## 固定情報に合う同梱辞書を準備する (取得済みなら照合だけ)
+	CARGO="$(strip $(RUN) cargo)" CARGO_FLAGS="$(CARGO_FLAGS)" tools/dict-bundled.sh
+
+dict-bundled-update: ## 同梱辞書の固定情報と表示を、依存の hasami のリリースに更新する
+	CARGO="$(strip $(RUN) cargo)" CARGO_FLAGS="$(CARGO_FLAGS)" tools/dict-bundled.sh --update
 
 ## 配布辞書の目録
 

@@ -7,7 +7,8 @@
 //!   build.rs が作る ([`HASAMI_TAG`]・[`DEFAULT_SOURCE`]・[`DICTIONARIES`])。取得した中身は、目録の大きさと
 //!   SHA-256 で確かめる。目録は Release のワークフロー (`make dict-catalog`) が hasami の新しいリリースに
 //!   合わせて更新する。依存の hasami (`Cargo.toml` のタグ) と同梱の辞書 (`dict/ipadic.hsd`) は目録とは
-//!   別で、判定の結果を左右するので人が上げる。目録の辞書の形式が依存の hasami で読めることはテストで確かめる
+//!   別に、`make hasami-update` で常に同じリリースへそろえて上げる (同じリリースであることはテストで
+//!   確かめる)。目録の辞書の形式が依存の hasami で読めることもテストで確かめる
 //! - 取得そのもの (HTTP・zstd の展開・大きさと SHA-256 の照合・辞書として読めることの確認・一時ファイル
 //!   からの置き換え) は hasami の `download` (feature `download`) に任せる。noslop は目録の値と取得元を
 //!   固定して渡し、誤りを日本語に言い換える ([`download`])。既定では zstd で圧縮した版 (`<名前>.hsd.zst`。
@@ -540,12 +541,14 @@ mod tests {
         assert!(find("unidic").is_none());
     }
 
-    /// 同梱の辞書 (dict/ipadic.hsd) は、dict/README.md に記した SHA-256 のもの。目録の ipadic とは
-    /// 別に上げる (目録は hasami のリリースごとに変わり、同梱の辞書は判定の校正の前提になるため)。
+    /// 固定情報と dict/README.md・THIRD_PARTY_NOTICES.md の表示を照らす。同梱するビルドでは辞書の
+    /// 中身も照合する。同梱しないビルドでは本体を読まない。更新は `make dict-bundled-update` が行う。
     #[test]
     fn the_bundled_dictionary_matches_dict_readme() {
-        let dict_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("dict");
-        let readme = fs::read_to_string(dict_dir.join("README.md")).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../dict/bundled.json")).unwrap();
+        let readme = fs::read_to_string(root.join("dict/README.md")).unwrap();
         let row = |label: &str| {
             readme
                 .lines()
@@ -554,9 +557,77 @@ mod tests {
                 .unwrap_or_else(|| panic!("dict/README.md に {label} の行がない"))
                 .to_string()
         };
-        let sha256 = row("SHA-256").trim_matches('`').to_string();
-        let bundled = dict_dir.join("ipadic.hsd");
-        assert_eq!(hasami::download::sha256_file(&bundled).unwrap(), sha256);
+        let tag = manifest["hasami_tag"].as_str().unwrap();
+        let sources = manifest["sources"].as_str().unwrap();
+        let entries = manifest["entries"].as_u64().unwrap().to_string();
+        let grouped: Vec<String> = entries
+            .as_bytes()
+            .rchunks(3)
+            .rev()
+            .map(|digits| String::from_utf8(digits.to_vec()).unwrap())
+            .collect();
+
+        assert_eq!(
+            row("出所"),
+            format!("hasami {tag} のリリースに添付された `ipadic.hsd`")
+        );
+        assert_eq!(row("形式"), format!("HSD v{}", hasami::hsd::FORMAT_VERSION));
+        assert!(
+            row("元のデータ").contains(&format!("`sources={sources}`")),
+            "{}",
+            row("元のデータ")
+        );
+        assert_eq!(row("語数"), grouped.join(","));
+        assert_eq!(
+            row("SHA-256"),
+            format!("`{}`", manifest["sha256"].as_str().unwrap())
+        );
+
+        #[cfg(feature = "bundled-dict")]
+        {
+            let dict = hasami::Dictionary::load(root.join("dict/ipadic.hsd")).unwrap();
+            assert_eq!(dict.entry_count().to_string(), entries);
+            assert_eq!(dict.meta().get("sources"), Some(sources));
+            assert_eq!(
+                dict.meta().get("ipadic_patch"),
+                manifest["ipadic_patch"].as_str()
+            );
+        }
+
+        let notices = fs::read_to_string(root.join("THIRD_PARTY_NOTICES.md")).unwrap();
+        for phrase in [
+            format!("`dict/ipadic.hsd`。hasami {tag} の配布辞書"),
+            format!("the distributed dictionary of hasami {tag};"),
+        ] {
+            assert!(
+                notices.contains(&phrase),
+                "THIRD_PARTY_NOTICES.md に「{phrase}」がない"
+            );
+        }
+    }
+
+    /// 本体とテストは workspace の hasami を共有する。タグと同梱辞書の固定情報も、リンクした
+    /// リリースと一致する (`make hasami-update` でそろえる)。
+    #[test]
+    fn the_hasami_dependencies_point_to_the_linked_release() {
+        let manifest: toml::Table = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+        assert_eq!(
+            manifest["workspace"]["dependencies"]["hasami"]["tag"].as_str(),
+            Some(hasami::download::CURRENT_TAG)
+        );
+        let bundled: serde_json::Value =
+            serde_json::from_str(include_str!("../dict/bundled.json")).unwrap();
+        assert_eq!(
+            bundled["hasami_tag"].as_str(),
+            Some(hasami::download::CURRENT_TAG)
+        );
+        for section in ["dependencies", "dev-dependencies"] {
+            assert_eq!(
+                manifest[section]["hasami"]["workspace"].as_bool(),
+                Some(true),
+                "Cargo.toml の [{section}] の hasami"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

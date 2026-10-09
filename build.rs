@@ -5,6 +5,9 @@
 //! ビルドが通らないよう、ここで形を確かめ、合わなければビルドを止める。目録の辞書の形式が依存の
 //! hasami で読めるか (`format_version`) は、ビルド用の依存から hasami を参照できないので、
 //! `src/dictionaries.rs` のテストで確かめる。
+//!
+//! 同梱辞書は、準備コマンドが dict/bundled.json の固定情報で取得する。ここでは通信せず、
+//! 同梱する feature が有効なときだけ、本体の大きさと SHA-256 を再照合する。
 
 use std::collections::HashSet;
 use std::env;
@@ -13,6 +16,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+
+#[path = "tools/bundled_manifest.rs"]
+mod bundled_manifest;
 
 /// 目録。noslop が使う項目だけを読む (ほかの項目は無視する)。
 #[derive(Deserialize)]
@@ -50,8 +56,21 @@ fn is_sha256(s: &str) -> bool {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=dict/bundled.json");
     println!("cargo:rerun-if-changed=dict/catalog.json");
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let bundled = bundled_manifest::read_manifest(&manifest.join("dict/bundled.json"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    if env::var_os("CARGO_FEATURE_BUNDLED_DICT").is_some() {
+        println!("cargo:rerun-if-changed=dict/ipadic.hsd");
+        let matches =
+            bundled_manifest::matches_file(&manifest.join("dict").join(&bundled.file), &bundled)
+                .unwrap_or_else(|e| panic!("同梱辞書を確認できません: {e}"));
+        assert!(
+            matches,
+            "同梱辞書がないか、dict/bundled.json と一致しません。make setup または cargo run --locked -p noslop-xtask -- prepare を実行してください。辞書なしでビルドするなら --no-default-features を指定してください"
+        );
+    }
     let path = manifest.join("dict").join("catalog.json");
     let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut catalog: Catalog = serde_json::from_str(&raw)

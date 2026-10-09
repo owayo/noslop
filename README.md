@@ -104,8 +104,10 @@ brew install owayo/noslop/noslop
 Rust 1.98 以上が必要です。
 
 ```bash
-cargo install --git https://github.com/owayo/noslop --locked
+cargo install --git https://github.com/owayo/noslop --locked --no-default-features noslop
 ```
+
+Cargo から直接入れる版は辞書を同梱しません。辞書を同梱した版は Homebrew・GitHub Releases、またはソースから `make install` で入れられます。辞書本体は Git に置かず、ビルド前に固定した版と SHA-256 で取得・照合します。
 
 ### GitHub Releases から
 
@@ -219,13 +221,13 @@ dictionary = "bundled"
 [mise](https://mise.jdx.dev/) が必要です。ツールの版は `mise.toml` で固定しています。
 
 ```bash
-make setup   # ツールチェーン (mise) と依存を取得する
+make setup   # ツールチェーン (mise)・依存・同梱辞書を取得する
 make ci      # CI と同じ検査 (書き換えない)
 ```
 
 | コマンド | 説明 |
 |---|---|
-| `make setup` | ツールチェーン (mise) と依存を取得する |
+| `make setup` | ツールチェーン (mise)・依存・同梱辞書を取得する |
 | `make build` | デバッグ版をビルドする |
 | `make release` | リリース版をビルドする |
 | `make run` | デバッグ版を実行する (引数は ARGS="...") |
@@ -238,6 +240,9 @@ make ci      # CI と同じ検査 (書き換えない)
 | `make install` | リリース版を INSTALL_PATH (既定 /usr/local/bin) に入れる |
 | `make uninstall` | INSTALL_PATH から取り除く |
 | `make clean` | ビルド成果物を消す |
+| `make dict-bundled` | 固定情報に合う同梱辞書を準備する (取得済みなら照合だけ) |
+| `make dict-bundled-update` | 同梱辞書の固定情報と表示を、依存の hasami のリリースに更新する |
+| `make hasami-update` | 依存の hasami を TAG の版 (省くと最新のリリース) に上げ、同梱の辞書も同じリリースにそろえる |
 
 `make` でターゲットの一覧を表示します。リリースは GitHub Actions で行います (**Actions → Release → Run workflow**)。
 <!-- standard:dev:end -->

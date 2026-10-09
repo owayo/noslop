@@ -44,6 +44,11 @@ jobs:
           cargo --version
           cargo clippy --version
 
+      # クリーンなソースには HSD がない。同梱しないビルドは取得前にも動くことを確かめる。
+      - name: Run tests before dictionary preparation
+        if: runner.os == 'Linux'
+        run: cargo test --locked --workspace --no-default-features --no-fail-fast
+
       # 検査の中身は Makefile の ci が定義する (fmt-check・clippy・test・docs/rules.md の差分・
       # 辞書を同梱しないビルドのテスト)。
       # 検査を足すときは Makefile の ci に足す
@@ -93,6 +98,10 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
+      # 辞書本体は Git に置かない。固定情報の版・大きさ・SHA-256 で照合してから同梱する。
+      - name: Prepare bundled dictionary
+        run: cargo run --locked -p noslop-xtask -- prepare
+
       # Windows のランナーの make は MinGW の mingw32-make の写しで、レシピの POSIX シェル前提の
       # 解釈に癖があるため make を使わない。make ci と同じ cargo のコマンドを直接呼ぶ
       # (Makefile の ci を変えたらここも合わせる。docs/rules.md の差分は Linux と macOS で見る)
@@ -102,15 +111,15 @@ jobs:
 
       - name: Run clippy (Windows)
         if: runner.os == 'Windows'
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --locked --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: Run tests without the bundled dictionary (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --locked --no-default-features --no-fail-fast
+        run: cargo test --locked --workspace --no-default-features --no-fail-fast
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

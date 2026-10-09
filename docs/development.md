@@ -7,7 +7,7 @@
 [mise](https://mise.jdx.dev/) が必要です。ツールチェーンの版は `mise.toml` で固定しています。Makefile はツールを `mise exec` 経由で呼ぶので、シェルで `mise activate` を済ませていなくても `mise.toml` の版で動きます。
 
 ```bash
-make setup   # mise.toml のツールチェーンを入れ（mise install）、依存を取得する
+make setup   # mise.toml のツールチェーンを入れ（mise install）、依存と同梱辞書を取得する
 make ci      # CI と同じ検査
 ```
 
@@ -15,7 +15,7 @@ make ci      # CI と同じ検査
 
 | コマンド | 説明 |
 |---|---|
-| `make setup` | ツールチェーン (mise) と依存を取得する |
+| `make setup` | ツールチェーン (mise)・依存・同梱辞書を取得する |
 | `make build` | デバッグ版をビルドする |
 | `make release` | リリース版をビルドする |
 | `make run` | デバッグ版を実行する (引数は ARGS="...") |
@@ -32,6 +32,9 @@ make ci      # CI と同じ検査
 | `make docs-check` | docs/rules.md が最新かを確かめる (書き換えない) |
 | `make ci` | CI と同じ検査 (書き換えない) |
 | `make clean` | ビルド成果物を消す |
+| `make dict-bundled` | 固定情報に合う同梱辞書を準備する (取得済みなら照合だけ) |
+| `make dict-bundled-update` | 同梱辞書の固定情報と表示を、依存の hasami のリリースに更新する |
+| `make hasami-update` | 依存の hasami を TAG の版 (省くと最新のリリース) に上げ、同梱の辞書も同じリリースにそろえる |
 | `make dict-catalog` | 配布辞書の目録 (dict/catalog.json) を hasami のリリースに合わせる (TAG=... で版を指定、省くと最新) |
 | `make dict-check` | 目録の辞書を実際に取得し (圧縮版を展開する)、大きさ・SHA-256・読めることを確かめる (通信が要る) |
 | `make help` | このヘルプを表示する |
@@ -42,11 +45,19 @@ cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに�
 
 ## リリース
 
+同梱辞書の本体 (`dict/ipadic.hsd`) は Git で管理しません。`dict/bundled.json` の版・大きさ・SHA-256 を固定情報として、`make setup`・`make build`・`make release` が準備します。make のない環境では `cargo run --locked -p noslop-xtask -- prepare` が同じ処理を行います。準備は本体をビルドせず、取得済みなら照合だけです。追跡ファイルは書き換えません。`cargo run --locked -p noslop-xtask -- check` は通信せず照合します。Cargo のビルド中にも本体を照合し、欠落・不一致なら準備のコマンドを案内して止めます。`--no-default-features` なら本体は不要です。
+
+辞書を更新するときは `make hasami-update TAG=...` を使います。依存と固定情報・表示をそろえます。依存だけを更新した場合も、`make hasami-update TAG=...` または `make dict-bundled-update` で固定情報を更新してください。配布辞書の最新目録 (`dict/catalog.json`) は、同梱辞書の固定情報とは別です。
+
+HSD本体は過去のGit履歴からも除いています。同梱辞書を使う以前のタグをソースからビルドする場合は、そのタグの `dict/README.md` に記した hasami のリリースから辞書を取得し、SHA-256 を照合して `dict/ipadic.hsd` に置いてください。公開済みのリリースのバイナリには辞書が同梱されています。
+
 GitHub の Actions タブで Release ワークフローを選び、Run workflow で実行します。版は日本時間で `YY.M.COUNTER` の形（`26.9.100` など）で、その月の最初のリリースは COUNTER を 100 から始め、同じ月の 2 回目以降は 1 ずつ上げます。`dry_run` を有効にすると、版と辞書の目録を確認し、目録が変われば検査も回しますが、コミット・タグ・ビルド・公開はしません。リリースには Linux x86_64 / arm64、macOS x86_64 / arm64、Windows x86_64 のアーカイブ（`noslop-<ターゲット>.tar.gz`、Windows は `.zip`。中身はバイナリと `LICENSE`・`THIRD_PARTY_NOTICES.md`）と、`SHA256SUMS` が付きます。
 
 公開の後、Homebrew の tap（[owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)）の formula を、新しい版の URL と SHA-256 に書き換えて push します。tap への push には GitHub App のトークンを使います。設定する項目は [エージェント向けガイド](../AGENTS.md#リリース) を参照してください。設定が足りなければ、警告を出して tap の更新だけを飛ばします。
 
 Release ワークフローは、`noslop dict download` が使う配布辞書の目録（`dict/catalog.json`）も hasami の最新のリリースに合わせます。目録が変わったときは、`make ci` と、3 つの辞書を実際に取得して確かめる `make dict-check` を通してから、版の更新と同じコミットに入れます。
+
+配布バイナリの各ビルドジョブでも、固定情報に合うHSD本体を取得・照合してから埋め込みます。辞書はバイナリに入るので、利用者が実行する際の取得は不要です。
 
 ## ロードマップ
 
