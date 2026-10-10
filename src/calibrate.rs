@@ -3027,7 +3027,9 @@ mod tests {
             &dir.path().join("ai"),
             (0..10).map(|i| format!("{i}件目の本文を書いた。\n")),
         );
-        let report = calibrate(&corpus_options(dir.path(), only(&["P12"]))).unwrap();
+        let mut options = corpus_options(dir.path(), only(&["P12"]));
+        options.engine.experimental = true;
+        let report = calibrate(&options).unwrap();
         let rows: Vec<&ItemStats> = report.items.iter().filter(|i| i.rule_id == "P12").collect();
         assert_eq!(rows.len(), 1, "{rows:?}");
         let row = rows[0];
@@ -3042,23 +3044,8 @@ mod tests {
         assert_eq!((row.human.fired, row.human.by_severity.info.fired), (7, 7));
         assert_eq!(row.human.docs, 10);
 
-        // P12 は既定の重大度が情報なので、情報の指摘で数えて見直す
-        let review = &report.reviews[0];
-        assert_eq!(
-            (review.rule_id, review.reason, review.calibration_basis),
-            ("P12", ReviewReason::FalsePositives, Severity::Info)
-        );
-        assert_eq!(review.human_items[0].item, row.item);
-        let mut text = Vec::new();
-        render_text(&report, &mut text).unwrap();
-        let text = String::from_utf8(text).unwrap();
-        assert!(
-            text.contains(&format!(
-                "「{}」(例「ことができる」「ことが出来ます」、情報、人 7 件・生成 0 件)",
-                row.item
-            )),
-            "{text}"
-        );
+        // 読みやすさの実験的ルールは、AI 臭さの見直し候補には入れない。
+        assert!(report.reviews.is_empty());
     }
 
     #[test]
