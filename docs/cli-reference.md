@@ -10,6 +10,7 @@
 |---------|------|
 | `noslop check [PATH]...` | ファイルやディレクトリを検査する（別名 `lint`）。省略時はカレントディレクトリ |
 | `noslop diff <BEFORE> <AFTER>` | 改稿の前後を比べる（新しく出た指摘・消えた事実・改稿の偏り） |
+| `noslop review <PATH>` | 全文の意味を18観点で読む依頼の出力と、判定結果の原文照合（[文章レビュー](review.md)） |
 | `noslop rules` | ルールの一覧を表示する |
 | `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
 | `noslop init` | プロジェクトの設定ファイル `noslop.toml` のひな形を作る。`--user` ならユーザーの設定 `~/.config/noslop/config.toml` のひな形を作る |

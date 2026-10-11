@@ -51,6 +51,8 @@ pub enum Command {
     /// Markdown・テキストを検査する
     #[command(visible_alias = "lint")]
     Check(CheckArgs),
+    /// 目的と読者に沿って文書の構成・意味をレビューする (既定は依頼の出力。判定器を明示したときだけ本文を渡す)
+    Review(crate::review::ReviewArgs),
     /// 改稿の前後を比べる (新しく出た指摘・消えた数字や固有名詞・改稿の偏り)
     ///
     /// 同じ設定で両方を検査し、指摘の増減に加えて、改稿で失われた事実と、同じ変換を
@@ -612,6 +614,10 @@ pub fn run() -> ExitCode {
     };
     let code = match cli.command {
         Command::Check(args) => check(args),
+        Command::Review(args) => match crate::review::run(args) {
+            Ok(()) => EXIT_OK,
+            Err(message) => error(message),
+        },
         Command::Diff(args) => diff(args),
         Command::Calibrate(args) => calibrate(args),
         Command::Rules(args) => rules(args),

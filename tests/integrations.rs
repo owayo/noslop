@@ -485,7 +485,7 @@ fn mcp_server_answers_over_stdio_with_the_discovered_config() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(tools, ["check", "diff", "explain", "rules"]);
+    assert_eq!(tools, ["check", "diff", "explain", "rules", "review"]);
     let check = &responses[2]["result"];
     assert_eq!(check["isError"], false);
     let text = check["content"][0]["text"].as_str().unwrap();

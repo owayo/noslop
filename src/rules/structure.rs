@@ -7,6 +7,8 @@
 
 use std::sync::LazyLock;
 
+mod relations;
+
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
@@ -29,6 +31,8 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(HeadingEmphasis),
         Box::new(StructureDensity::new()),
         Box::new(LabelStyle::new()),
+        Box::new(relations::EnumerationCount),
+        Box::new(relations::EmptySection),
     ]
 }
 
@@ -1596,11 +1600,18 @@ mod tests {
     fn ids_and_business_genre() {
         let rules = rules(Genre::General);
         let ids: Vec<_> = rules.iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=10).map(|n| format!("S{n:02}")).collect();
+        let expected: Vec<String> = (1..=12).map(|n| format!("S{n:02}")).collect();
         assert_eq!(ids, expected);
         for r in &rules {
             assert_eq!(r.meta().status, RuleStatus::Experimental);
-            assert_eq!(r.meta().lane, Lane::Slop);
+            assert_eq!(
+                r.meta().lane,
+                if matches!(r.meta().id, "S11" | "S12") {
+                    Lane::Readability
+                } else {
+                    Lane::Slop
+                }
+            );
             let blocked = matches!(
                 r.meta().id,
                 "S01" | "S02" | "S03" | "S04" | "S07" | "S09" | "S10"

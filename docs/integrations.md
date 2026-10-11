@@ -109,6 +109,7 @@ noslop skill-install claude --dir .claude/skills  # プロジェクトに置く
 | `diff` | `before`・`after` (必須)、`filename`、`genre`、`experimental`、`format` (`text` 既定 / `json` / `toon`) | `noslop diff` と同じ確認事項 (新しく出た指摘・事実の変化・改稿の偏り)。text は端末向けの書式を外して返す |
 | `explain` | `rule` (必須、ID か名前)、`genre` | `noslop explain` と同じ説明 |
 | `rules` | `genre`、`experimental` | `noslop rules` と同じ一覧 |
+| `review` | `text`（全文）、`filename`、`profile`、任意の`response` | 18観点の依頼JSON。クライアントが読んだ結果を`response`で渡すと原文と照合したJSON（[文章レビュー](review.md)） |
 
 引数の誤り (本文がない、未知のジャンルなど) と設定ファイルの誤りは、サーバーを止めずにツールの実行エラー (`isError: true`) として返します。エージェントはその文面を読んで引数を直せます。未知のツール名と壊れたメッセージは JSON-RPC のエラーで返します。1 メッセージは 8 MiB、`check` の本文は 4 MiB までです。
 

@@ -11,7 +11,7 @@
 //!   そうでなければ対応する最新の版を返す
 //!
 //! ツールは `check` (本文の検査)・`diff` (改稿の前後の比較)・`explain` (ルールの説明)・
-//! `rules` (ルールの一覧)。
+//! `rules` (ルールの一覧)・`review` (意味レビューの依頼と結果の照合)。
 //! 引数の誤りや設定の誤りは、落ちずにツールの実行エラー (`isError: true`) として返す。
 
 use std::collections::HashMap;
@@ -233,6 +233,7 @@ impl Server {
             "diff" => self.diff(args),
             "explain" => self.explain(args),
             "rules" => self.rules(args),
+            "review" => self.review(args),
             _ => return Err((INVALID_PARAMS, format!("Unknown tool: {name}"), None)),
         };
         let (text, is_error) = match outcome {
@@ -299,6 +300,34 @@ impl Server {
             .render(&report, &opts, &mut buf)
             .map_err(|e| format!("結果を書き出せません: {e}"))?;
         String::from_utf8(buf).map_err(|e| format!("結果を書き出せません: {e}"))
+    }
+
+    /// `review`: クライアントが意味を読み、再度渡した結果を原文と照合する。
+    /// 外部の判定器やコマンドは呼ばない。
+    fn review(&self, args: &Map<String, Value>) -> Result<String, String> {
+        let text = text_arg(args, "text", "レビューする本文")?;
+        let filename = string_arg(args, "filename")?.unwrap_or("document.md");
+        let profile = match args.get("profile") {
+            None => crate::review::Profile::default(),
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|e| format!("プロファイルの書式が正しくありません: {e}"))?,
+        };
+        let doc = crate::document::Document::parse(
+            filename,
+            text,
+            SourceFormat::from_path(Path::new(filename)),
+            &crate::document::ParseOptions::default(),
+        );
+        let request = crate::review::request(&doc, profile)?;
+        let value = match args.get("response") {
+            None => serde_json::to_value(&request).map_err(|e| e.to_string())?,
+            Some(value) => {
+                let response = serde_json::from_value(value.clone())
+                    .map_err(|e| format!("レビュー結果の書式が正しくありません: {e}"))?;
+                crate::review::verified_report(&request, &response)?
+            }
+        };
+        serde_json::to_string(&value).map_err(|e| e.to_string())
     }
 
     /// `diff`: 改稿の前後を同じエンジンで検査し、確認事項 (新しい指摘・事実の変化・改稿の偏り) を返す。
@@ -646,6 +675,31 @@ fn tools() -> Value {
                 }
             },
             "annotations": read_only
+        },
+        {
+            "name": "review",
+            "title": "文章の意味レビュー",
+            "description": "全文と目的・読者から18観点のレビュー依頼を返します。クライアント自身で意味を読み、依頼のinstructionsに従ったresponseを同じ本文・filename・profileとともに再度渡すと、根拠の引用と条件を検証します。書き換えや外部への送信は行いません。指摘は確認候補で、通常のlintや点数とは別です。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "文書の全文" },
+                    "filename": { "type": "string", "description": "表示名。省略時document.md" },
+                    "profile": {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                            "purpose": { "type": ["string", "null"] },
+                            "audience": { "type": ["string", "null"] },
+                            "requiredInformation": { "type": "array", "items": { "type": "string" } },
+                            "knownTerms": { "type": "array", "items": { "type": "string" } },
+                            "suppliedFacts": { "type": "object", "additionalProperties": { "type": "string" } }
+                        }
+                    },
+                    "response": { "type": "object", "description": "依頼のinstructionsに従った全18観点の結果" }
+                },
+                "required": ["text"]
+            },
+            "annotations": read_only
         }
     ])
 }
@@ -801,6 +855,59 @@ mod tests {
     const SMELLY: &str = include_str!("../examples/ai-smelly.md");
 
     #[test]
+    fn review_returns_all_tasks_and_verifies_client_evidence() {
+        let mut s = initialized();
+        let text = "次の3項目です。\n\n- 氏名\n- 住所\n";
+        let profile = json!({ "purpose": "必要事項の確認", "audience": "初めて申し込む人" });
+        let result = s
+            .handle(call(
+                2,
+                "review",
+                json!({ "text": text, "profile": profile }),
+            ))
+            .unwrap();
+        assert_eq!(result["result"]["isError"], false);
+        let request: Value = serde_json::from_str(tool_text(&result)).unwrap();
+        assert_eq!(request["techniques"].as_array().unwrap().len(), 18);
+        let observations: Vec<_> = request["techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                json!({
+                    "id": t["id"], "status": "unknown", "reason": "判断材料がありません",
+                    "readerImpact": "", "question": "", "evidence": []
+                })
+            })
+            .collect();
+        let mut response = json!({ "schemaVersion": 1, "requestHash": request["requestHash"],
+            "reviewer": { "name": "fixture", "model": "local" }, "observations": observations });
+        let verified = s
+            .handle(call(
+                3,
+                "review",
+                json!({ "text": text, "profile": profile,
+            "response": response }),
+            ))
+            .unwrap();
+        assert_eq!(verified["result"]["isError"], false);
+        let report: Value = serde_json::from_str(tool_text(&verified)).unwrap();
+        assert_eq!(report["kind"], "readabilityReview");
+        response["observations"][0]["status"] = "clear".into();
+        response["observations"][0]["evidence"] =
+            json!([{ "blockId": 0, "quote": "存在しない引用" }]);
+        let rejected = s
+            .handle(call(
+                4,
+                "review",
+                json!({ "text": text, "profile": profile,
+            "response": response }),
+            ))
+            .unwrap();
+        assert_eq!(rejected["result"]["isError"], true);
+    }
+
+    #[test]
     fn handshake_list_and_call_round_trip() {
         let mut s = server();
         let responses = exchange(
@@ -832,7 +939,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["check", "diff", "explain", "rules"]);
+        assert_eq!(names, vec!["check", "diff", "explain", "rules", "review"]);
         for tool in responses[1]["result"]["tools"].as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
         }

@@ -77,6 +77,10 @@
 | S08 | `HEADING_EMPHASIS` | 見出しの中の太字・絵文字 | slop | experimental |
 | S09 | `STRUCTURE_DENSITY` | 見出しと箇条書きの密度 | slop | experimental |
 | S10 | `LABEL_STYLE` | 段落や項目を絵文字・「ラベル：」で書き出す | slop | experimental |
+| S11 | `ENUMERATION_COUNT_MISMATCH` | 直後のリストと列挙の予告の項目数を照合する | readability | experimental |
+| S12 | `EMPTY_SECTION` | 本文も子の節もない見出し（全文が対象のときだけ） | readability | experimental |
+
+構造の対応と、目的・読者を指定した18観点の意味レビューは[文章レビュー](review.md)にまとめています。
 
 R20 は `--enable-rules R20` または `[rules] enable = ["R20"]` で有効にできます。地の文に敬体と常体が各2文以上あると、根拠となる文末を示します。`[rules.R20] min_each = 1` のように最小文数を変えられます。部分差分では明示的に有効でも判定を実行せず、新規ファイルなど空白以外の全文が差分になっている場合は実行します。`noslop diff` と MCP の `diff` は改稿前が空のときだけ改稿後を全文の対象とし、それ以外では R20 を実行しません。引用・会話・見出し・リスト・表・独立した断片は比べません。gws の書き込み値は宛先の全文を取得しないため、R20 を実行しません。混在が意図した書き分けかは判別できないため、実験的な info の指摘です。
 

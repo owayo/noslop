@@ -28,7 +28,7 @@ use crate::text::{self, PLACEHOLDER};
 /// pulldown-cmark はこれを文書の途中にも当てるため、段落の直後でない `---` の行から
 /// 次の `---` か `...` の行までの本文がメタデータとして捨てられてしまう。先頭の
 /// front matter は [`front_matter_len`] で見つけて解析から外す。
-fn options() -> Options {
+pub(crate) fn options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
@@ -150,7 +150,7 @@ pub fn parse(source: &str) -> (Vec<Block>, Vec<Directive>) {
 /// - 閉じは行頭の `---` か `...` (TOML は `+++`)。ちょうど 3 字で、後ろはスペースだけ
 /// - 開きの次の行が空行か閉じの行なら front matter ではない (区切り線として読む)
 /// - 閉じの行がなければ front matter ではない (全体を本文として読む)
-fn front_matter_len(source: &str) -> usize {
+pub(crate) fn front_matter_len(source: &str) -> usize {
     let bytes = source.as_bytes();
     let fence = match bytes.first() {
         Some(&c @ (b'-' | b'+')) => c,

@@ -154,6 +154,15 @@ noslop dict download
 
 ## 使い方
 
+文書の意味や目的に沿った読みやすさは`noslop review`で18観点から確認できます。目的・読者・必要情報を指定して依頼を作り、判定器や編集者が返した引用を原文と照合します。要点の順序、論理、曖昧さ、用語の定義などを確認候補として扱います。[文章レビュー](docs/review.md)にCLIとMCPの使い方をまとめています。
+
+```bash
+noslop review guide.md --purpose "初回の申込みを完了する" --audience "初めて使う人"
+noslop check guide.md --enable-rules S11,S12
+```
+
+S11は列挙の予告と実際の項目数、S12は本文のない節を検査する実験的な読みやすさのルールです。
+
 ファイルを指定して検査します。ディレクトリを渡すと、その配下の Markdown とテキストをまとめて検査します（`.gitignore`・`.ignore`・`.noslopignore` を尊重します）。
 
 ```bash
