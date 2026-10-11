@@ -1603,7 +1603,14 @@ mod tests {
         let expected: Vec<String> = (1..=12).map(|n| format!("S{n:02}")).collect();
         assert_eq!(ids, expected);
         for r in &rules {
-            assert_eq!(r.meta().status, RuleStatus::Experimental);
+            assert_eq!(
+                r.meta().status,
+                if matches!(r.meta().id, "S11" | "S12") {
+                    RuleStatus::Stable
+                } else {
+                    RuleStatus::Experimental
+                }
+            );
             assert_eq!(
                 r.meta().lane,
                 if matches!(r.meta().id, "S11" | "S12") {

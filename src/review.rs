@@ -605,7 +605,7 @@ pub fn run(args: ReviewArgs) -> Result<(), String> {
 fn render(request: &Request, response: &Response) -> String {
     let citations = validate(request, response).expect("検証した結果だけを描画する");
     let mut out = "# 読みやすさのレビュー\n\n意味の確認候補です。原文との対応は検証しましたが、判断の正しさや文章の出来を保証するものではありません。\n".to_string();
-    out.push_str("\n## 構造lint（実験的）\n");
+    out.push_str("\n## 構造lint\n");
     for finding in &request.structural_findings {
         let line = request.document.source[..finding.span.start]
             .bytes()

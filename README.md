@@ -158,10 +158,10 @@ noslop dict download
 
 ```bash
 noslop review guide.md --purpose "初回の申込みを完了する" --audience "初めて使う人"
-noslop check guide.md --enable-rules S11,S12
+noslop check guide.md
 ```
 
-S11は列挙の予告と実際の項目数、S12は本文のない節を検査する実験的な読みやすさのルールです。
+S11は列挙の予告と実際の項目数、S12はMarkdown上で本文のない節を検査します。どちらも標準の読みやすさのルールとして、既定で「情報」の指摘を出します。
 
 ファイルを指定して検査します。ディレクトリを渡すと、その配下の Markdown とテキストをまとめて検査します（`.gitignore`・`.ignore`・`.noslopignore` を尊重します）。
 

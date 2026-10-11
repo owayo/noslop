@@ -2,6 +2,43 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::{Value, json};
 
 #[test]
+fn cli_structure_checks_are_standard_information() {
+    let source = "次の3項目です。\n\n- 名前\n- 住所\n\n# 空の節\n";
+    let output = cargo_bin_cmd!("noslop")
+        .args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "guide.md",
+            "--no-config",
+            "--no-dict",
+            "--format",
+            "json",
+            "--fail-on",
+            "warning",
+        ])
+        .write_stdin(source)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&output).unwrap();
+    let findings: Vec<_> = report["files"][0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["ruleId"] == "S11" || d["ruleId"] == "S12")
+        .collect();
+    assert_eq!(findings.len(), 2);
+    for finding in findings {
+        assert_eq!(finding["status"], "stable");
+        assert_eq!(finding["lane"], "readability");
+        assert_eq!(finding["severity"], "info");
+    }
+}
+
+#[test]
 fn cli_review_verifies_absence_and_citations_then_rejects_changed_source() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("guide.md");

@@ -15,7 +15,7 @@
 各ルールはレーンとステータスを持ちます。
 
 - **レーン** — `slop` は AI 臭さの検出です。`readability` は読みやすさの指摘（長すぎる一文、二重否定など）で、AI らしさとは無関係なので、AI 臭さとは分けて出します。設定ファイルの独自ルールは、既定で `custom` のレーンに入ります。出力では、それぞれを「AI 臭さ」「読みやすさ」「独自ルール」と表示します。
-- **ステータス** — `stable` はコーパスで誤検知率を確かめたもので、既定で有効です。`experimental` は未校正か、辞書なしの近似で校正条件から外れるもので、`--experimental` か設定で有効にしたときだけ動きます。語句ルールは語句ごとにもステータスを持ちます。
+- **ステータス** — `stable` は既定で有効です。語句と閾値はコーパスで誤検知率を確かめ、明示的な構造を照合するS11・S12は実文書と境界事例を確認しています。`experimental` は未校正か、辞書なしの近似で校正条件から外れるもので、`--experimental` か設定で有効にしたときだけ動きます。語句ルールは語句ごとにもステータスを持ちます。
 
 | ID | 名前 | 内容 | レーン | ステータス |
 |----|------|------|-------|-----------|
@@ -77,8 +77,8 @@
 | S08 | `HEADING_EMPHASIS` | 見出しの中の太字・絵文字 | slop | experimental |
 | S09 | `STRUCTURE_DENSITY` | 見出しと箇条書きの密度 | slop | experimental |
 | S10 | `LABEL_STYLE` | 段落や項目を絵文字・「ラベル：」で書き出す | slop | experimental |
-| S11 | `ENUMERATION_COUNT_MISMATCH` | 直後のリストと列挙の予告の項目数を照合する | readability | experimental |
-| S12 | `EMPTY_SECTION` | 本文も子の節もない見出し（全文が対象のときだけ） | readability | experimental |
+| S11 | `ENUMERATION_COUNT_MISMATCH` | 直後のリストと列挙の予告の項目数を照合する | readability | stable |
+| S12 | `EMPTY_SECTION` | Markdown上で本文も子の節もない見出し（全文が対象のときだけ） | readability | stable |
 
 構造の対応と、目的・読者を指定した18観点の意味レビューは[文章レビュー](review.md)にまとめています。
 

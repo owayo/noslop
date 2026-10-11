@@ -57,7 +57,7 @@ fn number(text: &str) -> Option<usize> {
 
 static COUNT_META: RuleMeta = RuleMeta {
     id: "S11", name: "ENUMERATION_COUNT_MISMATCH", title: "列挙の予告と項目数の不一致",
-    lane: Lane::Readability, status: RuleStatus::Experimental, default_severity: Severity::Info,
+    lane: Lane::Readability, status: RuleStatus::Stable, default_severity: Severity::Info,
     summary: "直後のリストに対応する明示的な予告と、直接の項目数を照合する",
     explanation: "\
 ### 何を見るか
@@ -79,7 +79,7 @@ static COUNT_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-構文木の親子関係と明示した数を照合します。実文書での校正は行っていないため実験的です。",
+構文木の親子関係と明示した数を照合します。人164本・生成811本・その他278本のMarkdownで指摘は0件でした。自作の対照40文書では3つの不一致を検出し、修正後と正常な構造では指摘しないことを確認しました。実文書での検出精度を推定した数値ではありません。",
 };
 
 pub struct EnumerationCount;
@@ -178,7 +178,7 @@ impl Rule for EnumerationCount {
 
 static EMPTY_META: RuleMeta = RuleMeta {
     id: "S12", name: "EMPTY_SECTION", title: "本文のない節",
-    lane: Lane::Readability, status: RuleStatus::Experimental, default_severity: Severity::Info,
+    lane: Lane::Readability, status: RuleStatus::Stable, default_severity: Severity::Info,
     summary: "見出しの後に本文も子の節もない箇所を示す",
     explanation: "\
 ### 何を見るか
@@ -191,7 +191,7 @@ Markdownの見出しから次の同じ階層以上の見出しまでが空白と
 
 ### 直し方
 
-必要な説明を書くか、使わない見出しを削ってください。意図した見出しや書きかけなら残せます。
+必要な説明を書くか、使わない見出しを削ってください。意図した空欄や書きかけなら残せます。変換した文書では、表示上の本文や見出し階層も確認してください。
 
 ### 例
 
@@ -200,7 +200,7 @@ Markdownの見出しから次の同じ階層以上の見出しまでが空白と
 
 ### 根拠
 
-明示的な節の範囲を確認します。書きかけを意図した空欄と区別できず、未校正なので実験的です。",
+明示的な節の範囲を確認します。人164本・生成811本・その他278本のMarkdownで13文書39箇所に一致し、該当範囲を確認しました。保存時に見出し階層・コード柵・画像などを失った文書も含むため、原文の説明の欠落や書き手の誤りとは断定しません。構文上の空欄を確認する情報として既定で有効にします。",
 };
 
 pub struct EmptySection;
@@ -223,8 +223,14 @@ impl Rule for EmptySection {
             if !without_comments.trim().is_empty() {
                 continue;
             }
-            let mut d = EMPTY_META.diagnostic(node.span, "この見出しの節には本文がありません");
+            let mut d = EMPTY_META.diagnostic(
+                node.span,
+                "この見出しの節には、Markdown上の本文がありません",
+            );
             d.context = Some(section);
+            d.hint = Some(
+                "意図した空欄や書きかけなら残せます。変換した文書では、表示上の本文や見出し階層も確認してください".into(),
+            );
             out.push(d);
         }
     }
@@ -304,22 +310,26 @@ mod tests {
     }
 
     #[test]
-    fn structure_rules_are_experimental_and_require_the_right_coverage() {
+    fn structure_rules_are_stable_and_require_the_right_coverage() {
         use crate::engine::{Coverage, Engine, EngineOptions, Selection};
         let doc = Document::markdown("次の3項目です。\n\n- 名前\n- 住所\n\n# 空の節\n");
         let default = Engine::new(EngineOptions::default())
             .unwrap()
             .lint(doc.clone());
+        let structure: Vec<_> = default
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.rule_id.as_str(), "S11" | "S12"))
+            .collect();
+        assert_eq!(structure.len(), 2);
         assert!(
-            !default
-                .diagnostics
+            structure
                 .iter()
-                .any(|d| matches!(d.rule_id.as_str(), "S11" | "S12"))
+                .all(|d| { d.status == RuleStatus::Stable && d.severity == Severity::Info })
         );
         let engine = Engine::new(EngineOptions {
             selection: Selection {
                 only: Some(vec!["S11".into(), "S12".into()]),
-                cli_enable: vec!["S11".into(), "S12".into()],
                 ..Selection::default()
             },
             ..EngineOptions::default()
@@ -332,6 +342,47 @@ mod tests {
         let mut fragments = Document::markdown("# 空の節\n");
         fragments.kind = crate::document::DocumentKind::Fragments;
         assert!(engine.lint(fragments).diagnostics.is_empty());
+    }
+
+    #[test]
+    fn default_structure_findings_can_be_disabled_and_suppressed() {
+        use crate::engine::{Engine, EngineOptions, Selection};
+        let source = "次の3項目です。\n\n- 名前\n- 住所\n\n# 空の節\n";
+        for selection in [
+            Selection {
+                no_readability: true,
+                ..Selection::default()
+            },
+            Selection {
+                cli_disable: vec!["S11".into(), "S12".into()],
+                ..Selection::default()
+            },
+        ] {
+            let report = Engine::new(EngineOptions {
+                selection,
+                ..EngineOptions::default()
+            })
+            .unwrap()
+            .lint(Document::markdown(source));
+            assert!(
+                !report
+                    .diagnostics
+                    .iter()
+                    .any(|d| matches!(d.rule_id.as_str(), "S11" | "S12"))
+            );
+        }
+        let report = Engine::new(EngineOptions::default())
+            .unwrap()
+            .lint(Document::markdown(format!(
+                "<!-- noslop-disable-file S11,S12 -- 下書き -->\n\n{source}"
+            )));
+        let structure: Vec<_> = report
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.rule_id.as_str(), "S11" | "S12"))
+            .collect();
+        assert_eq!(structure.len(), 2);
+        assert!(structure.iter().all(|d| d.suppressed.is_some()));
     }
 
     #[test]
