@@ -103,6 +103,77 @@ fn repeated_short_slogans_are_experimental_and_do_not_count_fragments() {
 }
 
 #[test]
+fn html_line_breaks_lint_following_prose_at_original_positions() {
+    let phrase = "と言えるでしょう";
+    for filename in ["sample.md", "sample.html"] {
+        for tag in ["<br>", "<br/>", "<br />", "<BR>", "<br class=\"line\">"] {
+            for template in [
+                "<p>前の文。{br}この案なら十分と言えるでしょう。</p>",
+                "<div>前の行{br}この案なら十分と言えるでしょう。</div>",
+                "<p>前の行{br}この案なら十分と言えるでしょう。{br}別の案も十分と言えるでしょう。</p>",
+                "<p>この案なら十分と言えるでしょう。{br}次の行</p>",
+                "<p>前の行{br}続き<span>この案なら十分と言えるでしょう。</span></p>",
+                "前の行{br}この案なら十分と言えるでしょう。",
+                "<html><body><p>前の行{br}この案なら十分と言えるでしょう。</p></body></html>",
+                "<p>前の行{br}\n  この案なら十分と言えるでしょう。</p>",
+                "<p>前の行{br}{br}この案なら十分と言えるでしょう。</p>",
+                "<p>前の行{br}この案なら十分と言えるでしょう。",
+            ] {
+                let source = template.replace("{br}", tag);
+                let output = noslop()
+                    .args([
+                        "check",
+                        "-",
+                        "--stdin-filename",
+                        filename,
+                        "--no-config",
+                        "--no-dict",
+                        "--only-rules",
+                        "P01",
+                        "--format",
+                        "json",
+                    ])
+                    .write_stdin(source.as_str())
+                    .assert()
+                    .success()
+                    .get_output()
+                    .stdout
+                    .clone();
+                let report = json(&output);
+                let diagnostics = report["files"][0]["diagnostics"].as_array().unwrap();
+                let expected: Vec<_> = source.match_indices(phrase).collect();
+                assert_eq!(
+                    diagnostics.len(),
+                    expected.len(),
+                    "{filename}: {source}: {report}"
+                );
+                for (diagnostic, (start, _)) in diagnostics.iter().zip(expected) {
+                    assert_eq!(diagnostic["ruleId"], "P01");
+                    for (endpoint, offset) in [("start", start), ("end", start + phrase.len())] {
+                        let position = &diagnostic["range"][endpoint];
+                        assert_eq!(position["offset"], offset, "{filename}: {source}");
+                        assert_eq!(
+                            position["line"],
+                            source[..offset].bytes().filter(|b| *b == b'\n').count() + 1
+                        );
+                        assert_eq!(
+                            position["column"],
+                            source[..offset]
+                                .rsplit('\n')
+                                .next()
+                                .unwrap()
+                                .chars()
+                                .count()
+                                + 1
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn markdown_html_blocks_lint_visible_prose_at_original_positions() {
     for source in [
         "<p>保存先を分けると言えるでしょう。</p>\n",
