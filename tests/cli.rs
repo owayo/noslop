@@ -32,6 +32,77 @@ const DOC_WITH_TERM: &str =
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
 #[test]
+fn repeated_short_slogans_are_experimental_and_do_not_count_fragments() {
+    let source = "## 点検を、仕組みで続ける\n\n小さな記録が示す、次の一手\n\n待っている間に、機会は失われる\n";
+    for filename in ["sample.md", "sample.txt"] {
+        let input = if filename.ends_with(".txt") {
+            source.replace("## ", "")
+        } else {
+            source.to_string()
+        };
+        for experimental in [false, true] {
+            let mut command = noslop();
+            command.args([
+                "check",
+                "-",
+                "--stdin-filename",
+                filename,
+                "--no-config",
+                "--no-dict",
+                "--genre",
+                "tech",
+                "--format",
+                "json",
+            ]);
+            if experimental {
+                command.arg("--experimental");
+            }
+            let output = command
+                .write_stdin(input.as_str())
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let report = json(&output);
+            assert_eq!(rule_count(&report, "R21"), if experimental { 3 } else { 0 });
+            if experimental {
+                for d in report["files"][0]["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|d| d["ruleId"] == "R21")
+                {
+                    assert_eq!(d["severity"], "info");
+                    assert_eq!(d["status"], "experimental");
+                }
+            }
+        }
+    }
+    let fragments = "const A: &str = \"点検を、仕組みで続ける\";\nconst B: &str = \"小さな記録が示す、次の一手\";\nconst C: &str = \"待っている間に、機会は失われる\";\n";
+    let output = noslop()
+        .args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "sample.rs",
+            "--no-config",
+            "--no-dict",
+            "--only-rules",
+            "R21",
+            "--format",
+            "json",
+        ])
+        .write_stdin(fragments)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(rule_count(&json(&output), "R21"), 0);
+}
+
+#[test]
 fn markdown_html_blocks_lint_visible_prose_at_original_positions() {
     for source in [
         "<p>保存先を分けると言えるでしょう。</p>\n",
