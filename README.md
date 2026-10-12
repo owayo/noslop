@@ -114,7 +114,7 @@ Rust 1.98 以上が必要です。
 cargo install --git https://github.com/owayo/noslop --locked --no-default-features noslop
 ```
 
-Cargo から直接入れる版は辞書を同梱しません。辞書を同梱した版は Homebrew・GitHub Releases、またはソースから `make install` で入れられます。辞書本体は Git に置かず、ビルド前に固定した版と SHA-256 で取得・照合します。
+Cargo から直接入れる版は辞書を同梱しません。辞書を同梱した版は Homebrew・winget・GitHub Releases、またはソースから `make install` で入れられます。辞書本体は Git に置かず、ビルド前に固定した版と SHA-256 で取得・照合します。
 
 ### GitHub Releases から
 
@@ -143,7 +143,7 @@ make install
 `make install` は `/usr/local/bin` に入れます。場所を変えるときは `INSTALL_PATH` を指定します (例: `make install INSTALL_PATH="$HOME/.local/bin"`)。
 <!-- standard:install:end -->
 
-アーカイブには `LICENSE` と `THIRD_PARTY_NOTICES.md` も含まれます。Homebrew での更新、スキルの導入先、ソースから入れる場合の指定は [インストールの補足](docs/installation.md) を参照してください。
+アーカイブには `LICENSE` と `THIRD_PARTY_NOTICES.md` も含まれます。Homebrew と winget での更新、スキルの導入先、ソースから入れる場合の指定は [インストールの補足](docs/installation.md) を参照してください。
 
 ソースからの導入では、Claude Code と Codex CLI のスキルも `~/.claude/skills/noslop/` と `~/.codex/skills/noslop/` に入ります。`make uninstall` はスキルを残します。
 

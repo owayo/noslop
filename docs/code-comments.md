@@ -22,7 +22,7 @@ extensions = ["rs", "ts", "tsx", "py", "go", "sh"]
 # static_text = false
 ```
 
-- **読める言語**: Rust・C・C++・Python・JavaScript・TypeScript・TSX・Go・PHP・Java・Kotlin・Swift・C#・Bash・Ruby・Lua・HTML・CSS・YAML・TOML です。どのバイナリ（Homebrew・Releases・ソースからのビルド）でも、すべての言語を読めます。`[code] extensions` にコードの拡張子でないものを書くと、設定の誤りになります。`noslop init`（`--user` も）で作るひな形の `[code]` には、読める拡張子すべてを言語ごとに並べてあります（コメントにしてあるので、使うものだけを残して行頭の `#` を外します）
+- **読める言語**: Rust・C・C++・Python・JavaScript・TypeScript・TSX・Go・PHP・Java・Kotlin・Swift・C#・Bash・Ruby・Lua・HTML・CSS・YAML・TOML です。どのバイナリ（Homebrew・winget・Releases・ソースからのビルド）でも、すべての言語を読めます。`[code] extensions` にコードの拡張子でないものを書くと、設定の誤りになります。`noslop init`（`--user` も）で作るひな形の `[code]` には、読める拡張子すべてを言語ごとに並べてあります（コメントにしてあるので、使うものだけを残して行頭の `#` を外します）
 - **取り出し方**: tree-sitter でコメントを読むので、文字列の中の `//`、正規表現、ヒアドキュメントをコメントと取り違えません。隣り合う行の同じ種類のコメント（同じ記号・同じ列）は 1 つにまとめ、コードの後ろのコメントは単独で読みます。記号（`//`・`#`・`/*`・行頭の `*` など）を外した本文を段落にし、指摘の位置は元のファイルの行・列で示します。コメントは句点を打たずに 1 行に 1 つのことを書くことが多いので、行の終わりは文の区切りとして読みます。前の行が読点・助詞・開き括弧で終わるときと、次の行が閉じ括弧・読点で始まるときだけ、1 つの文につなぎます
 - **ドキュメントのコメント**: `///`・`/** */`・Python の docstring は Markdown として読み、インラインコードやコードブロックは検査しません。Javadoc と C# の XML ドキュメントは、タグを外して読みます
 - **検査しないコメント**: 日本語を含まないもの、shebang、ツールへの指示（`eslint-disable`・`noqa` など）、著作権・ライセンスの表記

@@ -55,6 +55,8 @@ GitHub の Actions タブで Release ワークフローを選び、Run workflow 
 
 公開の後、Homebrew の tap（[owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)）の formula を、新しい版の URL と SHA-256 に書き換えて push します。tap への push には GitHub App のトークンを使います。設定する項目は [エージェント向けガイド](../AGENTS.md#リリース) を参照してください。設定が足りなければ、警告を出して tap の更新だけを飛ばします。
 
+あわせて、winget のパッケージ (`owayo.noslop`) の新しい版を、[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) への PR で出します。PR を出す前に、winget-pkgs の fork を GitHub App のトークンで upstream に同期します。設定する項目は同じく [エージェント向けガイド](../AGENTS.md#リリース) にあります。設定が足りないときと、winget-pkgs にまだ初版が登録されていないときは、警告を出して winget への提出だけを飛ばします。
+
 Release ワークフローは、`noslop dict download` が使う配布辞書の目録（`dict/catalog.json`）も hasami の最新のリリースに合わせます。目録が変わったときは、`make ci` と、3 つの辞書を実際に取得して確かめる `make dict-check` を通してから、版の更新と同じコミットに入れます。
 
 配布バイナリの各ビルドジョブでも、固定情報に合うHSD本体を取得・照合してから埋め込みます。辞書はバイナリに入るので、利用者が実行する際の取得は不要です。

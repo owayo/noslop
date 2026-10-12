@@ -12,6 +12,14 @@ brew install owayo/noslop/noslop
 
 tap ([owayo/homebrew-noslop](https://github.com/owayo/homebrew-noslop)) を足して、Releases のビルド済みのバイナリを入れます。更新は `brew upgrade noslop` です。Claude Code・Codex CLI のスキルは入らないので、使うなら `noslop skill-install claude` (Codex CLI なら `codex`) を実行します ([AI エージェントと使う](agent-setup.md#ai-エージェントと使う))。
 
+### winget (Windows)
+
+```powershell
+winget install owayo.noslop
+```
+
+Releases の Windows 用のアーカイブ (`noslop-x86_64-pc-windows-msvc.zip`) から `noslop.exe` を入れ、更新は `winget upgrade owayo.noslop` で行います。winget は `PATH` を書き換えて `noslop` を使えるようにするので、入れた後は新しいターミナルを開いてから実行します。スキルの扱いは Homebrew と同じです (`noslop skill-install claude` などで入れる)。
+
 ### GitHub Releases から
 
 [Releases](https://github.com/owayo/noslop/releases/latest) から自分の環境のアーカイブを取得して展開し、`noslop` を `PATH` の通った場所に置きます。各リリースには、取得したファイルを確かめるための `SHA256SUMS` も添付しています。
@@ -34,7 +42,7 @@ macOS でブラウザから取得した場合は、実行の前に隔離属性�
 cargo install --git https://github.com/owayo/noslop --locked --no-default-features noslop
 ```
 
-`--locked` を付けると、CI とリリースのビルドと同じく `Cargo.lock` のとおりに依存を解決します。この方法では辞書を同梱しません。取得した配布辞書・設定の辞書を使え、どちらもなければ辞書なしで動きます。同梱辞書を使う版は Homebrew・GitHub Releases、または次のソースからの手順で入れます。
+`--locked` を付けると、CI とリリースのビルドと同じく `Cargo.lock` のとおりに依存を解決します。この方法では辞書を同梱しません。取得した配布辞書・設定の辞書を使え、どちらもなければ辞書なしで動きます。同梱辞書を使う版は Homebrew・winget・GitHub Releases、または次のソースからの手順で入れます。
 
 ### ソースから
 
