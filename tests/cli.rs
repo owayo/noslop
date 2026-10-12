@@ -32,6 +32,67 @@ const DOC_WITH_TERM: &str =
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
 #[test]
+fn markdown_html_blocks_lint_visible_prose_at_original_positions() {
+    for source in [
+        "<p>保存先を分けると言えるでしょう。</p>\n",
+        "<div class=\"note\">保存先を分けると言えるでしょう。</div>\n",
+        "前置き。<span>保存先を分けると言えるでしょう。</span>\n",
+        "<p class=\"lead\">\n保存先を分けると言えるでしょう。\n</p>\n",
+        "<p class=\"lead\">\n\n保存先を分けると言えるでしょう。\n\n</p>\n",
+    ] {
+        let output = noslop()
+            .args([
+                "check",
+                "-",
+                "--stdin-filename",
+                "sample.md",
+                "--no-config",
+                "--no-dict",
+                "--only-rules",
+                "P01",
+                "--format",
+                "json",
+            ])
+            .write_stdin(source)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&output);
+        assert_eq!(rule_count(&report, "P01"), 1, "{source}: {report}");
+        let diagnostic = &report["files"][0]["diagnostics"][0];
+        let start = source.find("と言えるでしょう").unwrap();
+        assert_eq!(diagnostic["range"]["start"]["offset"], start);
+        assert_eq!(
+            diagnostic["range"]["start"]["line"],
+            source[..start].bytes().filter(|b| *b == b'\n').count() + 1
+        );
+    }
+    let source = "<div>\n<pre>例と言えるでしょう。</pre>\n<code>例と言えるでしょう。</code>\n<script>const x = '設定と言えるでしょう';</script>\n<style>/* 装飾と言えるでしょう */</style>\n<!-- コメントと言えるでしょう -->\n</div>\n";
+    let output = noslop()
+        .args([
+            "check",
+            "-",
+            "--stdin-filename",
+            "sample.md",
+            "--no-config",
+            "--no-dict",
+            "--only-rules",
+            "P01",
+            "--format",
+            "json",
+        ])
+        .write_stdin(source)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(rule_count(&json(&output), "P01"), 0);
+}
+
+#[test]
 fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
     for (filename, source) in [
         (

@@ -76,6 +76,8 @@ struct Builder {
     span: Option<Span>,
     breaks: Vec<usize>,
     sentence_breaks: Vec<usize>,
+    /// Markdown の HTML 本文では、英語だけの文章も残す。
+    keep_non_japanese: bool,
 }
 
 impl Builder {
@@ -115,8 +117,10 @@ impl Builder {
 
     fn finish(&mut self, out: &mut Vec<Block>) {
         let b = std::mem::take(self);
+        self.keep_non_japanese = b.keep_non_japanese;
         let trimmed = b.text.trim();
-        if !crate::text::contains_japanese(trimmed)
+        if trimmed.is_empty()
+            || !b.keep_non_japanese && !crate::text::contains_japanese(trimmed)
             || ["http://", "https://", "ftp://"]
                 .iter()
                 .any(|prefix| trimmed.starts_with(prefix))
@@ -137,6 +141,11 @@ impl Builder {
             sentences: 0..0,
         });
     }
+}
+
+/// Markdown からは本文だけを取り、コードの検査では表示属性も取る。
+pub(super) fn html_body(source: &str, root: Node<'_>) -> (Vec<Block>, String, bool) {
+    markup::body(source, root)
 }
 
 #[cfg(test)]
