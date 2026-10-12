@@ -3,6 +3,7 @@
 //! 文や段落をまたいだ集計で、機械的に均された文章のリズムを拾う。統計の母集団は
 //! 地の文 ([`crate::document::Document::prose_sentences`]) で、校正に使った条件
 //! (見出し・リスト・引用・表を除いた本文) に合わせている。
+//! 実験的な R21 だけは、見出しと独立した短い段落を対象にする。
 
 mod action_closer;
 mod antithesis;
@@ -20,6 +21,7 @@ mod nominal_lists;
 mod overcorrection;
 mod paragraphs;
 mod self_answer;
+mod slogans;
 mod style;
 mod triads;
 
@@ -53,6 +55,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(nominal_lists::RepeatedNominalList::default()),
         Box::new(action_closer::ClosingCallToAction),
         Box::new(style::MixedWritingStyle::default()),
+        Box::new(slogans::RepeatedShortSlogan::default()),
     ]
 }
 
@@ -141,9 +144,9 @@ mod tests {
     use crate::rules::testing::{self, assert_measures_agree};
 
     /// measure を実装しているルール。R10・R11・R15・R19 は閾値を持たない。
-    const MEASURED: [&str; 16] = [
+    const MEASURED: [&str; 17] = [
         "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13", "R14", "R16",
-        "R17", "R18", "R20",
+        "R17", "R18", "R20", "R21",
     ];
 
     fn rule_by_id(id: &str) -> Box<dyn Rule> {
@@ -248,6 +251,9 @@ mod tests {
         let alternating: Vec<usize> = (0..20).map(|i| [10, 40][i % 2]).collect();
         let clustered: Vec<usize> = (0..20).map(|i| 10 + (i / 5) * 10).collect();
         vec![
+            // R21 (短い宣言の反復と、回数が足りない例)
+            "## 点検を、仕組みで続ける\n\n小さな記録が示す、次の一手\n\n待っている間に、機会は失われる\n".into(),
+            "点検を、仕組みで続ける\n\n小さな記録が示す、次の一手\n".into(),
             String::new(),
             "# 見出しだけ\n".to_string(),
             "- 項目。\n- 項目。\n- 項目。\n- 項目。\n".to_string(),
@@ -356,7 +362,7 @@ mod tests {
     #[test]
     fn rule_ids_are_in_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=20).map(|n| format!("R{n:02}")).collect();
+        let expected: Vec<String> = (1..=21).map(|n| format!("R{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -366,7 +372,7 @@ mod tests {
             let m = rule.meta();
             if !matches!(
                 m.id,
-                "R11" | "R12" | "R13" | "R14" | "R15" | "R16" | "R17" | "R18" | "R19"
+                "R11" | "R12" | "R13" | "R14" | "R15" | "R16" | "R17" | "R18" | "R19" | "R21"
             ) {
                 continue;
             }

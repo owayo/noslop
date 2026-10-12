@@ -102,7 +102,7 @@ flowchart TD
 | `src/rules/mod.rs` | `Rule` trait・`RuleMeta`・`Scope`・`builtin_rules`、判定の単位 (`RuleUnit`。1 文ずつか、文書・段落をまたぐか)、全文が対象のときだけ実行する条件 (`Rule::requires_full_document`)、校正用の測定値 (`Measure`・`Fires`) と校正の基準の重大度 (`calibration_basis`) |
 | `src/rules/phrases.rs` | 語句パターン系 (`P`)。`phrases/catalog.rs` が語句辞書で動く P01〜P12・P18・P19、`phrases/syntax.rs` が構文の型 (P13・P14・P20)、`phrases/attribution.rs` が出典をぼかした権威付け (P21)、`phrases/artifacts.rs` が引用マーカーの残骸 (P22。スコープに従わず全ブロックの1行の中で完全な記号を探し、コード・URLの部分は除く)、`phrases/markup.rs` が太字にならずに記号のまま残った強調の記法 (P23。語句ルールのスコープの設定に従わず、見出し・表・引用を含む全ブロックの 1 行の中で `**…**` の対を探す。Markdown は描画されない対を警告、テキスト・コード・gws の値は出力先で描画されるか分からないので情報)、`phrases/effect.rs` が効果をぼかす言い回し (P24。語句ごとに文脈を見直す実験的なルール)、`phrases/stance.rs` が出典の態度の解説 (P25。主語から 40 字以内の述語を、主語のあとで開いた括弧の外で探す。「筆者」は「本書の筆者」のように出典を直接添えた主語だけを数える)、`phrases/jargon.rs` が行動をぼかす業界語 (P26。業務の対象との組み合わせに絞る)、`phrases/closer.rs` が結びの定型 (P27。P18 の結びを分け、途中の段落も含めて言い換えを拾う)、`phrases/permission.rs` が許可の形で語る行動 (P28。状態・選択肢・質問などを除く文字列の近似。必要な許可は残せる)、`phrases/reading.rs` が読みやすさのルール (P15〜P17)、`phrases/engine.rs` が照合の共通部品 |
 | `src/rules/phrases/location.rs` | P22・P23 で共用する、行の先頭のバイト位置・原文の同じ行への範囲の変換・該当する文の文脈。引用マーカーの見出し属性の補完と、強調記号の原文での確認は各ルールに置く |
-| `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas・duplicates・future_closer・triads・guide_density・nominal_lists・action_closer・style) |
+| `src/rules/rhythm.rs` | リズム・統計系 (`R`)。ルールごとに `rhythm/` 配下のファイル (burstiness・endings・length・buried_list・antithesis・paragraphs・leads・cleft・self_answer・overcorrection・commas・duplicates・future_closer・triads・guide_density・nominal_lists・action_closer・style・slogans) |
 | `src/rules/structure.rs` | 構造系 (`S01`〜`S10`) |
 | `src/rules/custom.rs` | 設定ファイルの独自ルール (`[[custom]]`) |
 | `src/rules/testing.rs` | ルールのテスト用の近道 (`run` / `run_with` / `matched`) と、`measure` と `check` の一致の確認 (`assert_measures_agree`) |
@@ -152,7 +152,7 @@ flowchart TD
 - **未校正の語句・閾値・推測は experimental にする**。辞書なしの近似で元の校正条件から外れるものも同じ。明示的な構造を照合するルールは、実文書の該当箇所と正常・異常の境界事例を確認して標準化できる。意図した構造を誤りと断定せず、検査範囲と制約を説明に残す
 - **辞書ありの判定は元の校正条件 (品詞で数える) に合わせる**。辞書あり・なしで結果が変わるルールは、それぞれの検出条件・制約と校正の結果を `explanation` の「根拠」に書く。利用者向けのドキュメントとその生成元の説明文には、過去の検出器への言及や比較を載せず、現在の noslop の動作を説明する。辞書で精度が上がらないルール (R06 など) は辞書を使わない。既定の `auto` は手元の share ディレクトリの辞書で変わるので、`noslop calibrate` で測るときは `dictionary = "bundled"` (校正した条件) か、測りたい辞書を設定ファイルで固定する
 - **文書単位の指標を足すなら、先に検証する**。ルールごとの誤検知率の校正は、指摘を足し合わせた値が文書を見分けることを保証しない。文書全体の点数や判定を出すなら、ジャンルと長さを分けた保留のデータで見分けられることを示してから、目的と名前を決める
-- **統計系ルールは地の文だけで集計する**。校正を地の文 (見出し・リスト・引用・表・コードを除く) で行ったため
+- **統計系ルールは地の文だけで集計する**。校正を地の文 (見出し・リスト・引用・表・コードを除く) で行ったため。実験的な R21 は例外で、見出しと短い一文段落に限って型の反復を数える (`rhythm/slogans.rs`。experimental/info。閾値は `min_count` で、`measure` も実装する)
 - **語句ルールの既定のスコープは段落だけ**。リスト・表・引用は設定で広げる
 - 人間のほうが多く使うと分かった語は外す。人間にも一定数ある語は `info` に下げる
 
