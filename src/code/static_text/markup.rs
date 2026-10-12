@@ -81,6 +81,9 @@ fn extract_with_attributes(
             continue;
         }
         match n.kind() {
+            "document" if lang == CodeLanguage::Html => {
+                tasks.extend(html_children(source, n, false).into_iter().rev());
+            }
             "text" | "jsx_text" | "entity" => {
                 decode::markup(
                     source,
@@ -102,10 +105,12 @@ fn extract_with_attributes(
                 let tag = tag_name(open, source);
                 let lower = tag.to_ascii_lowercase();
                 let intrinsic = lang == CodeLanguage::Html || tag == lower;
+                let line_break = intrinsic && lower == "br";
+                let is_hidden = hidden(open, source);
                 if intrinsic
                     && (EXCLUDED.contains(&lower.as_str())
                         || !display_attributes && lower == "textarea")
-                    || hidden(open, source)
+                    || is_hidden && !line_break
                 {
                     b.finish(out);
                     continue;
@@ -126,16 +131,20 @@ fn extract_with_attributes(
                     tasks.extend(titles.into_iter().rev().map(Task::Node));
                     continue;
                 }
-                if display_attributes {
+                if display_attributes && !is_hidden {
                     attributes(source, lang, open, comments, out);
                 }
-                if intrinsic && lower == "br" {
-                    let at = b.text.len();
-                    b.opaque("\n", Span::new(n.start_byte(), n.end_byte()));
-                    b.sentence_breaks.push(at);
-                    continue;
+                if line_break {
+                    if is_hidden {
+                        b.finish(out);
+                    } else {
+                        let at = b.text.len();
+                        b.opaque("\n", Span::new(open.start_byte(), open.end_byte()));
+                        b.sentence_breaks.push(at);
+                    }
+                    // HTML 文法は br の後の本文を子にするため、改行を足した後も読み進める。
                 }
-                let boundary = !intrinsic || !INLINE.contains(&lower.as_str());
+                let boundary = !line_break && (!intrinsic || !INLINE.contains(&lower.as_str()));
                 if boundary {
                     b.finish(out);
                     tasks.push(Task::Boundary);
@@ -159,24 +168,7 @@ fn extract_with_attributes(
                     })
                     .collect();
                 if lang == CodeLanguage::Html {
-                    // HTML 文法は空白を extra としてノードの外に置くため、兄弟間の空白も読む。
-                    let mut c = n.walk();
-                    let all: Vec<_> = n.named_children(&mut c).collect();
-                    let mut ordered = Vec::new();
-                    for (i, child) in all.iter().enumerate() {
-                        if i > 0 {
-                            let span = Span::new(all[i - 1].end_byte(), child.start_byte());
-                            if span.start < span.end
-                                && source[span.range()]
-                                    .bytes()
-                                    .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 12))
-                            {
-                                ordered.push(Task::Whitespace(span));
-                            }
-                        }
-                        ordered.push(Task::Node(*child));
-                    }
-                    tasks.extend(ordered.into_iter().rev());
+                    tasks.extend(html_children(source, n, line_break).into_iter().rev());
                 } else {
                     tasks.extend(children.into_iter().rev().map(Task::Node));
                 }
@@ -207,6 +199,43 @@ fn extract_with_attributes(
         }
     }
     b.finish(out);
+}
+
+/// HTML 文法がノードの外に置く空白を補い、本文を原文の順に並べる。
+fn html_children<'t>(source: &str, n: Node<'t>, line_break: bool) -> Vec<Task<'t>> {
+    let mut c = n.walk();
+    let all: Vec<_> = n.named_children(&mut c).collect();
+    let mut ordered = Vec::new();
+    for (i, child) in all.iter().enumerate() {
+        if i > 0 {
+            let span = Span::new(all[i - 1].end_byte(), child.start_byte());
+            if span.start < span.end
+                && source[span.range()]
+                    .bytes()
+                    .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 12))
+            {
+                ordered.push(Task::Whitespace(span));
+            }
+        }
+        // 要素のタグは処理済み。文書直下の自己終了タグは独立した要素として読む。
+        if !matches!(child.kind(), "start_tag" | "end_tag")
+            && !(is_element(n) && child.kind() == "self_closing_tag")
+        {
+            ordered.push(Task::Node(*child));
+        }
+    }
+    // br の暗黙の終端までの空白は、最後の子にも親の隙間にも含まれない。
+    if line_break && let Some(last) = all.last() {
+        let span = Span::new(last.end_byte(), n.end_byte());
+        if span.start < span.end
+            && source[span.range()]
+                .bytes()
+                .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 12))
+        {
+            ordered.push(Task::Whitespace(span));
+        }
+    }
+    ordered
 }
 
 /// 本文のブロックと、次の Markdown ブロックにも続く HTML 要素を返す。

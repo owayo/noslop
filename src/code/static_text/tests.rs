@@ -214,6 +214,125 @@ fn markup_joins_inline_text_but_keeps_controls_blocks_and_expressions_apart() {
 }
 
 #[test]
+fn html_line_breaks_keep_following_text_and_exact_source_ranges() {
+    for tag in ["<br>", "<br/>", "<br />", "<BR>", "<br class=\"line\">"] {
+        let src = format!("<p>前の行{tag}次の行&amp;<span>続き</span>です。</p>");
+        let d = doc(&src, CodeLanguage::Html);
+        assert_eq!(d.blocks.len(), 1, "{tag}: {:?}", d.blocks);
+        let b = &d.blocks[0];
+        assert_eq!(b.text, "前の行\n次の行&続きです。", "{tag}");
+        let at = "前の行".len();
+        assert_eq!(b.sentence_breaks, [at]);
+        assert_eq!(d.slice(b.to_source(at..at + 1)), tag);
+        let at = b.text.find('&').unwrap();
+        assert_eq!(d.slice(b.to_source(at..at + 1)), "&amp;");
+        exact(&d);
+    }
+}
+
+#[test]
+fn consecutive_html_line_breaks_keep_each_following_line() {
+    let src = "<p>前の行<br>次の行<br><br>最後の行</p>";
+    let d = doc(src, CodeLanguage::Html);
+    assert_eq!(d.blocks.len(), 1);
+    let b = &d.blocks[0];
+    assert_eq!(b.text, "前の行\n次の行\n\n最後の行");
+    let breaks: Vec<_> = b.text.match_indices('\n').map(|(at, _)| at).collect();
+    assert_eq!(b.sentence_breaks, breaks);
+    for (at, (source_at, tag)) in breaks.iter().zip(src.match_indices("<br>")) {
+        assert_eq!(
+            b.to_source(*at..*at + 1),
+            Span::new(source_at, source_at + tag.len())
+        );
+    }
+    exact(&d);
+}
+
+#[test]
+fn html_line_breaks_preserve_whitespace_like_self_closing_tags() {
+    for src in [
+        "<p>前の行<br>\n  次の行</p>",
+        "<p>前の行<br>\n<br>\n最後の行</p>",
+        "<p><span>前の行<br>次の行 </span>続き</p>",
+    ] {
+        let d = doc(src, CodeLanguage::Html);
+        let other = doc(&src.replace("<br>", "<br/>"), CodeLanguage::Html);
+        assert_eq!(d.blocks.len(), other.blocks.len(), "{src}");
+        for (b, other) in d.blocks.iter().zip(&other.blocks) {
+            assert_eq!(b.text, other.text, "{src}");
+            assert_eq!(b.sentence_breaks, other.sentence_breaks, "{src}");
+        }
+        exact(&d);
+    }
+}
+
+#[test]
+fn html_line_breaks_keep_following_text_when_the_break_is_hidden() {
+    for tag in ["<br hidden>", "<br hidden/>"] {
+        let src = format!("<p>前の行{tag}次の行</p>");
+        assert_eq!(texts(&src, CodeLanguage::Html), ["前の行", "次の行"]);
+        exact(&doc(&src, CodeLanguage::Html));
+    }
+}
+
+#[test]
+fn html_line_breaks_keep_prose_directly_under_the_document() {
+    for tag in ["<br>", "<br/>", "<br />"] {
+        let src = format!("前の行{tag}次の行 <span>続き</span>");
+        let d = doc(&src, CodeLanguage::Html);
+        assert_eq!(d.blocks.len(), 1, "{tag}");
+        assert_eq!(d.blocks[0].text, "前の行\n次の行 続き", "{tag}");
+        exact(&d);
+    }
+    assert_eq!(
+        texts("<img alt=\"画像の説明\"/>", CodeLanguage::Html),
+        ["画像の説明"]
+    );
+}
+
+#[test]
+fn html_line_breaks_read_display_attributes_once() {
+    for tag in ["<br title=\"改行の説明\">", "<br title=\"改行の説明\"/>"] {
+        let src = format!("<p>前の行{tag}次の行</p>");
+        // 属性は本文とは別の断片として、一度だけ取り出す。
+        assert_eq!(
+            texts(&src, CodeLanguage::Html),
+            ["前の行\n次の行", "改行の説明"]
+        );
+        exact(&doc(&src, CodeLanguage::Html));
+    }
+}
+
+#[test]
+fn html_line_breaks_keep_markdown_element_context() {
+    use crate::document::BlockKind;
+    for (src, kind, quote) in [
+        (
+            "<blockquote><p>前の行<br>次の行</p></blockquote>",
+            BlockKind::Paragraph,
+            true,
+        ),
+        (
+            "<ul><li>前の行<br>次の行</li></ul>",
+            BlockKind::ListItem,
+            false,
+        ),
+        (
+            "<table><tr><td>前の行<br>次の行</td></tr></table>",
+            BlockKind::TableCell,
+            false,
+        ),
+    ] {
+        let d = Document::markdown(src);
+        assert_eq!(d.blocks.len(), 1, "{src}");
+        assert_eq!(d.blocks[0].text, "前の行\n次の行", "{src}");
+        assert_eq!(d.blocks[0].kind, kind, "{src}");
+        assert_eq!(d.blocks[0].in_quote, quote, "{src}");
+        exact(&d);
+    }
+}
+
+#[test]
 fn excluded_attributes_and_subtrees_do_not_leak_expression_strings() {
     use CodeLanguage::*;
     let jsx = r#"const x = <div className={"除外する値"} href="除外するURL" onClick={() => "除外する式"} title={"表示する属性"}><p hidden={true}>隠れた文{"隠れた式"}</p><p hidden={false}>見える文</p><p aria-hidden="true">視覚的な文</p><script>{"除外するコード"}</script><pre>除外する例</pre><p>残る文</p></div>;"#;

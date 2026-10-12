@@ -18,7 +18,11 @@ pub(super) fn extract(
     comments: &[Span],
 ) -> Vec<Block> {
     let mut out = Vec::new();
-    walk(source, language, root, comments, &mut out);
+    if language == CodeLanguage::Html {
+        markup::extract(source, language, root, comments, &mut out);
+    } else {
+        walk(source, language, root, comments, &mut out);
+    }
     out
 }
 
