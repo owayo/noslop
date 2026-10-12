@@ -20,7 +20,8 @@ mod build;
 mod extract;
 mod static_text;
 
-use crate::document::{Block, Directive, ParseOptions};
+use crate::diagnostic::Span;
+use crate::document::{Block, Directive, ParseOptions, TextMap};
 
 /// コメントを読める言語。
 ///
@@ -178,6 +179,40 @@ pub fn parse_with_options(
     directives.sort_by_key(|d| d.span.start);
     directives.dedup_by_key(|d| d.span.start);
     (blocks, directives)
+}
+
+/// 空行で分かれた HTML の要素を、Markdown の解析中だけ引き継ぐ。
+#[derive(Default)]
+pub(crate) struct HtmlBody {
+    pending: String,
+    excluded: bool,
+}
+
+impl HtmlBody {
+    pub(crate) fn skipping(&self) -> bool {
+        self.excluded
+    }
+
+    pub(crate) fn read(&mut self, source: &str) -> Vec<Block> {
+        let prefix = self.pending.len();
+        let joined = format!("{}{source}", self.pending);
+        let Some(tree) = extract::tree(&joined, CodeLanguage::Html) else {
+            return Vec::new();
+        };
+        let (mut blocks, pending, excluded) = static_text::html_body(&joined, tree.root_node());
+        self.pending = pending;
+        self.excluded = excluded;
+        let mut map = TextMap::default();
+        map.push_exact(prefix, 0, source.len());
+        for block in &mut blocks {
+            block.map = block.map.compose(&map);
+            block.span = Span::new(
+                block.span.start.saturating_sub(prefix),
+                block.span.end.saturating_sub(prefix),
+            );
+        }
+        blocks
+    }
 }
 
 #[cfg(test)]

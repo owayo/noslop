@@ -2,11 +2,12 @@
 //!
 //! 解析用テキストには地の文として読まれる文字だけを残す。
 //!
-//! - コードブロック・HTML ブロック・数式ブロックと、文書の先頭の front matter は捨てる
+//! - コードブロック・数式ブロックと、文書の先頭の front matter は捨てる
 //!   (front matter は先頭にあるものだけ。途中の `---` は区切り線か見出しの下線として読む)
 //! - インラインコード・数式・画像・自動リンクはプレースホルダ 1 字に畳む
 //! - 太字・リンクなどの装飾記号は取り除き、装飾の範囲は [`InlineMark`] に残す
 //! - ソフト改行は日本語どうしの間なら何も入れず、英数字が隣り合うなら空白 1 つにする
+//! - HTML ブロックはタグとコード・非表示要素を除いた本文だけを読む
 //!
 //! 抑制コメントは HTML ブロックとインライン HTML からだけ読む (コードブロック内の
 //! 記法例を誤って抑制として扱わないため)。
@@ -300,6 +301,10 @@ struct Builder<'a> {
     source: &'a str,
     blocks: Vec<Block>,
     html_spans: Vec<Span>,
+    html_text: String,
+    html_map: TextMap,
+    html_body: crate::code::HtmlBody,
+    inline_html_body: crate::code::HtmlBody,
     current: Option<Current>,
     quote_depth: usize,
     footnote_depth: usize,
@@ -320,6 +325,10 @@ impl<'a> Builder<'a> {
             source,
             blocks: Vec::new(),
             html_spans: Vec::new(),
+            html_text: String::new(),
+            html_map: TextMap::default(),
+            html_body: crate::code::HtmlBody::default(),
+            inline_html_body: crate::code::HtmlBody::default(),
             current: None,
             quote_depth: 0,
             footnote_depth: 0,
@@ -383,7 +392,10 @@ impl<'a> Builder<'a> {
     }
 
     fn skipping(&self) -> bool {
-        self.skip_depth > 0 || self.inline_skip > 0
+        self.skip_depth > 0
+            || self.inline_skip > 0
+            || self.html_body.skipping()
+            || self.inline_html_body.skipping()
     }
 
     fn event(&mut self, event: Event<'_>, range: Range<usize>) {
@@ -408,11 +420,26 @@ impl<'a> Builder<'a> {
                         .push_placeholder(range, MarkKind::Math);
                 }
             }
-            Event::Html(_) => {
-                // HTML ブロックの中身は Start(HtmlBlock) の範囲でまとめて読む
+            Event::Html(t) => {
+                let at = self.html_text.len();
+                self.html_text.push_str(&t);
+                self.html_map.push_exact(at, range.start, t.len());
             }
-            Event::InlineHtml(_) => {
+            Event::InlineHtml(t) => {
                 self.html_spans.push(Span::new(range.start, range.end));
+                let was_skipping = self.skipping();
+                let in_excluded_block = self.html_body.skipping();
+                if in_excluded_block || t.starts_with("</") {
+                    self.html_body.read(&t);
+                }
+                if !in_excluded_block {
+                    self.inline_html_body.read(&t);
+                }
+                if !was_skipping && self.skipping() && self.skip_depth == 0 && self.inline_skip == 0
+                {
+                    self.ensure_block(&range)
+                        .push_placeholder(range, MarkKind::Code);
+                }
             }
             Event::SoftBreak | Event::HardBreak => {
                 if !self.skipping()
@@ -453,6 +480,8 @@ impl<'a> Builder<'a> {
             Tag::HtmlBlock => {
                 self.flush();
                 self.html_spans.push(Span::new(range.start, range.end));
+                self.html_text.clear();
+                self.html_map = TextMap::default();
             }
             Tag::List(_) => self.flush(),
             Tag::Item => {
@@ -512,7 +541,10 @@ impl<'a> Builder<'a> {
 
     fn end(&mut self, tag: TagEnd, _range: Range<usize>) {
         match tag {
-            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell => self.flush(),
+            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell => {
+                self.flush();
+                self.inline_html_body = crate::code::HtmlBody::default();
+            }
             TagEnd::BlockQuote(_) => {
                 self.flush();
                 self.quote_depth = self.quote_depth.saturating_sub(1);
@@ -520,7 +552,18 @@ impl<'a> Builder<'a> {
             TagEnd::CodeBlock | TagEnd::MetadataBlock(_) => {
                 self.skip_depth = self.skip_depth.saturating_sub(1);
             }
-            TagEnd::HtmlBlock => {}
+            TagEnd::HtmlBlock => {
+                for mut block in self.html_body.read(&self.html_text) {
+                    block.map = block.map.compose(&self.html_map);
+                    block.span = self.html_map.to_source(block.span.range());
+                    block.in_quote |= self.quote_depth > 0;
+                    block.in_footnote = self.footnote_depth > 0;
+                    if self.item_depth > 0 && block.kind == BlockKind::Paragraph {
+                        block.kind = BlockKind::ListItem;
+                    }
+                    self.blocks.push(block);
+                }
+            }
             TagEnd::List(_) => self.flush(),
             TagEnd::Item => {
                 self.flush();
@@ -1020,5 +1063,143 @@ mod tests {
         let pos = b[0].text.find("と言える").unwrap();
         let span = b[0].to_source(pos..pos + "と言える".len());
         assert_eq!(&src[span.range()], "と言える");
+    }
+
+    #[test]
+    fn html_blocks_read_visible_text_and_preserve_source_offsets() {
+        for html in [
+            "<p>保存先を分けると言えるでしょう。</p>",
+            "<div class=\"note\">保存先を分けると言えるでしょう。</div>",
+            "前置き。<span>保存先を分けると言えるでしょう。</span>",
+            "<p class=\"lead\">\n保存先を分けると言えるでしょう。\n</p>",
+            "<p class=\"lead\">\n\n保存先を分けると言えるでしょう。\n\n</p>",
+        ] {
+            let src = format!("---\ntitle: メモ\n---\n\n{html}\n");
+            let b = blocks(&src);
+            let block = b.iter().find(|b| b.text.contains("と言える")).unwrap();
+            let at = block.text.find("と言える").unwrap();
+            let span = block.to_source(at..at + "と言える".len());
+            assert_eq!(&src[span.range()], "と言える", "{html}");
+            assert_eq!(span.start, src.find("と言える").unwrap(), "{html}");
+        }
+    }
+
+    #[test]
+    fn html_blocks_exclude_code_comments_and_attributes() {
+        let src = "<div title=\"属性と言えるでしょう\">\n<p>表示する本文。</p>\n<pre>コードと言えるでしょう。</pre>\n<code>例と言えるでしょう。</code>\n<script>const x = '設定と言えるでしょう';</script>\n<style>/* 装飾と言えるでしょう */</style>\n<!-- コメントと言えるでしょう -->\n<p hidden>非表示と言えるでしょう。</p>\n</div>\n";
+        let b = blocks(src);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert_eq!(b[0].text.trim(), "表示する本文。");
+    }
+
+    #[test]
+    fn html_blocks_keep_inline_text_entities_and_element_boundaries() {
+        let src = "<div><p>保存<strong>先</strong>を&amp;分ける。</p><p>次の文。</p></div>\n";
+        let b = blocks(src);
+        assert_eq!(b.len(), 2, "{b:?}");
+        assert_eq!(b[0].text, "保存先を&分ける。");
+        assert_eq!(b[1].text, "次の文。");
+        let at = b[0].text.find('&').unwrap();
+        assert_eq!(&src[b[0].to_source(at..at + 1).range()], "&amp;");
+        let at = b[0].text.find('先').unwrap();
+        assert_eq!(&src[b[0].to_source(at..at + "先".len()).range()], "先");
+    }
+
+    #[test]
+    fn html_blocks_keep_markdown_quote_list_and_footnote_context() {
+        for (src, quote, footnote, kind) in [
+            (
+                "> <div>\n> 本文。\n> </div>\n",
+                true,
+                false,
+                BlockKind::Paragraph,
+            ),
+            (
+                "- <div>\n  本文。\n  </div>\n",
+                false,
+                false,
+                BlockKind::ListItem,
+            ),
+            (
+                "[^x]: <div>\n    本文。\n    </div>\n",
+                false,
+                true,
+                BlockKind::Paragraph,
+            ),
+        ] {
+            let b = blocks(src);
+            assert_eq!(b.len(), 1, "{src}: {b:?}");
+            assert_eq!(b[0].text.trim(), "本文。", "{src}");
+            assert_eq!(b[0].in_quote, quote);
+            assert_eq!(b[0].in_footnote, footnote);
+            assert_eq!(b[0].kind, kind);
+            let at = b[0].text.find("本文").unwrap();
+            assert_eq!(&src[b[0].to_source(at..at + "本文".len()).range()], "本文");
+        }
+    }
+
+    #[test]
+    fn html_blocks_keep_element_kinds_and_english_paragraphs() {
+        let src = "<div><h2>見出し</h2><ul><li>項目</li></ul><table><tr><td>表の値</td></tr></table><blockquote><p>引用。</p></blockquote><p>First paragraph.</p><p>Second paragraph.</p></div>\n";
+        let b = blocks(src);
+        assert_eq!(b.len(), 6, "{b:?}");
+        assert_eq!(b[0].kind, BlockKind::Heading(2));
+        assert_eq!(b[1].kind, BlockKind::ListItem);
+        assert_eq!(b[2].kind, BlockKind::TableCell);
+        assert!(b[3].in_quote);
+        assert_eq!(b[4].text, "First paragraph.");
+        assert_eq!(b[5].text, "Second paragraph.");
+    }
+
+    #[test]
+    fn html_blocks_keep_exclusions_across_blank_lines_and_inline_tags() {
+        for src in [
+            "<div>\n<code>\n\n除く本文。\n\n</code>\n<p>残す本文。</p>\n</div>\n",
+            "<div hidden>\n<p>除く本文。</p>\n\n除く本文。\n\n</div>\n\n残す本文。\n",
+            "<div>\n<pre>\n\n除く本文。\n</pre>\n<p>残す本文。</p>\n</div>\n",
+            "前文<code>除く本文。</code>残す本文。\n",
+        ] {
+            let b = blocks(src);
+            assert!(
+                b.iter().any(|b| b.text.contains("残す本文")),
+                "{src}: {b:?}"
+            );
+            assert!(
+                b.iter().all(|b| !b.text.contains("除く本文")),
+                "{src}: {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unclosed_inline_html_does_not_hide_later_markdown_blocks() {
+        for tag in ["code", "pre", "span hidden", "template"] {
+            let src = format!("前文<{tag}>除く本文。\n\n残す本文。\n");
+            let b = blocks(&src);
+            assert!(
+                b.iter().any(|b| b.text.contains("残す本文")),
+                "{src}: {b:?}"
+            );
+            assert!(
+                b.iter().all(|b| !b.text.contains("除く本文")),
+                "{src}: {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_blocks_link_heading_and_body_to_the_html_structure_node() {
+        let doc = crate::document::Document::markdown(
+            "# 案内\n\n<h1 align=\"center\">製品名</h1>\n<p>説明の本文。</p>\n\n## 次の節\n",
+        );
+        let structure = crate::structure::Structure::parse(&doc);
+        let html = structure
+            .nodes
+            .iter()
+            .find(|n| n.kind == crate::structure::NodeKind::Html)
+            .unwrap();
+        assert_eq!(html.block_ids, vec![1, 2]);
+        assert_eq!(doc.blocks[1].kind, BlockKind::Heading(1));
+        assert_eq!(doc.blocks[2].kind, BlockKind::Paragraph);
     }
 }
