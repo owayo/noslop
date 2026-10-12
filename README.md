@@ -100,6 +100,12 @@ Claude Code が書いたコードのコメントを noslop のフックで検査
 brew install owayo/noslop/noslop
 ```
 
+### winget (Windows)
+
+```powershell
+winget install owayo.noslop
+```
+
 ### Cargo
 
 Rust 1.98 以上が必要です。
