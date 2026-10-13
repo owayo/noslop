@@ -29,7 +29,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.101", default-features = false, features = ["analyzer", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.102", default-features = false, features = ["analyzer", "download"] }
 
 [features]
 default = ["bundled-dict"]
