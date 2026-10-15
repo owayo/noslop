@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use crate::diagnostic::Diagnostic;
 use crate::document::Document;
 use crate::engine::{Coverage, Engine, FileError, FileReport, Input};
+use crate::morph::MorphologyStatus;
 
 pub use facts::{Fact, FactChange, FactChanges, FactKind};
 pub use render::{DIFF_SCHEMA_VERSION, render_json, render_text, render_toon};
@@ -48,6 +49,8 @@ pub struct DiffReport {
     pub after: FileReport,
     pub findings: FindingChanges,
     pub facts: FactChanges,
+    /// 事実の抽出で使った辞書の有無 (lint で使った方式とは独立)。
+    pub fact_morphology: MorphologyStatus,
     pub shifts: Vec<Shift>,
 }
 
@@ -92,18 +95,28 @@ pub fn lint_pair(
     ))
 }
 
-/// 検査済みの改稿前・改稿後を比べる。
-pub fn compare(before: FileReport, after: FileReport) -> DiffReport {
+/// 検査済みの改稿前・改稿後を比べる。事実の抽出には同じエンジンの辞書設定を使う。
+/// 辞書の設定が不正・指定した辞書が読めないときはエラーを返す。
+pub fn compare(
+    engine: &Engine,
+    before: FileReport,
+    after: FileReport,
+) -> Result<DiffReport, String> {
+    let (morphology, fact_morphology) = engine.morphology_for_facts()?;
     let findings = match_findings(&before, &after);
-    let facts = facts::compare(&facts::extract(&before.doc), &facts::extract(&after.doc));
+    let facts = facts::compare(
+        &facts::extract_with_morphology(&before.doc, morphology.as_ref()),
+        &facts::extract_with_morphology(&after.doc, morphology.as_ref()),
+    );
     let shifts = shifts::detect(&before.doc, &after.doc);
-    DiffReport {
+    Ok(DiffReport {
         before,
         after,
         findings,
         facts,
+        fact_morphology,
         shifts,
-    }
+    })
 }
 
 /// 前後の指摘を突き合わせる。キーを変えながら、残ったものどうしを順に対応づける。
@@ -246,8 +259,9 @@ mod tests {
     }
 
     fn diff(before: &str, after: &str) -> DiffReport {
+        let engine = engine();
         let (b, a) = lint_pair(
-            &engine(),
+            &engine,
             Input::Text {
                 name: "before.md".to_string(),
                 source: before.to_string(),
@@ -260,7 +274,7 @@ mod tests {
             },
         )
         .expect("lint");
-        compare(b, a)
+        compare(&engine, b, a).expect("facts")
     }
 
     #[test]

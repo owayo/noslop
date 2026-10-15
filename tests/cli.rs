@@ -1422,6 +1422,88 @@ fn diff_reports_new_findings_and_lost_facts() {
 }
 
 #[test]
+fn diff_detects_proper_nouns_even_without_morphology_rules() {
+    use hasami::DictEntry;
+    use hasami::dict::DictBuilder;
+
+    let dir = workspace();
+    let dictionary = dir.path().join("names.hsd");
+    let mut builder = DictBuilder::new();
+    for (surface, pos) in [
+        ("山田", "名詞,固有名詞,人名,姓"),
+        ("東京", "名詞,固有名詞,地域,一般"),
+        ("トヨタ", "名詞,固有名詞,組織,*"),
+        ("ソニー", "名詞,固有名詞,組織,*"),
+        ("担当者", "名詞,一般,*,*"),
+        ("本社", "名詞,一般,*,*"),
+        ("他社", "名詞,一般,*,*"),
+        ("メール", "名詞,一般,*,*"),
+    ] {
+        builder.add_entry(DictEntry {
+            surface: surface.into(),
+            left_id: 1,
+            right_id: 1,
+            cost: -1000,
+            pos: pos.into(),
+            base_form: surface.into(),
+            ..Default::default()
+        });
+    }
+    builder
+        .write_hsd(&dictionary, &builder.write_options(), |_, _| {})
+        .unwrap();
+    fs::write(
+        dir.path().join("before.md"),
+        "# 担当\n\n山田さんが**東京**本社でトヨタとの提携を担当した。メールで連絡した。\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("after.md"),
+        "# 担当\n\n担当者が本社で他社との提携を担当した。ソニーに連絡した。\n",
+    )
+    .unwrap();
+    let run = |extra: &[&str]| {
+        let out = noslop()
+            .current_dir(dir.path())
+            .args([
+                "diff",
+                "before.md",
+                "after.md",
+                "--format",
+                "json",
+                "--only-rules",
+                "X01",
+            ])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        json(&out.stdout)
+    };
+    let v = run(&["--dict", dictionary.to_str().unwrap()]);
+    let removed = v["facts"]["removed"].as_array().unwrap();
+    assert_eq!(
+        removed
+            .iter()
+            .map(|f| f["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["山田", "東京", "トヨタ"]
+    );
+    for fact in removed {
+        assert_eq!(fact["kind"], "proper");
+    }
+    assert_eq!(v["facts"]["added"][0]["text"], "ソニー");
+    assert_eq!(v["facts"]["added"][0]["suspicious"], false);
+    let v = run(&["--no-dict"]);
+    assert_eq!(v["facts"]["removed"], serde_json::json!([]));
+    assert_eq!(v["facts"]["added"], serde_json::json!([]));
+}
+
+#[test]
 fn diff_reads_one_side_from_stdin() {
     let dir = workspace();
     fs::write(

@@ -35,6 +35,7 @@ use serde::Serialize;
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
 use crate::document::Document;
 use crate::engine::FileReport;
+use crate::morph::{Method, MorphologyStatus};
 use crate::output::json::{COLUMN_UNIT, DiagnosticEntry, LaneCounts, Range, Tool, format_name};
 use crate::output::text::{Counts, LANES, excerpt};
 use crate::output::toon;
@@ -208,11 +209,13 @@ pub fn render_text(report: &DiffReport, out: &mut dyn Write) -> io::Result<()> {
     let facts = &report.facts;
     writeln!(out)?;
     writeln!(out, "{b}事実の変化{b:#}")?;
+    if report.fact_morphology.method == Method::Dictionary {
+        writeln!(out, "  {dm}固有名詞を辞書の品詞で比較しています{dm:#}")?;
+    } else {
+        writeln!(out, "  {dm}辞書による固有名詞の比較はしていません{dm:#}")?;
+    }
     if facts.removed.is_empty() && facts.added.is_empty() {
-        writeln!(
-            out,
-            "  {dm}数値・日付・英字の語・カタカナ語・括弧の語・URL の増減はありません{dm:#}"
-        )?;
+        writeln!(out, "  {dm}取り出せた事実の増減はありません{dm:#}")?;
     }
     if !facts.removed.is_empty() {
         writeln!(
@@ -380,6 +383,7 @@ struct Pair<'a> {
 
 #[derive(Serialize)]
 struct Facts {
+    morphology: MorphologyStatus,
     removed: Vec<FactEntry>,
     added: Vec<FactEntry>,
 }
@@ -505,6 +509,7 @@ fn build(report: &DiffReport) -> Report<'_> {
             suppressed: f.suppressed.iter().map(pair).collect(),
         },
         facts: Facts {
+            morphology: report.fact_morphology.clone(),
             removed: report
                 .facts
                 .removed
@@ -583,7 +588,7 @@ mod tests {
         };
         let (b, a) =
             lint_pair(&engine, text("before.md", before), text("after.md", after)).expect("lint");
-        compare(b, a)
+        compare(&engine, b, a).expect("facts")
     }
 
     fn text_of(r: &DiffReport) -> String {
@@ -783,7 +788,7 @@ mod tests {
             ),
         )
         .expect("lint");
-        let r = compare(b, a);
+        let r = compare(&engine, b, a).expect("facts");
         // 独自ルールは前後とも 0 件なので出さない。抑制した X01 は改稿後の件数に入れない
         let text = text_of(&r);
         assert!(

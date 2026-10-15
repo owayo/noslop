@@ -59,7 +59,7 @@ const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 2 * MAX_TEXT_BYTES;
 
 /// サーバーの使い方の説明 (クライアントが LLM に渡す)。
-const INSTRUCTIONS: &str = "noslop は日本語の文章から「AI 臭さ」(LLM の文章に特有の言い回し・単調なリズム・体裁) を機械的に検出します。文章を書いたり直したりした後に `check` を呼び、返ってきた改稿指示の「改稿のルール」に従って見直してください。指摘は疑いの提示です。文脈上必要なら直さずに残してかまいません。原文にない事実・数字・体験は足さず、足りない材料は書き手に確認してください。指摘の件数を減らすこと自体を目的にせず、検査のやり直しは 1 回までにしてください。直した後は `diff` に直す前と後の本文を渡すと、新しく出た指摘と、改稿で消えた数字や固有名詞をまとめて確かめられます。ルールの詳しい説明は `explain` で引けます。`check` の改稿指示は、`format` に `toon` を渡すと同じ内容を少ないトークンで、`json` を渡すとプログラムで扱える形で受け取れます。";
+const INSTRUCTIONS: &str = "noslop は日本語の文章から「AI 臭さ」(LLM の文章に特有の言い回し・単調なリズム・体裁) を機械的に検出します。文章を書いたり直したりした後に `check` を呼び、返ってきた改稿指示の「改稿のルール」に従って見直してください。指摘は疑いの提示です。文脈上必要なら直さずに残してかまいません。原文にない事実・数字・体験は足さず、足りない材料は書き手に確認してください。指摘の件数を減らすこと自体を目的にせず、検査のやり直しは 1 回までにしてください。直した後は `diff` に直す前と後の本文を渡すと、新しく出た指摘と、改稿で消えた数字や語をまとめて確かめられます。辞書があれば、品詞が固有名詞の語も拾います。辞書なしでは、数字・日付・英字の語・4文字以上のカタカナ語・「」『』で囲んだ語・URLを比べます。結果が空でも情報がすべて残っているとは限りません。ルールの詳しい説明は `explain` で引けます。`check` の改稿指示は、`format` に `toon` を渡すと同じ内容を少ないトークンで、`json` を渡すとプログラムで扱える形で受け取れます。";
 
 /// MCP サーバーの状態。
 pub struct Server {
@@ -368,7 +368,7 @@ impl Server {
                 .collect::<Vec<_>>()
                 .join("; ")
         })?;
-        let report = crate::diff::compare(before, after);
+        let report = crate::diff::compare(engine, before, after)?;
         let mut buf = Vec::new();
         match format {
             "json" => crate::diff::render_json(&report, &mut buf),
@@ -623,7 +623,7 @@ fn tools() -> Value {
         {
             "name": "diff",
             "title": "改稿の前後の比較",
-            "description": "改稿の前後の本文を同じ設定で検査し、改稿で新しく出た指摘、消えた数字・日付・固有名詞らしい語・引用・URL、文書全体に一律に当てた直し (読点の一括削除など) を確認事項として返します。直した後の確認は、check をやり直す代わりにこれで 1 回だけ行ってください。確認事項は失敗の判定ではありません。消えた事実は、削ってよい情報か書き手に確かめてください。",
+            "description": "改稿の前後の本文を同じ設定で検査し、改稿で新しく出た指摘、消えた数字・日付・語・URL、文書全体に一律に当てた直し (読点の一括削除など) を確認事項として返します。直した後の確認は、check をやり直す代わりにこれで 1 回だけ行ってください。確認事項は失敗の判定ではありません。辞書があれば、品詞が固有名詞の語を長さにかかわらず拾います。辞書なしでは、数字・日付・英字の語・4文字以上のカタカナ語・「」『』で囲んだ語・URLを比べます。辞書が拾わない名前もあるため、結果が空でも情報がすべて残っているとは限りません。消えた事実は、削ってよい情報か書き手に確かめてください。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1340,6 +1340,71 @@ mod tests {
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(tool_text(&r).contains("3 行目"));
+    }
+}
+
+#[cfg(test)]
+mod proper_fact_tests {
+    use super::*;
+    use crate::morph::{DictionaryChoice, MorphologyMode};
+
+    #[test]
+    fn diff_resolves_and_reuses_a_dictionary_without_changing_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("names.hsd");
+        crate::morph::testing::write_dictionary(&path, &[("東京", "名詞,固有名詞,地域,一般")]);
+        let mut options = EngineOptions::default();
+        options.selection.only = Some(vec!["P01".into()]);
+        options.morphology.dictionary = DictionaryChoice::File(path.clone());
+        let mut server = Server::new(Ok(options.clone()));
+        let check = json!({"text":"東京。", "report":"full", "format":"json"});
+        let result = server.check(check.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(data["settings"]["morphology"]["reason"], "not-needed");
+
+        let args = json!({"before":"東京。", "after":"本社。", "format":"json"});
+        let first = server.diff(args.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(data["facts"]["morphology"]["method"], "dictionary");
+        assert_eq!(data["facts"]["removed"][0]["kind"], "proper");
+        assert_eq!(data["facts"]["removed"][0]["text"], "東京");
+
+        // MCP の次の呼び出しでは、取得済みの辞書を使って同じ結果を返す。
+        assert_eq!(server.diff(args.as_object().unwrap()).unwrap(), first);
+        options.morphology.dictionary = DictionaryChoice::File(dir.path().join("missing.hsd"));
+        let mut retry = Server::new(Ok(options.clone()));
+        assert!(retry.diff(args.as_object().unwrap()).is_err());
+        crate::morph::testing::write_dictionary(
+            &dir.path().join("missing.hsd"),
+            &[("東京", "名詞,固有名詞,地域,一般")],
+        );
+        let repaired = retry.diff(args.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(data["facts"]["removed"][0]["text"], "東京");
+        options.morphology.mode = MorphologyMode::Off;
+        let mut off = Server::new(Ok(options));
+        let result = off.diff(args.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(data["facts"]["removed"], json!([]));
+        assert_eq!(data["facts"]["morphology"]["method"], "surface");
+        assert_eq!(data["facts"]["morphology"]["reason"], "disabled");
+        let text_args = json!({"before":"東京。", "after":"本社。"});
+        let text = off.diff(text_args.as_object().unwrap()).unwrap();
+        assert!(text.contains("辞書による固有名詞の比較はしていません"));
+    }
+
+    #[cfg(not(feature = "bundled-dict"))]
+    #[test]
+    fn diff_reports_when_the_auto_dictionary_is_missing() {
+        let mut options = EngineOptions::default();
+        options.selection.only = Some(vec!["P01".into()]);
+        let mut server = Server::new(Ok(options));
+        let args = json!({"before":"東京。", "after":"本社。", "format":"json"});
+        let result = server.diff(args.as_object().unwrap()).unwrap();
+        let data: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(data["facts"]["morphology"]["method"], "surface");
+        assert_eq!(data["facts"]["morphology"]["reason"], "not-found");
+        assert_eq!(data["facts"]["removed"], json!([]));
     }
 }
 
