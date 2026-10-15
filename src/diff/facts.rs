@@ -1,4 +1,4 @@
-//! 事実の変化: 数字・日付・英字の語・カタカナ語・括弧の語・URL の消失と追加。
+//! 事実の変化: 数字・日付・英字の語・カタカナ語・固有名詞・括弧の語・URL の消失と追加。
 //!
 //! 改稿で事実を落としていないか、原文にない事実 (とくに数字) を足していないかを
 //! 確かめるための手掛かりを取り出す。表記の揺れ (全角と半角、漢数字と算用数字、
@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::diagnostic::Span;
 use crate::document::{Block, Document, MarkKind};
+use crate::morph::{DocMorphology, Morphology};
 
 /// 事実の種類。並び順は出力の順 (数字・日付を先に出す)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -24,6 +25,7 @@ pub enum FactKind {
     Latin,
     Katakana,
     Url,
+    Proper,
 }
 
 impl FactKind {
@@ -35,6 +37,7 @@ impl FactKind {
             FactKind::Latin => "英字の語",
             FactKind::Katakana => "カタカナ語",
             FactKind::Url => "URL",
+            FactKind::Proper => "固有名詞",
         }
     }
 
@@ -123,16 +126,59 @@ static URL_RE: LazyLock<Regex> =
 
 /// 文書の全ブロック (見出し・リスト・表を含む) から事実を取り出す。位置の順に並ぶ。
 pub fn extract(doc: &Document) -> Vec<Fact> {
+    extract_with_morphology(doc, None)
+}
+
+/// 文字種による抽出に、辞書が固有名詞とした語を加える。辞書がなければ文字種だけで読む。
+pub fn extract_with_morphology(doc: &Document, morphology: Option<&Morphology>) -> Vec<Fact> {
     let mut facts = Vec::new();
+    let morph = morphology.map(|m| m.for_document(doc));
     for block in &doc.blocks {
-        extract_block(doc, block, &mut facts);
+        extract_block(doc, block, morph.as_ref(), &mut facts);
     }
     facts.sort_by_key(|f| (f.span.start, f.kind));
     facts
 }
 
-fn extract_block(doc: &Document, block: &Block, out: &mut Vec<Fact>) {
+/// 種類が文脈で入れ替わらないよう、英字・長いカタカナの語は文字種による抽出に任せる。
+fn is_surface_word(word: &str) -> bool {
+    let whole = |re: &Regex| re.find(word).is_some_and(|m| m.range() == (0..word.len()));
+    (word.len() >= 2 && whole(&LATIN_RE))
+        || (whole(&KATAKANA_RE)
+            && word.trim_matches('・').chars().count() >= 4
+            && !word.chars().all(|c| c == 'ー'))
+}
+
+/// ブロックの解析用テキスト上の固有名詞の範囲。原文への対応は採用するときに取る。
+fn proper_ranges(doc: &Document, block: &Block, morph: &DocMorphology<'_>) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    for index in block.sentences.clone() {
+        let sentence = &doc.sentences[index];
+        let Some(tokens) = morph.sentence(index) else {
+            continue;
+        };
+        for token in tokens
+            .iter()
+            .filter(|t| t.pos == hasami::CoarsePos::ProperNoun)
+        {
+            let range =
+                sentence.range.start + token.range.start..sentence.range.start + token.range.end;
+            if !is_surface_word(&block.text[range.clone()]) {
+                ranges.push(range);
+            }
+        }
+    }
+    ranges
+}
+
+fn extract_block(
+    doc: &Document,
+    block: &Block,
+    morph: Option<&DocMorphology<'_>>,
+    out: &mut Vec<Fact>,
+) {
     let text = block.text.as_str();
+    let proper = morph.map_or_else(Vec::new, |m| proper_ranges(doc, block, m));
     let mut taken: Vec<Range<usize>> = Vec::new();
     let push = |out: &mut Vec<Fact>, kind: FactKind, range: Range<usize>, key: String| {
         out.push(Fact {
@@ -201,7 +247,12 @@ fn extract_block(doc: &Document, block: &Block, out: &mut Vec<Fact>) {
     // 漢数字 + 助数詞
     for m in KANJI_NUMBER_RE.find_iter(text) {
         let range = m.range();
-        if overlaps(&taken, &range) {
+        // 「四日市」「二本松」のような固有名詞の一部を漢数字の数値にしない。
+        if overlaps(&taken, &range)
+            || proper
+                .iter()
+                .any(|p| p.start <= range.start && range.end <= p.end)
+        {
             continue;
         }
         let (number, unit) = split_kanji_unit(m.as_str());
@@ -249,6 +300,26 @@ fn extract_block(doc: &Document, block: &Block, out: &mut Vec<Fact>) {
             caps.get(0).expect("group 0").range(),
             key,
         );
+    }
+
+    // リンク先を含む原文の包絡範囲で除外せず、表示される本文上で重なりを調べる。
+    taken.sort_unstable_by_key(|r| r.start);
+    let mut protected: Vec<Range<usize>> = Vec::new();
+    for range in taken {
+        if let Some(last) = protected.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            protected.push(range);
+        }
+    }
+    for range in proper {
+        let at = protected.partition_point(|r| r.end <= range.start);
+        if !protected.get(at).is_some_and(|r| r.start < range.end) {
+            let key = text[range.clone()].to_ascii_lowercase();
+            push(out, FactKind::Proper, range, key);
+        }
     }
 }
 
@@ -389,7 +460,7 @@ fn kanji_to_number(s: &str) -> Option<u64> {
 /// 前後の事実を種類とキーで数え、減ったものと増えたものを返す。
 ///
 /// - 減ったもの: 数値・日付は 1 回でも減ったもの (その数字に触れた文が消えた)。語 (括弧の語・
-///   英字の語・カタカナ語・URL) は改稿後に 1 度も出なくなったものだけ。何度も使う語を
+///   英字の語・カタカナ語・固有名詞・URL) は改稿後に 1 度も出なくなったものだけ。何度も使う語を
 ///   1 回減らすのは普通の推敲なので出さない
 /// - 増えたもの: 改稿前に 1 度も出ない事実。数値・日付は原文にない数字として強調する。
 ///   既にある事実を繰り返しただけのものは出さない
@@ -454,6 +525,123 @@ mod tests {
             .into_iter()
             .map(|f| (f.kind, f.key))
             .collect()
+    }
+
+    #[test]
+    fn proper_nouns_in_headings_lists_tables_and_quotes_keep_source_positions() {
+        let morph = crate::morph::testing::morphology(&[
+            ("東京", "名詞,固有名詞,地域,一般"),
+            ("京都", "名詞,固有名詞,地域,一般"),
+            ("山田", "名詞,固有名詞,人名,姓"),
+            ("トヨタ", "名詞,固有名詞,組織,*"),
+            ("ソニー", "名詞,固有名詞,組織,*"),
+            ("メール", "名詞,一般,*,*"),
+        ]);
+        let doc = Document::markdown(
+            "# **東京**\n\n- 山田が[トヨタ](https://example.com)にメールした。\n\n| 拠点 |\n| --- |\n| 京都 |\n\n> ソニー。\n\n`東京`\n",
+        );
+        let facts = extract_with_morphology(&doc, Some(&morph));
+        let proper: Vec<_> = facts
+            .iter()
+            .filter(|f| f.kind == FactKind::Proper)
+            .collect();
+        assert_eq!(
+            proper.iter().map(|f| f.text.as_str()).collect::<Vec<_>>(),
+            ["東京", "山田", "トヨタ", "京都", "ソニー"]
+        );
+        for fact in proper {
+            assert_eq!(doc.slice(fact.span), fact.text);
+        }
+        assert_eq!(extract_with_morphology(&doc, None), extract(&doc));
+    }
+
+    #[test]
+    fn proper_nouns_do_not_duplicate_existing_words_or_url_and_number_parts() {
+        let morph = crate::morph::testing::morphology(&[
+            ("GitHub", "名詞,固有名詞,組織,*"),
+            ("リポジトリ", "名詞,固有名詞,一般,*"),
+            ("example", "名詞,固有名詞,組織,*"),
+            ("5月", "名詞,固有名詞,人名,名"),
+        ]);
+        let doc =
+            Document::plain_text("GitHub リポジトリ https://example.com 2026年5月1日 5月。\n");
+        let facts = extract_with_morphology(&doc, Some(&morph));
+        assert_eq!(facts, extract(&doc));
+    }
+
+    #[test]
+    fn a_name_across_a_link_is_not_part_of_the_link_destination() {
+        let morph = crate::morph::testing::morphology(&[
+            ("東京", "名詞,固有名詞,地域,一般"),
+            ("本社", "名詞,一般,*,*"),
+        ]);
+        let before = Document::markdown("[東](https://example.com)京。\n");
+        let after = Document::markdown("[本社](https://example.com)。\n");
+        let changes = compare(
+            &extract_with_morphology(&before, Some(&morph)),
+            &extract_with_morphology(&after, Some(&morph)),
+        );
+        assert_eq!(changes.removed.len(), 1);
+        let removed = &changes.removed[0];
+        assert_eq!(removed.kind, FactKind::Proper);
+        assert_eq!(removed.text, "東京");
+        assert_eq!(removed.spans[0].start, before.source.find('東').unwrap());
+        assert_eq!(
+            removed.spans[0].end,
+            before.source.find('京').unwrap() + '京'.len_utf8()
+        );
+        assert!(changes.added.is_empty());
+    }
+
+    #[test]
+    fn surface_words_keep_the_same_kind_when_their_context_changes() {
+        let morph = crate::morph::testing::morphology(&[
+            ("Python", "名詞,固有名詞,組織,*"),
+            ("アサガオ", "名詞,固有名詞,組織,*"),
+        ]);
+        for text in ["Python3。", "Python。", "アサガオサーバー。", "アサガオ。"] {
+            let doc = Document::plain_text(text);
+            assert_eq!(extract_with_morphology(&doc, Some(&morph)), extract(&doc));
+        }
+    }
+
+    #[test]
+    fn kanji_number_prefixes_inside_names_are_not_numbers() {
+        let morph = crate::morph::testing::morphology(&[
+            ("四日市", "名詞,固有名詞,地域,一般"),
+            ("二本松", "名詞,固有名詞,地域,一般"),
+            ("本社", "名詞,一般,*,*"),
+        ]);
+        let changes = compare(
+            &extract_with_morphology(&Document::plain_text("四日市と二本松へ。"), Some(&morph)),
+            &extract_with_morphology(&Document::plain_text("本社へ。"), Some(&morph)),
+        );
+        assert_eq!(
+            changes
+                .removed
+                .iter()
+                .map(|f| (f.kind, f.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(FactKind::Proper, "四日市"), (FactKind::Proper, "二本松")]
+        );
+        assert!(changes.added.is_empty());
+    }
+
+    #[test]
+    fn proper_nouns_are_reported_only_when_lost_or_new_and_are_not_suspicious() {
+        let morph = crate::morph::testing::morphology(&[
+            ("東京", "名詞,固有名詞,地域,一般"),
+            ("京都", "名詞,固有名詞,地域,一般"),
+        ]);
+        let before = extract_with_morphology(&Document::plain_text("東京。東京。\n"), Some(&morph));
+        let after = extract_with_morphology(&Document::plain_text("東京。京都。\n"), Some(&morph));
+        let changes = compare(&before, &after);
+        assert!(changes.removed.is_empty());
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(changes.added[0].key, "京都");
+        assert!(!changes.added[0].suspicious);
+        let changes = compare(&after, &[]);
+        assert_eq!(changes.removed.len(), 2);
     }
 
     #[test]

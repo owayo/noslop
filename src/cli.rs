@@ -57,6 +57,9 @@ pub enum Command {
     ///
     /// 同じ設定で両方を検査し、指摘の増減に加えて、改稿で失われた事実と、同じ変換を
     /// 文書全体に当てた形跡を確認事項として出す。確認事項があっても終了コードは 0。
+    /// 辞書があれば、品詞が固有名詞の語を長さにかかわらず拾う。
+    /// 辞書なしでは、数字・日付・英字の語・4文字以上のカタカナ語・「」『』で囲んだ語・URLを比べる。
+    /// 辞書が拾わない名前もあるため、結果が空でも情報がすべて残っているとは限らない。
     Diff(DiffArgs),
     /// 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率と閾値を測る
     ///
@@ -1209,7 +1212,10 @@ fn diff(args: DiffArgs) -> u8 {
             return EXIT_ERROR;
         }
     };
-    let report = crate::diff::compare(before, after);
+    let report = match crate::diff::compare(&engine, before, after) {
+        Ok(report) => report,
+        Err(e) => return error(e),
+    };
 
     let result = match args.format {
         DiffFormatArg::Text => {

@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 
@@ -23,7 +24,9 @@ use crate::config::{ConfigError, CustomRuleConfig, RuleTable};
 use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
 use crate::document::{Document, DocumentKind, ParseOptions, SourceFormat};
 use crate::genre::Genre;
-use crate::morph::{self, DocMorphology, Morphology, MorphologyOptions, MorphologyStatus};
+use crate::morph::{
+    self, DocMorphology, FallbackReason, Morphology, MorphologyOptions, MorphologyStatus,
+};
 use crate::rules::custom::CustomRule;
 use crate::rules::{Rule, RuleContext, RuleUnit, Scope, builtin_rules};
 use crate::suppress::{self, RuleNames};
@@ -94,6 +97,8 @@ pub struct Engine {
     /// 読み込んだ辞書 (辞書を使う有効なルールがあり、辞書が見つかったときだけ)。
     morphology: Option<Morphology>,
     morphology_status: MorphologyStatus,
+    /// lint では不要でも、改稿の事実の比較が求めた辞書を保持する。
+    fact_morphology: Mutex<Option<(Option<Morphology>, MorphologyStatus)>>,
 }
 
 impl Engine {
@@ -213,6 +218,7 @@ impl Engine {
             options,
             morphology,
             morphology_status,
+            fact_morphology: Mutex::new(None),
         })
     }
 
@@ -228,6 +234,27 @@ impl Engine {
     /// 文書の形態素の層 (辞書を読み込んでいるときだけ)。
     pub fn doc_morphology<'a>(&self, doc: &'a Document) -> Option<DocMorphology<'a>> {
         self.morphology.as_ref().map(|m| m.for_document(doc))
+    }
+
+    /// 改稿の比較用の辞書。有効なルールによらず探し、MCP の呼び出しをまたいで再利用する。
+    /// lint が読み込んだ辞書があれば同じものを借り、lint の判定方式は変えない。
+    pub(crate) fn morphology_for_facts(
+        &self,
+    ) -> Result<(Option<Morphology>, MorphologyStatus), String> {
+        if self.morphology_status.reason != Some(FallbackReason::NotNeeded) {
+            return Ok((self.morphology.clone(), self.morphology_status.clone()));
+        }
+        let mut cached = self
+            .fact_morphology
+            .lock()
+            .map_err(|_| "事実の比較用の辞書を取得できません".to_string())?;
+        if let Some(resolved) = &*cached {
+            return Ok(resolved.clone());
+        }
+        // 失敗は残さず、辞書を置き直した後の MCP 呼び出しで再試行する。
+        let resolved = morph::resolve(&self.options.morphology, true)?;
+        *cached = Some(resolved.clone());
+        Ok(resolved)
     }
 
     /// すべてのルール (有効・無効を問わず)。組み込みルール、独自ルールの順。
