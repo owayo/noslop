@@ -181,9 +181,14 @@ fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, Stri
             Rust | JavaScript | TypeScript | Tsx | Ruby | Php | Swift | Lua
         )
     {
-        let end = prefix_len + tail.find('}')?;
-        let value = u32::from_str_radix(s.get(prefix_len + 2..end)?, 16).ok()?;
-        return Some((end + 1, char::from_u32(value)?.to_string()));
+        // 数字以外が現れたら打ち切る。不正なエスケープごとに遠くの閉じ括弧を探さない。
+        let digits = &tail[2..];
+        let len = digits.bytes().take_while(u8::is_ascii_hexdigit).count();
+        if digits.as_bytes().get(len) != Some(&b'}') {
+            return None;
+        }
+        let value = u32::from_str_radix(&digits[..len], 16).ok()?;
+        return Some((prefix_len + 3 + len, char::from_u32(value)?.to_string()));
     }
     let (digits, start) = match c {
         'u' if !matches!(lang, Rust | Php | Swift | Lua) => (4, prefix_len + 1),
@@ -409,5 +414,34 @@ fn append_bytes(
             b.finish(out);
             at += skip;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn braced_unicode_requires_hex_digits_before_the_closing_brace() {
+        for (source, lang, prefix, expected) in [
+            (r"\u{672c}", CodeLanguage::Rust, 1, Some((8, "本".into()))),
+            (
+                r"\##u{672c}",
+                CodeLanguage::Swift,
+                3,
+                Some((10, "本".into())),
+            ),
+            (r"\u{+672c}", CodeLanguage::Rust, 1, None),
+            (r"\#u{+672c}", CodeLanguage::Swift, 2, None),
+            (r"\u{}", CodeLanguage::Rust, 1, None),
+            (r"\u{D800}", CodeLanguage::Rust, 1, None),
+            (r"\u{110000}", CodeLanguage::Rust, 1, None),
+            (r"\u{67x}", CodeLanguage::JavaScript, 1, None),
+            (r"\##u{672c", CodeLanguage::Swift, 3, None),
+        ] {
+            assert_eq!(escape(source, lang, prefix), expected, "{source}");
+        }
+        let source = format!("\\#u{{{}}}", r"\#u{".repeat(16_384));
+        assert_eq!(escape(&source, CodeLanguage::Swift, 2), None);
     }
 }

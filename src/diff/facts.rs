@@ -381,7 +381,17 @@ fn number_key(number: &str, unit: &str) -> String {
         .iter()
         .find_map(|&(prefix, places)| unit.strip_prefix(prefix).map(|r| (places, r)))
         .unwrap_or((0, unit));
-    let value = decimal_key(&digits, places).unwrap_or(digits);
+    // 節番号や単位のない番号では、1.10 と 1.1 は別の識別子になり得る。
+    let value = if places == 0 && matches!(rest, "" | "章" | "節" | "行" | "頁" | "ページ") {
+        let trimmed = digits.trim_start_matches('0');
+        if trimmed.is_empty() || trimmed.starts_with('.') {
+            format!("0{trimmed}")
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        decimal_key(&digits, places).unwrap_or(digits)
+    };
     format!("{value}{}", normalize_unit(rest))
 }
 
@@ -706,6 +716,21 @@ mod tests {
             "9007199254740993万円"
         );
         assert!(changes.added[0].suspicious);
+    }
+
+    #[test]
+    fn section_and_unitless_identifiers_preserve_fractional_trailing_zeros() {
+        for unit in ["", "節", "章", "行", "頁", "ページ"] {
+            let before = Document::plain_text(format!("01.10{unit}"));
+            let after = Document::plain_text(format!("1.1{unit}"));
+            let changes = compare(&extract(&before), &extract(&after));
+            assert_eq!(changes.removed.len(), 1, "{unit}");
+            assert_eq!(changes.added.len(), 1, "{unit}");
+            assert_eq!(
+                changes.removed[0].key,
+                format!("1.10{}", normalize_unit(unit))
+            );
+        }
     }
 
     #[test]
