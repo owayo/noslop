@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "hasami_tag": "v26.10.102",
+  "hasami_tag": "v26.10.104",
   "file": "ipadic.hsd",
   "size": 16498338,
-  "sha256": "54dec450af7ed14897dda2f6832131e21fc910f1ec696bdc76e9577f2b219f06",
+  "sha256": "340ef76dac773239e915d8d036907ed38a189c497e7c887d26ef4e9ba67f47b9",
   "format_version": 5,
   "sources": "ipadic@61b90ba6e669",
   "entries": 390860,
