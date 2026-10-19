@@ -26,6 +26,10 @@ pub(super) fn append(
     let s = &source[span.range()];
     let mut at = 0;
     let mut plain = 0;
+    let swift_prefix = match mode {
+        Mode::SwiftRaw(hash) => format!("\\{}", "#".repeat(hash)),
+        _ => String::new(),
+    };
     while at < s.len() {
         let c = s[at..].chars().next().unwrap();
         let special = match mode {
@@ -33,7 +37,7 @@ pub(super) fn append(
             Mode::Html => c == '&',
             Mode::Verbatim => s[at..].starts_with("\"\""),
             Mode::YamlSingle => s[at..].starts_with("''"),
-            Mode::SwiftRaw(hash) => s[at..].starts_with(&format!("\\{}", "#".repeat(hash))),
+            Mode::SwiftRaw(_) => s[at..].starts_with(&swift_prefix),
             _ => c == '\\',
         };
         if !special {
@@ -57,10 +61,7 @@ pub(super) fn append(
             Mode::Html => entity(&s[at..]),
             Mode::Verbatim => Some((2, "\"".to_string())),
             Mode::YamlSingle => Some((2, "'".to_string())),
-            Mode::SwiftRaw(hash) => {
-                let rest = format!("\\{}", &s[at + 1 + hash..]);
-                escape(&rest, CodeLanguage::Swift).map(|(len, v)| (len + hash, v))
-            }
+            Mode::SwiftRaw(_) => escape(&s[at..], CodeLanguage::Swift, swift_prefix.len()),
             Mode::BashDouble => s[at + 1..]
                 .chars()
                 .next()
@@ -81,7 +82,7 @@ pub(super) fn append(
                     .map(|c| (1 + c.len_utf8(), c.to_string()))
             }
             Mode::Css => css_escape(&s[at..]),
-            Mode::Escaped(lang) => escape(&s[at..], lang),
+            Mode::Escaped(lang) => escape(&s[at..], lang, 1),
             Mode::Raw => None,
         };
         if let Some((len, value)) = decoded {
@@ -107,8 +108,12 @@ pub(super) fn append(
 }
 
 fn entity(s: &str) -> Option<(usize, String)> {
-    let end = s.find(';')? + 1;
-    if end > 64 || s[..end].contains(char::is_whitespace) {
+    // 採用する長さの上限までで打ち切り、未知の & が続いても残り全文を繰り返し走査しない。
+    let end = s.bytes().take(64).position(|b| b == b';')? + 1;
+    if !s[1..end - 1]
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'#')
+    {
         return None;
     }
     let entity = &s[..end];
@@ -131,9 +136,10 @@ fn hex(s: &str, n: usize) -> Option<u32> {
         .flatten()
 }
 
-fn escape(s: &str, lang: CodeLanguage) -> Option<(usize, String)> {
+fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, String)> {
     use CodeLanguage::*;
-    let c = s.get(1..)?.chars().next()?;
+    let tail = s.get(prefix_len..)?;
+    let c = tail.chars().next()?;
     let basic = match c {
         'n' => Some('\n'),
         'r' => Some('\r'),
@@ -157,36 +163,36 @@ fn escape(s: &str, lang: CodeLanguage) -> Option<(usize, String)> {
         _ => "abefnrtv\\\"'`/$",
     };
     if let Some(value) = basic.filter(|_| allowed.contains(c)) {
-        return Some((2, value.to_string()));
+        return Some((prefix_len + 1, value.to_string()));
     }
     if c == '0' && matches!(lang, Rust | Swift | JavaScript | TypeScript | Tsx) {
-        return Some((2, "\0".to_string()));
+        return Some((prefix_len + 1, "\0".to_string()));
     }
     if c == '\n' {
-        return Some((2, String::new()));
+        return Some((prefix_len + 1, String::new()));
     }
-    if c == '\r' && s.starts_with("\\\r\n") {
-        return Some((3, String::new()));
+    if c == '\r' && tail.starts_with("\r\n") {
+        return Some((prefix_len + 2, String::new()));
     }
     if c == 'u'
-        && s.starts_with("\\u{")
+        && tail.starts_with("u{")
         && matches!(
             lang,
             Rust | JavaScript | TypeScript | Tsx | Ruby | Php | Swift | Lua
         )
     {
-        let end = s.find('}')?;
-        let value = u32::from_str_radix(s.get(3..end)?, 16).ok()?;
+        let end = prefix_len + tail.find('}')?;
+        let value = u32::from_str_radix(s.get(prefix_len + 2..end)?, 16).ok()?;
         return Some((end + 1, char::from_u32(value)?.to_string()));
     }
     let (digits, start) = match c {
-        'u' if !matches!(lang, Rust | Php | Swift | Lua) => (4, 2),
+        'u' if !matches!(lang, Rust | Php | Swift | Lua) => (4, prefix_len + 1),
         'U' if matches!(
             lang,
             Python | Go | C | Cpp | CSharp | Ruby | Bash | Yaml | Toml
         ) =>
         {
-            (8, 2)
+            (8, prefix_len + 1)
         }
         'x' if matches!(
             lang,
@@ -205,7 +211,7 @@ fn escape(s: &str, lang: CodeLanguage) -> Option<(usize, String)> {
                 | Lua
         ) =>
         {
-            (2, 2)
+            (2, prefix_len + 1)
         }
         _ => (0, 0),
     };
@@ -248,13 +254,13 @@ fn escape(s: &str, lang: CodeLanguage) -> Option<(usize, String)> {
         return Some((len, char::from_u32(value)?.to_string()));
     }
     if matches!(c, '0'..='7') && matches!(lang, Python | C | Cpp | Java | Ruby | Php | Bash) {
-        let digits = s[1..]
+        let digits = tail
             .bytes()
             .take(3)
             .take_while(|b| matches!(b, b'0'..=b'7'))
             .count();
-        let value = u32::from_str_radix(&s[1..1 + digits], 8).ok()?;
-        return Some((1 + digits, char::from_u32(value)?.to_string()));
+        let value = u32::from_str_radix(&tail[..digits], 8).ok()?;
+        return Some((prefix_len + digits, char::from_u32(value)?.to_string()));
     }
     None
 }

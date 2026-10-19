@@ -1422,6 +1422,53 @@ fn diff_reports_new_findings_and_lost_facts() {
 }
 
 #[test]
+fn diff_compares_decimal_amounts_without_float_rounding() {
+    let dir = workspace();
+    for (before, after, changed) in [
+        ("9007199254740992万円", "9007199254740993万円", true),
+        ("3.000万円", "30000.000円", false),
+        ("0.00001万円", "0.1円", false),
+    ] {
+        fs::write(
+            dir.path().join("before.txt"),
+            format!("金額は{before}です。"),
+        )
+        .unwrap();
+        fs::write(dir.path().join("after.txt"), format!("金額は{after}です。")).unwrap();
+        let out = noslop()
+            .current_dir(dir.path())
+            .args([
+                "diff",
+                "before.txt",
+                "after.txt",
+                "--format",
+                "json",
+                "--no-dict",
+                "--only-rules",
+                "X01",
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let v = json(&out.stdout);
+        assert_eq!(v["hasConcerns"], changed, "{before} → {after}");
+        assert_eq!(
+            v["facts"]["removed"].as_array().unwrap().len(),
+            usize::from(changed)
+        );
+        assert_eq!(
+            v["facts"]["added"].as_array().unwrap().len(),
+            usize::from(changed)
+        );
+        if changed {
+            assert_eq!(v["facts"]["removed"][0]["text"], before);
+            assert_eq!(v["facts"]["added"][0]["text"], after);
+            assert_eq!(v["facts"]["added"][0]["suspicious"], true);
+        }
+    }
+}
+
+#[test]
 fn diff_detects_proper_nouns_even_without_morphology_rules() {
     use hasami::DictEntry;
     use hasami::dict::DictBuilder;
