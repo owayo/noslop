@@ -29,7 +29,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.102", default-features = false, features = ["analyzer", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.104", default-features = false, features = ["analyzer", "download"] }
 
 [features]
 default = ["bundled-dict"]
@@ -84,7 +84,7 @@ tree-sitter-python = "=0.25.0"
 tree-sitter-ruby = { git = "https://github.com/owayo/tree-sitter-ruby.git", branch = "master" }
 tree-sitter-rust = "=0.24.2"
 # SQL (tree-sitter-sequel) は入れない: cc を ~1.2 に固定させ、ring が引く新しい cc とぶつかるため
-tree-sitter-swift = "=0.7.3"
+tree-sitter-swift = "=0.7.4"
 tree-sitter-toml-ng = "=0.7.0"
 tree-sitter-typescript = "=0.23.2"
 tree-sitter-yaml = "=0.7.2"

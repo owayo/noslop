@@ -177,6 +177,50 @@ fn decoding_follows_each_language_and_preserves_transformed_ranges() {
 }
 
 #[test]
+fn html_entities_do_not_consume_literal_ampersands_or_attribute_markup() {
+    let source = "<p title=\"日本&<b>本文;\" aria-label=\"日本&&#x672c;\">表示文</p>";
+    let d = doc(source, CodeLanguage::Html);
+    assert_eq!(d.blocks[0].text, "日本&<b>本文;");
+    assert_eq!(d.blocks[1].text, "日本&本");
+    assert_eq!(d.slice(d.blocks[1].to_source(7..10)), "&#x672c;");
+    exact(&doc(
+        "<p title=\"日本&<b>本文;\">表示文</p>",
+        CodeLanguage::Html,
+    ));
+}
+
+#[test]
+fn long_display_attributes_keep_entities_and_their_source_ranges() {
+    let ampersands = "&".repeat(16_384);
+    let source = format!("<p title=\"日本{ampersands}&amp;&#x672c;\">表示文</p>");
+    let d = doc(&source, CodeLanguage::Html);
+    let b = &d.blocks[0];
+    assert_eq!(b.text, format!("日本{ampersands}&本"));
+    assert_eq!(
+        d.slice(b.to_source(b.text.len() - 3..b.text.len())),
+        "&#x672c;"
+    );
+}
+
+#[test]
+fn swift_extended_delimiters_preserve_escape_lengths_and_source_ranges() {
+    for hash in [1, 2, 4] {
+        let hashes = "#".repeat(hash);
+        let prefix = format!("\\{hashes}");
+        let source = format!(
+            "let x = {hashes}\"{prefix}u{{65e5}}{prefix}u{{672c}}{prefix}n次{prefix}t文{prefix}0{prefix}\\{prefix}\"\"{hashes}"
+        );
+        let d = doc(&source, CodeLanguage::Swift);
+        assert_eq!(d.blocks.len(), 1, "{source}");
+        let b = &d.blocks[0];
+        assert_eq!(b.text, "日本\n次\t文\0\\\"", "{source}");
+        assert_eq!(d.slice(b.to_source(0..3)), format!("{prefix}u{{65e5}}"));
+        assert_eq!(d.slice(b.to_source(3..6)), format!("{prefix}u{{672c}}"));
+        assert_eq!(d.slice(b.to_source(6..7)), format!("{prefix}n"));
+    }
+}
+
+#[test]
 fn markup_joins_inline_text_but_keeps_controls_blocks_and_expressions_apart() {
     for lang in [
         CodeLanguage::Html,

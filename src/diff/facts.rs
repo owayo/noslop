@@ -93,7 +93,7 @@ static DATE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// 数字に続けて取り込む単位・助数詞 (長いものを先に並べる)。
-const UNIT_PATTERN: &str = "万円|億円|年間|年代|か月|ヶ月|カ月|ヵ月|箇月|週間|日間|時間|分間|秒間|ページ|キロ|%|％|円|年|月|週|日|時|分|秒|歳|人|名|件|回|倍|割|個|本|社|台|点|字|文|行|章|節|頁|万|億|兆|kg|km|cm|mm|MB|GB|TB|KB|ms";
+const UNIT_PATTERN: &str = "万円|億円|兆円|年間|年代|か月|ヶ月|カ月|ヵ月|箇月|週間|日間|時間|分間|秒間|ページ|キロ|%|％|円|年|月|週|日|時|分|秒|歳|人|名|件|回|倍|割|個|本|社|台|点|字|文|行|章|節|頁|万|億|兆|kg|km|cm|mm|MB|GB|TB|KB|ms";
 
 static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
@@ -377,11 +377,12 @@ fn number_key(number: &str, unit: &str) -> String {
     let digits = ascii_digits(number)
         .replace(['，', ','], "")
         .replace('．', ".");
-    let (factor, rest) = [("兆", 1e12), ("億", 1e8), ("万", 1e4)]
+    let (places, rest) = [("兆", 12), ("億", 8), ("万", 4)]
         .iter()
-        .find_map(|&(prefix, f)| unit.strip_prefix(prefix).map(|r| (f, r)))
-        .unwrap_or((1.0, unit));
-    let value = if factor == 1.0 {
+        .find_map(|&(prefix, places)| unit.strip_prefix(prefix).map(|r| (places, r)))
+        .unwrap_or((0, unit));
+    // 節番号や単位のない番号では、1.10 と 1.1 は別の識別子になり得る。
+    let value = if places == 0 && matches!(rest, "" | "章" | "節" | "行" | "頁" | "ページ") {
         let trimmed = digits.trim_start_matches('0');
         if trimmed.is_empty() || trimmed.starts_with('.') {
             format!("0{trimmed}")
@@ -389,19 +390,39 @@ fn number_key(number: &str, unit: &str) -> String {
             trimmed.to_string()
         }
     } else {
-        match digits.parse::<f64>() {
-            Ok(v) => {
-                let scaled = v * factor;
-                if scaled.fract() == 0.0 && scaled < 9.0e15 {
-                    format!("{}", scaled as u64)
-                } else {
-                    format!("{scaled}")
-                }
-            }
-            Err(_) => digits,
-        }
+        decimal_key(&digits, places).unwrap_or(digits)
     };
     format!("{value}{}", normalize_unit(rest))
+}
+
+/// 小数点を文字列上で移す。浮動小数点の丸めで異なる金額を同一視しない。
+fn decimal_key(digits: &str, places: usize) -> Option<String> {
+    let (integer, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if integer.is_empty()
+        || !integer
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let moved = places.min(fraction.len());
+    let mut expanded = String::with_capacity(digits.len() + places);
+    expanded.push_str(integer);
+    expanded.push_str(&fraction[..moved]);
+    expanded.extend(std::iter::repeat_n('0', places - moved));
+    let integer = expanded.trim_start_matches('0');
+    let fraction = fraction[moved..].trim_end_matches('0');
+    let mut value = if integer.is_empty() {
+        "0".into()
+    } else {
+        integer.to_string()
+    };
+    if !fraction.is_empty() {
+        value.push('.');
+        value.push_str(fraction);
+    }
+    Some(value)
 }
 
 /// 単位の表記揺れをそろえる。
@@ -656,6 +677,60 @@ mod tests {
             numbers,
             vec!["40件", "40件", "40件", "3か月", "3か月", "12.5%"]
         );
+    }
+
+    #[test]
+    fn decimal_amounts_keep_all_digits_when_scaling_units() {
+        for (source, expected) in [
+            ("3.000万円", "30000円"),
+            ("30000.000円", "30000円"),
+            ("0.00001万円", "0.1円"),
+            ("0.000000001億円", "0.1円"),
+            ("0.0000000000001兆円", "0.1円"),
+            ("9007199254740993万円", "90071992547409930000円"),
+            ("99999999999999999兆円", "99999999999999999000000000000円"),
+            ("０００３．０００万円", "30000円"),
+            ("000.000万円", "0円"),
+        ] {
+            assert_eq!(
+                keys(source),
+                vec![(FactKind::Number, expected.into())],
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn amount_changes_beyond_float_precision_are_not_lost() {
+        let before = Document::plain_text("金額は9007199254740992万円です。");
+        let after = Document::plain_text("金額は9007199254740993万円です。");
+        let changes = compare(&extract(&before), &extract(&after));
+        assert_eq!(changes.removed.len(), 1);
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(
+            before.slice(changes.removed[0].spans[0]),
+            "9007199254740992万円"
+        );
+        assert_eq!(
+            after.slice(changes.added[0].spans[0]),
+            "9007199254740993万円"
+        );
+        assert!(changes.added[0].suspicious);
+    }
+
+    #[test]
+    fn section_and_unitless_identifiers_preserve_fractional_trailing_zeros() {
+        for unit in ["", "節", "章", "行", "頁", "ページ"] {
+            let before = Document::plain_text(format!("01.10{unit}"));
+            let after = Document::plain_text(format!("1.1{unit}"));
+            let changes = compare(&extract(&before), &extract(&after));
+            assert_eq!(changes.removed.len(), 1, "{unit}");
+            assert_eq!(changes.added.len(), 1, "{unit}");
+            assert_eq!(
+                changes.removed[0].key,
+                format!("1.10{}", normalize_unit(unit))
+            );
+        }
     }
 
     #[test]
