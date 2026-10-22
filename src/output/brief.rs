@@ -1205,6 +1205,15 @@ mod tests {
         assert!(s.contains("cleanFiles[1]: clean.md"), "{s}");
         assert!(s.contains("errors[1]{path,message}:"), "{s}");
         assert!(!s.ends_with('\n'), "TOON は末尾に改行を付けない");
+
+        let mut json = Vec::new();
+        render_json(&report, &opts(&e), &mut json).unwrap();
+        let expected: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        let decoded: serde_json::Value = toon_format::decode_strict(&s).unwrap();
+        assert_eq!(
+            decoded, expected,
+            "TOON の表現形式によらず JSON と同じデータを描く"
+        );
     }
 
     #[test]
