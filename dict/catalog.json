@@ -1,5 +1,5 @@
 {
-  "hasami_version": "26.10.105",
+  "hasami_version": "26.10.106",
   "format_version": 5,
   "recommended": "ipadic-neologd-sudachi",
   "dictionaries": [
@@ -7,12 +7,12 @@
       "name": "ipadic-neologd-sudachi",
       "summary": "IPAdic + NEologd + SudachiDict (recommended, largest vocabulary)",
       "file": "ipadic-neologd-sudachi.hsd",
-      "size": 220992866,
-      "sha256": "8ef5d582c9c81d18a31688c02ee339cc87dcb273713143d8c9ec7861a6088c19",
+      "size": 220990754,
+      "sha256": "e86206d1f7d7918234628caba7d6c7d635b5b9473fddcf0e8edcdf9ffff84088",
       "compressed": {
         "file": "ipadic-neologd-sudachi.hsd.zst",
-        "size": 71759585,
-        "sha256": "4847462c94861f32e059c846015436bddf32737793a473040204855a3483d7c7"
+        "size": 71757855,
+        "sha256": "5979a13d3e05b208ea09baad2684a269367aee40afc0c97aba6ab9b53391b67b"
       },
       "sources": "ipadic@61b90ba6e669,neologd@abc61e33d8be,sudachi-raw@20261015/content-symbol"
     },
@@ -20,12 +20,12 @@
       "name": "ipadic-neologd",
       "summary": "IPAdic + NEologd",
       "file": "ipadic-neologd.hsd",
-      "size": 206585250,
-      "sha256": "afbfbe4b1d15d13bd9225fa4225e33d52113c58ae7a85c94948c2ec86dda6f4d",
+      "size": 206569122,
+      "sha256": "7a4ae371db83005b78a07b3b7b6a818ae7ba3d857e5aeddb435fede0b11176c0",
       "compressed": {
         "file": "ipadic-neologd.hsd.zst",
-        "size": 66910737,
-        "sha256": "a38fa21af3d17314e54d4d70a6c2e5c516ba60a37fff218401a5c7db311cfb99"
+        "size": 66907522,
+        "sha256": "0449e9efc4d8f71444eb26a02d6e558b41674739daf3d52dcba05ed2162ee70b"
       },
       "sources": "ipadic@61b90ba6e669,neologd@abc61e33d8be"
     },
@@ -34,11 +34,11 @@
       "summary": "IPAdic",
       "file": "ipadic.hsd",
       "size": 16498338,
-      "sha256": "a9b884b3b3bd9605359d88ed0e4fea48d12f82ab3df8e5fe4f90c1f5d8a1516f",
+      "sha256": "cee46c23e98b83d4723bd64d5cf8fb24cff3428c372e049e572d433c65f8844b",
       "compressed": {
         "file": "ipadic.hsd.zst",
-        "size": 5825388,
-        "sha256": "8e78b8a204d00a2f8fd4a435afc16f6f8646e3a1a53bddaf147452d5a6108cd8"
+        "size": 5825447,
+        "sha256": "0b78004eb06a52bc3c8811c92e0e21a8dd01d1416c38db83a46e5b72c58e306b"
       },
       "sources": "ipadic@61b90ba6e669"
     }
