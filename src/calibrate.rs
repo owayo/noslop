@@ -2904,10 +2904,10 @@ mod tests {
         assert_eq!((sweep.rule_id, sweep.measure), ("R01", "burstiness"));
         assert_eq!((sweep.measured_human, sweep.measured_ai), (12, 12));
         let current = sweep.current.as_ref().unwrap();
-        assert_eq!(current.threshold, -0.45);
+        assert_eq!(current.threshold, -0.50);
         assert_eq!((current.all.human_fired, current.all.ai_fired), (0, 12));
         // 現在の閾値で誤検知 0・検出 100% なので、動かす理由がない
-        assert_eq!(sweep.suggested.as_ref().unwrap().threshold, -0.45);
+        assert_eq!(sweep.suggested.as_ref().unwrap().threshold, -0.50);
         assert!(report.promotions.is_empty());
         assert!(report.reviews.is_empty());
         assert!(!report.warnings.iter().any(|w| w.contains("1 群")));
