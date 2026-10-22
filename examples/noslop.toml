@@ -131,9 +131,9 @@ enabled = false
 # 文長の単調さ。地の文が min_sentences 文以上あるとき、burstiness が threshold 未満なら警告。
 # 文数が info_min_sentences 以上 min_sentences 未満のときは、info_threshold 未満で情報を出す。
 # severity を書くと、この 2 段の重大度がどちらもその値に置き換わる点に注意。
-threshold = -0.45
+threshold = -0.50
 min_sentences = 20
-info_threshold = -0.45
+info_threshold = -0.50
 info_min_sentences = 10
 
 [rules.R03]

@@ -722,13 +722,14 @@ impl Rule for EmojiDensity {
 // S06 BOLD_LABEL_LIST
 // ---------------------------------------------------------------------------
 
-/// S06 の説明 (技術文書とほかのジャンルで共有する)。
+/// S06 の説明 (既定で動くジャンルとほかのジャンルで共有する)。
 const LABEL_EXPLANATION: &str = "\
 ### 何を見るか
 
 箇条書きの項目が「**ラベル**: 説明」の形 (項目の先頭が太字で、直後にコロンやダッシュが続く) で \
 3 つ以上並んでいる箇条書きを指します。間に段落や見出しを挟まずに続く項目を 1 つの箇条書きとして数え、\
-箇条書き 1 つに 1 件出します。技術文書 (ジャンル tech) では既定で動き、ほかのジャンルでは実験的です。
+箇条書き 1 つに 1 件出します。技術文書 (ジャンル tech) と一般向けの文書 (ジャンル general。ジャンルを\
+指定しないときの既定) では既定で動き、業務文書・随筆では実験的です。
 
 ### なぜ問題か
 
@@ -749,12 +750,15 @@ const LABEL_EXPLANATION: &str = "\
 
 書式を保った人の技術記事 130 本 (2022 年より前に書かれ、更新も 2022 年 11 月より前の Markdown の原文) \
 のうち 1 本 (指標の名前を並べた一覧) に反応し、2026 年のモデルの技術文書 328 本では 74 本 (22.6%)、\
-2025 年頃のモデルの技術文書 44 本では 19 本に反応しました。HTML から取った人の文書は太字が失われている\
-ので、ほかのジャンルは書式を保った人の対照で確かめるまで実験的にしています。業務文書では「**日時**: 〜」\
-のような項目の並びが正当な慣習なので、校正の対象にしていません。
+2025 年頃のモデルの技術文書 44 本では 19 本に反応しました。書式を保った人の一般向けの記事 108 本 \
+(2022 年 11 月より前の版) では 0 本 (片側 95% の上限 2.4%) で、2026 年のモデルの一般向けの文書 340 本では \
+68 本 (20.0%)、2025 年頃のモデルの一般向けの文書 201 本では 30 本 (14.9%) に反応しました。HTML から取った\
+人の文書は太字が失われているので、書式を保った人の対照のない業務文書と随筆は実験的にしています。\
+業務文書では「**日時**: 〜」のような項目の並びが正当な慣習なので、校正の対象にしていません。ジャンルを\
+指定せずに業務文書を検査すると、この型の項目の並びにも情報として出ます。
 ";
 
-/// S06 (技術文書以外)。書式を保った人の対照で確かめるまで実験的。
+/// S06 (業務文書・随筆)。書式を保った人の対照で確かめるまで実験的。
 static LABEL_META: RuleMeta = LABEL_META_BASE;
 
 const LABEL_META_BASE: RuleMeta = RuleMeta {
@@ -764,14 +768,14 @@ const LABEL_META_BASE: RuleMeta = RuleMeta {
     lane: Lane::Slop,
     status: RuleStatus::Experimental,
     default_severity: Severity::Info,
-    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech 以外では実験的)",
+    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech・general 以外では実験的)",
     explanation: LABEL_EXPLANATION,
 };
 
-/// S06 (技術文書)。書式を保った人の技術記事で誤検知率を確かめたので既定で動かす。
-static LABEL_META_TECH: RuleMeta = RuleMeta {
+/// S06 (技術文書と一般向けの文書)。書式を保った人の記事で誤検知率を確かめたので既定で動かす。
+static LABEL_META_STABLE: RuleMeta = RuleMeta {
     status: RuleStatus::Stable,
-    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech では既定)",
+    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech・general では既定)",
     ..LABEL_META_BASE
 };
 
@@ -817,7 +821,7 @@ fn bold_label_runs(ctx: &RuleContext<'_>) -> Vec<Vec<(Span, String)>> {
     runs
 }
 
-/// S06 BOLD_LABEL_LIST。技術文書では既定で動き、ほかのジャンルでは実験的。
+/// S06 BOLD_LABEL_LIST。技術文書と一般向けの文書では既定で動き、業務文書・随筆では実験的。
 pub struct BoldLabelList {
     meta: &'static RuleMeta,
     min_count: usize,
@@ -825,8 +829,8 @@ pub struct BoldLabelList {
 
 impl BoldLabelList {
     pub fn new(genre: Genre) -> Self {
-        let meta = if genre == Genre::Tech {
-            &LABEL_META_TECH
+        let meta = if matches!(genre, Genre::Tech | Genre::General) {
+            &LABEL_META_STABLE
         } else {
             &LABEL_META
         };
@@ -1638,11 +1642,13 @@ mod tests {
         for r in &rules {
             assert_eq!(
                 r.meta().status,
-                if matches!(r.meta().id, "S11" | "S12") {
+                if matches!(r.meta().id, "S06" | "S11" | "S12") {
                     RuleStatus::Stable
                 } else {
                     RuleStatus::Experimental
-                }
+                },
+                "{}",
+                r.meta().id
             );
             assert_eq!(
                 r.meta().lane,
@@ -1658,6 +1664,15 @@ mod tests {
             );
             assert_eq!(r.allowed_in(Genre::Business), !blocked, "{}", r.meta().id);
             assert!(r.allowed_in(Genre::Tech));
+        }
+        // S06 は書式を保った人の対照で確かめた技術文書と一般向けの文書でだけ既定で動く
+        for (genre, status) in [
+            (Genre::General, RuleStatus::Stable),
+            (Genre::Tech, RuleStatus::Stable),
+            (Genre::Business, RuleStatus::Experimental),
+            (Genre::Essay, RuleStatus::Experimental),
+        ] {
+            assert_eq!(BoldLabelList::new(genre).meta().status, status, "{genre}");
         }
     }
 

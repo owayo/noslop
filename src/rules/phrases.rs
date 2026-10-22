@@ -284,8 +284,18 @@ mod tests {
             .unwrap()
             .as_ref();
         // 本文の途中の問いかけは拾わず、最後の 2 段落の結びの定型句だけを拾う
-        let md = "迷う人も多いのではないでしょうか。\n\n設定を見直した。\n\n手順は短くなった。\n\nまずは試してみてはいかがでしょうか。\n";
-        assert_eq!(matched(md, &run(p01, md)), ["いかがでしょうか"]);
+        let md = "迷う人も多いのではないでしょうか。\n\n設定を見直した。\n\n手順は短くなった。\n\n見直す価値はあったと言えるでしょう。\n";
+        assert_eq!(matched(md, &run(p01, md)), ["と言えるでしょう"]);
+        // 「いかがでしょうか」「いかがでしたか」は人の記事の結びにも同じくらい出るので、実験的な項目
+        let md = "本文です。\n\nぜひ試してみてはいかがでしょうか。いかがでしたか。\n";
+        assert!(run(p01, md).is_empty());
+        let experimental = Options {
+            experimental: true,
+            ..Options::default()
+        };
+        let d = run_with(p01, md, experimental);
+        assert_eq!(matched(md, &d), ["いかがでしょうか", "いかがでしたか"]);
+        assert!(d.iter().all(|d| d.status == RuleStatus::Experimental));
         // 結びの後ろの見出し・箇条書きは数えず、その手前の段落を結びとみなす
         let md =
             "本文です。\n\n総じて、移行は順調と言えるでしょう。\n\n## まとめ\n\n- 移行は終わった\n";
