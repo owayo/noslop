@@ -41,7 +41,7 @@ pub(super) struct StockCloser(PhraseRule);
 
 impl StockCloser {
     pub(super) fn new(genre: Genre) -> Self {
-        Self(PhraseRule::new(for_genre(genre)).excluding_quoted_mentions())
+        Self(PhraseRule::new(for_genre(genre)))
     }
 }
 

@@ -1250,7 +1250,7 @@ mod tests {
     fn diff_reports_new_findings_and_lost_facts_without_terminal_styles() {
         let mut s = initialized();
         let before = "# 案内\n\n2024 年に導入した機能は、利用者の声から生まれました。\n";
-        let after = "# 案内\n\n新しい機能は、利用者の声から生まれました。いかがでしたか。\n";
+        let after = "# 案内\n\n新しい機能は、利用者の声から生まれたと言えるでしょう。\n";
         let r = s
             .handle(call(
                 1,

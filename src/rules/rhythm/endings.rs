@@ -52,6 +52,11 @@ const REPETITIVE_EXPLANATION: &str = "\
 同じ段落の中で続く文の文末 (文末記号と閉じ括弧を除いた最後の 3 字) を比べ、同じ形が \
 3 文以上続く箇所を指します。名詞で終わる文 (体言止め) は、語が違っても 1 つの型として数えます。
 
+「**報告日**: 2026年10月1日」「出典：〜調査」のように、短いラベルとコロンに値が続く行を改行で\
+並べた項目は、文末の連続に数えず、前後の連続を区切るものとして扱います。行をまるごと占め、\
+文末記号で終わらない行だけが当たります。「**メリット**: 〜がいい。」のように値が文になっている\
+行は、ほかの文と同じく数えます。
+
 ### なぜ問題か
 
 「〜しています。〜しています。〜しています。」のように同じ文末が続くと、内容より文末の繰り返しが\
@@ -72,7 +77,11 @@ const REPETITIVE_EXPLANATION: &str = "\
 
 実験的です。文末の反復を数える検出器は誤検知率をまだ測っていません。です・ます体では同じ文末が\
 続くのが普通なので、比べる長さを 3 字にして「です」「ます」だけの一致では出ないようにしています。\
-AI らしさの判定ではなく推敲の手掛かりとして扱います。
+AI らしさの判定ではなく推敲の手掛かりとして扱います。改行で並べた「ラベル: 値」の行は、生成された\
+業務文書の冒頭 (「**作成日：** 〜」「**宛先：** 〜」) に多く、体言止めの連続として数えると文末の推敲と\
+関係のない指摘になります。noslop のコーパスでは、この行を連続に数えた場合にだけ指摘される文書が、\
+生成文書 1,729 本のうち 100 本、人の文書 176 本のうち 0 本ありました。人の文書で指摘のある文書は \
+62 本です。
 ";
 
 /// R02 REPETITIVE_ENDING。
@@ -169,6 +178,9 @@ impl Rule for RepetitiveEnding {
 
 impl RepetitiveEnding {
     /// 地の文の段落ごとに、同じ文末が続く区間 (1 文だけの区間を含む) を並べる。
+    ///
+    /// 「ラベル: 値」の行 ([`Sentence::label_value`]) は文末の型を持たない区切りとして扱い、
+    /// 前後の文の連続をつながない (改行で並べた項目で、地の文の文末ではないため)。
     fn runs<'a>(&self, doc: &'a Document) -> Vec<(Vec<&'a Sentence>, Ending)> {
         let mut out = Vec::new();
         for (idx, block) in doc.blocks.iter().enumerate() {
@@ -182,7 +194,13 @@ impl RepetitiveEnding {
                 .collect();
             let endings: Vec<Option<Ending>> = sentences
                 .iter()
-                .map(|s| ending_of(doc.sentence_text(s), self.tail_chars))
+                .map(|s| {
+                    if s.label_value {
+                        None
+                    } else {
+                        ending_of(doc.sentence_text(s), self.tail_chars)
+                    }
+                })
                 .collect();
             let mut i = 0;
             while i < sentences.len() {
@@ -223,7 +241,8 @@ const NOMINAL_EXPLANATION: &str = "\
 地の文が 5 文以上、合計 2000 字以上 (エッセイは 1500 字、技術文書・ビジネス文書は 3000 字) の\
 文書で、名詞で終わる文 (体言止め) が推定で 1 つもないときに、最後の文の位置へ 1 件だけ出します。\
 辞書を使わないため、文末の最後の文字が漢字・カタカナ・英数字か、「こと」「もの」などの形式名詞で\
-終わる文を、名詞らしい終止と推定しています。
+終わる文を、名詞らしい終止と推定しています。「**宛先**: 総務本部長」のように、ラベルと値を改行で\
+並べた項目の行は地の文に数えないので、名詞で終わっていても体言止めにはなりません。
 
 ### なぜ問題か
 
@@ -364,7 +383,7 @@ impl Rule for NoNominalEnding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::testing::{Options, matched, run, run_with};
+    use crate::rules::testing::{Options, matched, measure_md, run, run_with};
 
     #[test]
     fn ending_types() {
@@ -406,6 +425,36 @@ mod tests {
     fn r02_ignores_desu_masu_with_different_words() {
         let md = "これは重要な課題です。対応は来月です。担当はまだ未定です。\n";
         assert!(run(&RepetitiveEnding::new(Genre::General), md).is_empty());
+    }
+
+    #[test]
+    fn r02_skips_label_value_lines() {
+        let rule = RepetitiveEnding::new(Genre::General);
+        // 太字のラベルと値をハード改行・ソフト改行で並べた項目は、体言止めの連続に数えない
+        for md in [
+            "**報告日**: 2026年10月1日  \n**作成者**: 総務部  \n**宛先**: 総務本部長  \n**分類**: 社内限定\n",
+            "**作成日：** 2026年10月1日\n**作成者：** 総務部 主任 佐藤 一郎\n**宛先：** 総務本部長\n",
+            "出典：社内の調査  \n注記：数値は概算  \n対象：全部門\n",
+        ] {
+            assert!(run(&rule, md).is_empty(), "{md}");
+            assert!(measure_md(&rule, md).is_empty(), "{md}");
+        }
+        // 地の文の体言止めの連続は、今まで通り指摘する
+        let md = "成果物の評価。担当者の確認。期限の設定。\n";
+        assert_eq!(run(&rule, md).len(), 1);
+    }
+
+    #[test]
+    fn r02_counts_labeled_sentences_and_breaks_runs_at_label_value_lines() {
+        let rule = RepetitiveEnding::new(Genre::General);
+        // 値が文になっている行 (文末記号で終わる) は、ほかの文と同じく数える
+        let md = "**手順1**: 設定を開いています。\n**手順2**: 値を入れています。\n**手順3**: 内容を保存しています。\n";
+        let d = run(&rule, md);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].message.contains("います"), "{}", d[0].message);
+        // 項目の行は連続を区切る (前後の文を 1 つの連続につながない)
+        let md = "在庫を数えています。  \n**注記**: 週ごとの集計  \n差異を集計しています。原因を調べています。\n";
+        assert!(run(&rule, md).is_empty());
     }
 
     #[test]
@@ -451,6 +500,18 @@ mod tests {
         md.push_str("\n残る課題は夜間の一次対応。\n");
         assert!(run(&NoNominalEnding::new(Genre::General), &md).is_empty());
         assert!(run(&NoNominalEnding::new(Genre::General), &verb_only_text(1200)).is_empty());
+    }
+
+    #[test]
+    fn r06_does_not_count_label_value_lines_as_noun_endings() {
+        // 冒頭の「ラベル: 値」の行は名詞で終わっていても、地の文の体言止めに数えない
+        let md = format!(
+            "**報告日**: 2026年10月1日  \n**宛先**: 総務本部長\n\n{}",
+            verb_only_text(2100)
+        );
+        let d = run(&NoNominalEnding::new(Genre::General), &md);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].message.contains("推定で 0 件"), "{}", d[0].message);
     }
 
     #[test]

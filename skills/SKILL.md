@@ -92,10 +92,10 @@ files[1]:
       readability: 0
     rules[2]{ruleId,ruleName,title,lane,maxSeverity,experimentalOnly,count,omittedCount,why,hint}:
       P01,AI_CONCLUSION,結論の押し付け・まとめ口調,slop,warning,false,1,0,要約の定型として…,定型句を外して言い切るか、結論を支える事実や数値を書いてください
-      P03,AI_CONJUNCTION,空疎な接続,slop,info,false,1,0,前の段落で何が述べられたかに…,接続語に頼らず、前の内容の具体的な事実や疑問から次の話へつないでください
+      P08,EMPTY_ADJECTIVE,空虚な形容,slop,info,false,1,0,「多角的に分析した」と書いても…,何がどう重要・網羅的なのか、観点や根拠そのものを書いてください
     occurrences[2]{ruleId,line,column,message,excerpt}:
-      P01,3,35,「と言えるだろう」は結論を定型句で押し付ける締めです,このように、定例会議を減らしたことは…と言えるだろう。
-      P03,3,1,「このように」は前の内容を機械的に束ねる接続です…,このように、定例会議を減らしたことは…と言えるだろう。
+      P01,3,30,「と言えるだろう」は結論を定型句で押し付ける締めです,定例会議を減らしたことは…と言えるだろう。
+      P08,3,21,「不可欠」は中身を説明せずに重みだけを足す形容です…,定例会議を減らしたことは…と言えるだろう。
 ```
 
 - 先頭に `revisionRules` (改稿のルール) と `editorialQuestions` (ルールでは拾えない観点の問い) がある。

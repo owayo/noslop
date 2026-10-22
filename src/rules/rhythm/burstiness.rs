@@ -22,12 +22,13 @@ const EXPLANATION: &str = "\
 ### 何を見るか
 
 地の文 (見出し・箇条書き・引用・表を除いた本文の段落) の文をすべて集め、文の長さ \
-(空白と文末記号を除いた文字数) のばらつきを burstiness で測ります。burstiness は \
+(空白と文末記号を除いた文字数) のばらつきを burstiness で測ります。「**報告日**: 2026年10月1日」\
+のように、ラベルと値を改行で並べた項目の行は地の文に数えません。burstiness は \
 (標準偏差 − 平均) ÷ (標準偏差 + 平均) で、−1 に近いほど長さがそろっています。変動係数 \
 (標準偏差 ÷ 平均) を −1〜1 の範囲に写したもので、両者は同じ情報を持ちます。
 
-地の文が 20 文以上なら −0.38 未満で警告します。10〜19 文の文書は、より厳しい −0.45 未満の\
-ときだけ参考値として情報を出し、10 文未満は判定しません。
+地の文が 20 文以上なら −0.50 未満で警告します。10〜19 文の文書は、同じ −0.50 未満のときに\
+参考値として情報を出し、10 文未満は判定しません。
 
 ### なぜ問題か
 
@@ -49,11 +50,20 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-校正済みです。文字数で数えた文長で、人の書いた文書 71 本と生成された文書 381 本を比べました。\
-地の文が 20 文以上の文書では、閾値 −0.38 で人の文書の誤検知が 1.4%、生成文書の検出が約 58% \
-でした。閾値を −0.24 まで緩めると人の文書の 3 割に反応します。人の文書の標本はすべて 36 文以上で、\
-短い文書での誤検知率はまだ測れていません。10〜19 文を厳しい閾値の参考値に留め、10 文未満を\
-判定しないのはそのためです。文長をモーラで数えても判定力はほぼ変わらないことを確かめています。\
+校正済みです。文字数で数えた文長で比べています。最初の校正 (人の書いた文書 71 本と生成された文書 \
+381 本) では、地の文が 20 文以上の文書で、閾値 −0.38 の誤検知が 1.4%、検出が約 58% でした。人の文書を \
+176 本 (一般・技術・業務・随筆・スライド) に増やして測り直すと、−0.38 では 17 本 (9.7%) に反応し、\
+誤検知の目安 (5%) を超えました。人の講演・解説・随筆には、似た長さの文を落ち着いて並べる書き方も\
+あるためです。閾値を −0.45 にすると人の文書は 7 本 (4.0%) になり、その後に集めた書式を保った人の\
+技術記事 130 本でも 3 本 (2.3%) でした。ところが、さらに集めた書式を保った人の一般向けの記事 108 本では \
+11 本 (10.2%) に反応し、人の文書 176 本のうち一般向けの 26 本でも 2 本 (7.7%) と、一般向けでは 1 割\
+ほどに出ていました。閾値を −0.50 にすると、人の文書は 176 本で 1 本 (0.6%)、書式を保った人の技術記事で \
+1 本 (0.8%)、一般向けの記事で 4 本 (3.7%) になり、生成文書は 2025 年頃のモデルなどの 390 本で 59 本 \
+(15.1%)、2026 年のモデルの 1,339 本で 154 本 (11.5%) を検出します。−0.45 より検出は半分ほどに減り\
+ますが、既定の警告では人の文書への誤検知を抑えることを優先しました。一般向けの記事 108 本は、この閾値を\
+決めるのにも使ったので、−0.50 での値は独立した検証の結果ではありません。人の文書の\
+標本はほとんどが 20 文以上で、短い文書での誤検知率はまだ測れていません。10〜19 文を参考値に留め、\
+10 文未満を判定しないのはそのためです。文長をモーラで数えても判定力はほぼ変わらないことを確かめています。\
 隣り合う文の長さの相関 (短い文の後に短い文が続くか) は、校正で予想と逆の傾向が出たため使っていません。
 ";
 
@@ -76,9 +86,9 @@ impl LowBurstiness {
     pub fn new(_genre: Genre) -> Self {
         Self {
             min_sentences: 20,
-            threshold: -0.38,
+            threshold: -0.50,
             info_min_sentences: 10,
-            info_threshold: -0.45,
+            info_threshold: -0.50,
         }
     }
 
@@ -233,10 +243,22 @@ mod tests {
     }
 
     #[test]
-    fn moderate_uniformity_warns_only_with_twenty_sentences() {
-        // burstiness ≈ −0.40: 20 文以上なら警告 (閾値 −0.38)、15 文なら参考値の閾値 (−0.45) に届かない
-        assert_eq!(run(&rule(), &paragraph(&alternating(20))).len(), 1);
+    fn moderate_uniformity_is_not_flagged() {
+        // burstiness ≈ −0.40: 人の文書にもよく出る程度のそろい方なので、文数によらず出さない (閾値 −0.50)
+        assert!(run(&rule(), &paragraph(&alternating(20))).is_empty());
         assert!(run(&rule(), &paragraph(&alternating(15))).is_empty());
+        // 長さ 11 と 23 を交互に並べた文長 (burstiness ≈ −0.47) も、人の一般向けの記事に出るので出さない
+        let lengths: Vec<usize> = (0..20).map(|i| if i % 2 == 0 { 11 } else { 23 }).collect();
+        assert!(run(&rule(), &paragraph(&lengths)).is_empty());
+    }
+
+    #[test]
+    fn strong_uniformity_warns_with_twenty_sentences() {
+        // 長さ 12 と 20 を交互に並べた文長 (burstiness ≈ −0.60) は 20 文以上で警告
+        let lengths: Vec<usize> = (0..20).map(|i| if i % 2 == 0 { 12 } else { 20 }).collect();
+        let d = run(&rule(), &paragraph(&lengths));
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].severity, Severity::Warning);
     }
 
     #[test]
@@ -264,10 +286,11 @@ mod tests {
     #[test]
     fn configure_overrides_and_rejects_unknown_keys() {
         let mut r = rule();
-        r.configure("threshold", &toml::Value::Float(-0.5)).unwrap();
+        r.configure("threshold", &toml::Value::Float(-0.55))
+            .unwrap();
         r.configure("min_sentences", &toml::Value::Integer(15))
             .unwrap();
-        // −0.40 は −0.5 より大きいので出ない
+        // −0.40 は −0.55 より大きいので出ない
         assert!(run(&r, &paragraph(&alternating(20))).is_empty());
         let err = r.configure("nope", &toml::Value::Integer(1)).unwrap_err();
         assert!(err.contains("nope") && err.contains("R01"));
@@ -279,7 +302,7 @@ mod tests {
         assert!(
             r.options()
                 .iter()
-                .any(|(k, v)| *k == "threshold" && v == "-0.5")
+                .any(|(k, v)| *k == "threshold" && v == "-0.55")
         );
     }
 }

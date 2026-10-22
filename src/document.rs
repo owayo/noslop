@@ -306,6 +306,10 @@ pub struct Sentence {
     pub japanese: bool,
     /// 括弧の内側に文末記号があり、括弧ごと 1 文として扱ったか。
     pub embedded_enders: bool,
+    /// 行をまるごと占める「ラベル: 値」の行か (「**報告日**: 2026年10月1日」のような項目の行)。
+    /// 箇条書きの代わりに改行で並べた項目で、地の文の流れにはない。条件は文分割のときに判定する
+    /// 関数 (`is_label_value`) の説明にある。
+    pub label_value: bool,
 }
 
 /// 抑制コメントの種類。
@@ -487,16 +491,50 @@ impl Document {
     }
 
     /// 地の文にあり、日本語を含む文 (統計系ルールの母集団)。
+    ///
+    /// 改行で並べた「ラベル: 値」の行 ([`Sentence::label_value`]) は除く。箇条書きの代わりの項目で、
+    /// 文の長さ・体言止め・文頭の統計に地の文として入れると、本文の調子と関係なく値が動くため。
     pub fn prose_sentences(&self) -> impl Iterator<Item = &Sentence> {
         self.sentences
             .iter()
-            .filter(|s| s.japanese && self.blocks[s.block].is_prose())
+            .filter(|s| s.japanese && !s.label_value && self.blocks[s.block].is_prose())
     }
 
-    /// 原文の文字数 (Markdown 記法・改行込み)。構造系のルールが 1000 字あたりの密度を測るのと、
-    /// JSON の `characters` に使う。
+    /// 文書の結びに当たる、日本語を含む地の文の段落の最後の `count` 個 (ブロックの添字、文書順)。
+    ///
+    /// 後ろに続く見出し・箇条書き・表・コードは数えず、その手前の段落までさかのぼる
+    /// (「まとめ」の箇条書きで終わる文書の、結論の段落を拾うため)。段落が `count` 個に満たない
+    /// 文書では、ある段落をすべて返す。
+    pub fn closing_paragraphs(&self, count: usize) -> Vec<usize> {
+        let mut closing: Vec<usize> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(i, b)| b.is_prose() && self.block_sentences(*i).iter().any(|s| s.japanese))
+            .map(|(i, _)| i)
+            .take(count)
+            .collect();
+        closing.reverse();
+        closing
+    }
+
+    /// 原文の文字数 (Markdown 記法・改行込み)。JSON の `characters` に使う。
     pub fn char_count(&self) -> usize {
         self.source.chars().count()
+    }
+
+    /// 本文の文字数 (Markdown 記法・改行込み。文書の先頭の front matter は数えない)。
+    ///
+    /// 構造系のルールが 1000 字あたりの密度を測る母数と、`noslop calibrate` の 1000 字あたりの
+    /// 件数に使う。front matter (題名・タグ・日付などのメタデータ) は読み手が読む本文ではないので、
+    /// 含めると front matter の長い文書ほど密度が低く出る。
+    pub fn body_char_count(&self) -> usize {
+        let front_matter = match self.format {
+            SourceFormat::Markdown => crate::markdown::front_matter_len(&self.source),
+            SourceFormat::PlainText | SourceFormat::Code(_) => 0,
+        };
+        self.source[front_matter..].chars().count()
     }
 
     /// 原文上の範囲の文字列。
@@ -536,6 +574,7 @@ pub(crate) fn split_sentences(blocks: &mut [Block], options: &ParseOptions) -> V
                 length: text::reading_length(body),
                 japanese: text::contains_japanese(body),
                 embedded_enders: piece.embedded_enders,
+                label_value: is_label_value(block, &piece.range),
                 range: piece.range,
                 span,
             });
@@ -543,6 +582,131 @@ pub(crate) fn split_sentences(blocks: &mut [Block], options: &ParseOptions) -> V
         block.sentences = begin..sentences.len();
     }
     sentences
+}
+
+/// ラベルとみなす字数の上限 (コロンの前の字数)。
+const MAX_LABEL_CHARS: usize = 20;
+
+/// ブロックの解析用テキストの `range` の文が、行をまるごと占める「ラベル: 値」の行か。
+///
+/// 「**報告日**: 2026年10月1日」「**作成者：** 総務部」「出典：〜調査」のように、短いラベルと
+/// コロンに値が続く行を、改行で並べた項目とみなす。次をすべて満たす文が当たる。
+///
+/// - 行の頭から始まり、行の終わりで終わる (同じ行に別の文がない)
+/// - 文末記号で終わらない (値が文になった「**メリット**: 〜がいい。」は地の文として扱う)
+/// - 文に含まれる行がどれも、ラベルとコロンに値が続く形 ([`labeled_line`])。ソフト改行で
+///   つながった複数の行は、すべての行が項目のときだけ項目の並びとみなす (「担当：総務部」に
+///   改行で続けた本文の行まで外さないため)
+fn is_label_value(block: &Block, range: &Range<usize>) -> bool {
+    let text = &block.text;
+    let Some(body) = text.get(range.clone()) else {
+        return false;
+    };
+    if body
+        .trim_end()
+        .chars()
+        .next_back()
+        .is_none_or(text::is_sentence_ender)
+    {
+        return false;
+    }
+    // 文の中の行の境目 (文の頭と終わりを含む)
+    let mut bounds: Vec<usize> = block
+        .line_breaks
+        .iter()
+        .copied()
+        .filter(|&at| range.start < at && at < range.end)
+        .collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    bounds.insert(0, range.start);
+    bounds.push(range.end);
+    // 先頭の行から見る (コロンのない大半の文は、改行の位置を調べずに済む)
+    if !labeled_line(block, bounds[0]..bounds[1]) {
+        return false;
+    }
+    let line_start = block
+        .line_breaks
+        .iter()
+        .copied()
+        .filter(|&at| at <= range.start)
+        .max()
+        .unwrap_or(0);
+    let line_end = block
+        .line_breaks
+        .iter()
+        .copied()
+        .filter(|&at| at >= range.end)
+        .min()
+        .unwrap_or(text.len());
+    let blank = |r: Range<usize>| text.get(r).is_some_and(|s| s.trim().is_empty());
+    blank(line_start..range.start)
+        && blank(range.end..line_end)
+        && bounds
+            .windows(2)
+            .skip(1)
+            .all(|w| labeled_line(block, w[0]..w[1]))
+}
+
+/// ブロックの解析用テキストの `range` の 1 行 (前後の空白は除いて見る) が、ラベルとコロンに値が
+/// 続く形か。
+///
+/// ラベルは 1〜20 字で、空白・句読点を含まず、日本語か英字を含み、括弧が閉じている (「全社（対象：
+/// 250名）で〜」のような括弧の中のコロンを除く)。半角のコロンは、直後が空白か、ラベルが太字の中に
+/// あるとき (「**報告日**:」「**報告日:**」「**作成部署:経営企画部**」) だけ区切りとみなす
+/// (「id:cohalz」「10:00」「https://」のような語の中のコロンを除く)。
+fn labeled_line(block: &Block, range: Range<usize>) -> bool {
+    let Some(raw) = block.text.get(range.clone()) else {
+        return false;
+    };
+    let line = raw.trim_start();
+    let start = range.start + (raw.len() - line.len());
+    let line = line.trim_end();
+    let Some((at, colon)) = line
+        .char_indices()
+        .take(MAX_LABEL_CHARS + 1)
+        .find(|&(_, c)| matches!(c, ':' | '：'))
+    else {
+        return false;
+    };
+    let label = &line[..at];
+    let value = &line[at + colon.len_utf8()..];
+    if label.is_empty()
+        || value.trim().is_empty()
+        || label
+            .chars()
+            .any(|c| c.is_whitespace() || text::is_comma(c) || matches!(c, '。' | '．' | ','))
+        || !label
+            .chars()
+            .any(|c| text::is_japanese(c) || c.is_ascii_alphabetic())
+        || !brackets_closed(label)
+    {
+        return false;
+    }
+    if colon == ':' && !value.starts_with(char::is_whitespace) {
+        // ラベルの頭からコロンまでを太字が覆うときだけ区切りとみなす
+        let at = start + at;
+        return block
+            .marks
+            .iter()
+            .any(|m| m.kind == MarkKind::Strong && m.range.start <= start && m.range.end >= at);
+    }
+    true
+}
+
+/// 開き括弧がすべて、対応する閉じ括弧で閉じているか (括弧の字の集合は文分割と同じ)。
+fn brackets_closed(s: &str) -> bool {
+    let mut open: Vec<char> = Vec::new();
+    for c in s.chars() {
+        // `〝` は `〟` と `〞` のどちらでも閉じる
+        let c = if c == '〞' { '〟' } else { c };
+        if let Some(close) = text::closing_bracket(c) {
+            open.push(close);
+        } else if text::is_closing_bracket(c) && open.pop() != Some(c) {
+            return false;
+        }
+    }
+    open.is_empty()
 }
 
 #[cfg(test)]
@@ -598,6 +762,39 @@ mod tests {
         assert_eq!(idx.line_span(src, 1), Span::new(0, "一行目".len()));
         let third = src.find('三').unwrap();
         assert_eq!(idx.line(third), 3);
+    }
+
+    #[test]
+    fn body_char_count_skips_only_the_leading_front_matter() {
+        let md = Document::markdown("---\ntitle: 例\n---\n本文です。\n");
+        assert_eq!(md.char_count(), 23);
+        assert_eq!(md.body_char_count(), 6);
+        // 文書の途中の区切り線や、テキストの先頭の `---` は本文として数える
+        let middle = Document::markdown("本文です。\n\n---\nほか\n---\n");
+        assert_eq!(middle.body_char_count(), middle.char_count());
+        let text = Document::plain_text("---\ntitle: 例\n---\n本文です。\n");
+        assert_eq!(text.body_char_count(), text.char_count());
+    }
+
+    #[test]
+    fn closing_paragraphs_are_the_last_prose_paragraphs() {
+        let doc = Document::markdown(
+            "# 題\n\n最初の段落。\n\n二つ目の段落。\n\n三つ目の段落。\n\n## まとめ\n\n- 項目\n- 項目\n",
+        );
+        let texts: Vec<&str> = doc
+            .closing_paragraphs(2)
+            .iter()
+            .map(|&i| doc.blocks[i].text.as_str())
+            .collect();
+        assert_eq!(texts, ["二つ目の段落。", "三つ目の段落。"]);
+        // 段落が足りなければ、ある段落だけ。日本語を含まない段落・引用は数えない
+        let doc = Document::markdown("> 引用の段落。\n\nEnglish only.\n\n唯一の段落。\n");
+        let texts: Vec<&str> = doc
+            .closing_paragraphs(2)
+            .iter()
+            .map(|&i| doc.blocks[i].text.as_str())
+            .collect();
+        assert_eq!(texts, ["唯一の段落。"]);
     }
 
     #[test]
@@ -676,6 +873,111 @@ mod tests {
             assert!(!english.japanese);
             assert!(!english.embedded_enders);
         }
+    }
+
+    /// 文と、「ラベル: 値」の行か。
+    fn label_values(src: &str) -> Vec<(String, bool)> {
+        let doc = Document::markdown(src);
+        doc.sentences
+            .iter()
+            .map(|s| (doc.sentence_text(s).to_string(), s.label_value))
+            .collect()
+    }
+
+    fn all_label_values(src: &str) -> bool {
+        let sentences = label_values(src);
+        !sentences.is_empty() && sentences.iter().all(|(_, label)| *label)
+    }
+
+    #[test]
+    fn label_value_lines_are_marked() {
+        // 太字のラベルと全角のコロン (ソフト改行で並べた行)
+        assert!(all_label_values(
+            "**作成日：** 2026年10月1日\n**作成者：** 総務部 主任 佐藤 一郎\n**宛先：** 総務本部長\n"
+        ));
+        // 太字のラベルと半角のコロン (ハード改行。コロンが太字の外でも内でも、空白がなくても)
+        let src = "**報告日**: 2026年10月1日  \n**作成者:** 総務部  \n**分類**:社内限定\n";
+        assert_eq!(label_values(src).len(), 3);
+        assert!(all_label_values(src));
+        // 行全体を太字にした項目 (空白のない半角のコロンも、ラベルが太字の中にあれば区切り)
+        let src = "**作成部署:経営企画部 業務改善推進課**\n**作成者:佐藤 一郎**\n";
+        assert_eq!(label_values(src).len(), 2);
+        assert!(all_label_values(src));
+        // 太字でないラベル (全角のコロン、空白の続く半角のコロン)、括弧の閉じたラベル、記号で始まるラベル
+        for src in [
+            "出典：社内の調査\n",
+            "メール: you@example.com\n",
+            "特長（速さ）：待たずに済む\n",
+            "・期限：10月末\n",
+            "**第一段階：個別連絡**\n",
+        ] {
+            assert!(all_label_values(src), "{src}");
+        }
+        // ソフト改行でつながった半角のコロンの行は、どの行も項目なら全体を項目の並びとみなす
+        let src = "**件名:** 研修の結果\n**報告日:** 2026年10月1日\n";
+        assert_eq!(label_values(src).len(), 1);
+        assert!(all_label_values(src));
+    }
+
+    #[test]
+    fn prose_sentences_skip_label_value_lines() {
+        let doc = Document::markdown(
+            "**報告日**: 2026年10月1日  \n**宛先**: 総務本部長\n\n申請の手順を見直した。窓口は一本化する。\n",
+        );
+        assert_eq!(doc.sentences.len(), 4);
+        let prose: Vec<_> = doc
+            .prose_sentences()
+            .map(|s| doc.sentence_text(s))
+            .collect();
+        assert_eq!(prose, ["申請の手順を見直した。", "窓口は一本化する。"]);
+    }
+
+    #[test]
+    fn joined_lines_are_label_values_only_when_every_line_is_one() {
+        // 項目の行に、改行で本文の行が続いて 1 文につながったものは、本文を含むので項目ではない
+        let src = "担当：総務部\n今月は問い合わせ件数が増加\n対応負荷も上昇\n";
+        assert_eq!(
+            label_values(src),
+            [(
+                "担当：総務部今月は問い合わせ件数が増加対応負荷も上昇".to_string(),
+                false
+            )]
+        );
+        // 2 行目が語の中の半角コロンでも同じ
+        let src = "**件名:** 研修の結果\n担当はid:cohalzさん\n";
+        assert!(label_values(src).iter().all(|(_, label)| !label));
+    }
+
+    #[test]
+    fn sentences_with_a_colon_are_not_always_label_values() {
+        for src in [
+            // 値が文になっている (文末記号で終わる)
+            "**メリット**: 実装が単純で扱いやすい。\n",
+            "注：中国は香港を含む。\n",
+            // 括弧の中のコロン、語の中の半角コロン、時刻、数字だけのラベル
+            "全社（対象：250名）で集計した結果\n",
+            "担当はid:cohalzさん\n",
+            "開場は10:00から\n",
+            "10：00 開場\n",
+            // 長すぎるラベル、値のないラベル、読点を含むラベル
+            "これは二十字を超えるとても長い見出しのような書き出しです：値\n",
+            "**添付資料：**\n",
+            "結果、残った課題：夜間の対応\n",
+        ] {
+            assert!(
+                label_values(src).iter().all(|(_, label)| !label),
+                "{src}: {:?}",
+                label_values(src)
+            );
+        }
+        // 行の途中から始まる文は、ラベルのように書き出していても項目の行ではない
+        assert_eq!(
+            label_values("設定を保存した。注意：再起動が必要\n"),
+            [
+                ("設定を保存した。".to_string(), false),
+                ("注意：再起動が必要".to_string(), false)
+            ]
+        );
     }
 
     #[test]

@@ -7,6 +7,11 @@
 //! 多くのルールは `RuleContext::scoped_blocks` が返すブロック (既定は地の文の段落だけ) の
 //! 文ごとに照合し、文をまたぐ一致はしない。引用マーカーと記法の残骸 ([`artifacts`]、P22・
 //! [`markup`]、P23) は、置き場所を問わず見える記号を拾うので、スコープに従わず全ブロックを行ごとに見る。
+//!
+//! 語句辞書で動くルール ([`engine::PhraseRule`]) と、P14 (ダッシュの挿入句)・P17 (二重否定) は、
+//! 同じブロック内で対応する引用符の内側に収まる一致と、開き引用符の直後の一致を、語句への言及として
+//! 除く ([`quotes`])。ほかのルールは、引用の内側の一致がほとんどないか、引用の中でも読み手の負荷や
+//! 構文が変わらないので除かない。
 
 mod artifacts;
 mod attribution;
@@ -28,12 +33,18 @@ use crate::rules::Rule;
 
 use engine::PhraseRule;
 
+/// P01 (結論の定型句) が文書の結びとして見る、地の文の最後の段落の数。
+///
+/// 人の文書では、同じ語句が本文の途中 (問いかけの書き出し・節の途中のまとめ) によく出る。
+/// 生成文書の結論の定型句は文書の最後の段落に集まるので、結びに限って拾う。
+const P01_CLOSING_PARAGRAPHS: usize = 2;
+
 /// 語句パターン系の組み込みルール (ID 順)。
 pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
     vec![
-        Box::new(PhraseRule::new(&catalog::P01).excluding_quoted_mentions()),
+        Box::new(PhraseRule::new(&catalog::P01).only_in_closing(P01_CLOSING_PARAGRAPHS)),
         Box::new(PhraseRule::new(&catalog::P02)),
-        Box::new(PhraseRule::new(&catalog::P03).excluding_quoted_mentions()),
+        Box::new(PhraseRule::new(&catalog::P03)),
         Box::new(PhraseRule::new(&catalog::P04)),
         Box::new(PhraseRule::new(&catalog::P05)),
         Box::new(PhraseRule::new(&catalog::P06)),
@@ -152,11 +163,31 @@ mod tests {
         );
     }
 
+    /// 語句辞書で動くルール (P27 は自前の条件も持つので、closer のテストで確かめる) と、
+    /// 引用の外で拾われる語句。
+    const DICTIONARY_PHRASES: [(&str, &str); 15] = [
+        ("P01", "と言えるでしょう"),
+        ("P02", "見ていきましょう"),
+        ("P03", "このように"),
+        ("P04", "を行う"),
+        ("P05", "様々な"),
+        ("P06", "非常に重要"),
+        ("P07", "一概には言えません"),
+        ("P08", "多角的"),
+        ("P09", "掘り下げる"),
+        ("P10", "に他なりません"),
+        ("P11", "理由は3つあります"),
+        ("P12", "することができる"),
+        ("P18", "ご質問ありがとうございます"),
+        ("P19", "革命的"),
+        ("P24", "地味に効く"),
+    ];
+
     #[test]
-    fn conclusion_and_conjunction_skip_quoted_mentions() {
+    fn dictionary_rules_skip_quoted_mentions() {
         use crate::rules::testing::{matched, run};
         let rules = rules(Genre::Tech);
-        for (id, phrase) in [("P01", "と言えるでしょう"), ("P03", "このように")] {
+        for (id, phrase) in DICTIONARY_PHRASES {
             let rule = rules.iter().find(|r| r.meta().id == id).unwrap();
             for (open, close) in [("「", "」"), ("『", "』"), ("“", "”"), ("\"", "\"")] {
                 for md in [
@@ -189,7 +220,12 @@ mod tests {
             experimental: true,
             ..Options::default()
         };
-        for (id, phrase) in [("P01", "と言えるでしょう"), ("P03", "このように")] {
+        for (id, phrase) in DICTIONARY_PHRASES {
+            // P01 は文書の結びの段落だけを見るので、スコープを広げても箇条書きと引用は見ない
+            // (p01_looks_only_at_the_closing_paragraphs で確かめる)
+            if id == "P01" {
+                continue;
+            }
             let md = format!("- 「{phrase}」という語です。\n\n> 実際に{phrase}、確認します。\n");
             assert!(run(get(id), &md).is_empty());
             assert_eq!(matched(&md, &run_with(get(id), &md, all)), [phrase]);
@@ -213,14 +249,67 @@ mod tests {
         }
         for (id, md) in [
             ("P01", "「結論から述べると、準備が必要です。」という例。"),
+            ("P02", "「それでは、確認していきます」という例です。"),
             ("P03", "「つまり、確認が必要ということです」と書きます。"),
+            ("P08", "「包括的な見直し」という題の資料を読む。"),
+            (
+                "P12",
+                "「複数の情報源を比較することができる」と答えた人が多い。",
+            ),
         ] {
             assert!(run_with(get(id), md, all).is_empty(), "{id}");
         }
-        let md = "「それでは、確認していきます」という例です。";
-        assert_eq!(matched(md, &run(get("P02"), md)), ["それでは、"]);
         let md = "「このように」は避けます。**このように**、確認します。";
         assert_eq!(matched(md, &run(get("P03"), md)), ["このように"]);
+        // 辞書を使わないルールのうち、引用の内側を除くのは P14 と P17 だけ。
+        // P13 は、括弧の中で主語と述語がそろった文 (引用した発言) をこれまでどおり数える
+        let md = "彼は「これは誤りを示す」と言った。";
+        assert_eq!(matched(md, &run(get("P13"), md)), ["これは誤りを示す"]);
+        for (id, md) in [
+            ("P14", "著書『贈与の論理——資本主義のすきま』を読む。"),
+            ("P17", "「〜ないわけではない」のような言い回しを避ける。"),
+        ] {
+            assert!(run_with(get(id), md, all).is_empty(), "{id}");
+        }
+    }
+
+    #[test]
+    fn p01_looks_only_at_the_closing_paragraphs() {
+        use crate::rules::testing::{Options, matched, run, run_with};
+        use crate::rules::{RuleUnit, Scope};
+        let rules = rules(Genre::General);
+        let p01 = rules
+            .iter()
+            .find(|r| r.meta().id == "P01")
+            .unwrap()
+            .as_ref();
+        // 本文の途中の問いかけは拾わず、最後の 2 段落の結びの定型句だけを拾う
+        let md = "迷う人も多いのではないでしょうか。\n\n設定を見直した。\n\n手順は短くなった。\n\n見直す価値はあったと言えるでしょう。\n";
+        assert_eq!(matched(md, &run(p01, md)), ["と言えるでしょう"]);
+        // 「いかがでしょうか」「いかがでしたか」は人の記事の結びにも同じくらい出るので、実験的な項目
+        let md = "本文です。\n\nぜひ試してみてはいかがでしょうか。いかがでしたか。\n";
+        assert!(run(p01, md).is_empty());
+        let experimental = Options {
+            experimental: true,
+            ..Options::default()
+        };
+        let d = run_with(p01, md, experimental);
+        assert_eq!(matched(md, &d), ["いかがでしょうか", "いかがでしたか"]);
+        assert!(d.iter().all(|d| d.status == RuleStatus::Experimental));
+        // 結びの後ろの見出し・箇条書きは数えず、その手前の段落を結びとみなす
+        let md =
+            "本文です。\n\n総じて、移行は順調と言えるでしょう。\n\n## まとめ\n\n- 移行は終わった\n";
+        assert_eq!(matched(md, &run(p01, md)), ["総じて", "と言えるでしょう"]);
+        // スコープを広げても、箇条書きと引用の中は結びとみなさない
+        let all = Options {
+            scope: Scope::ALL,
+            ..Options::default()
+        };
+        let md = "本文です。\n\n- と言えるでしょう、確認します。\n\n> 結論として、確かめた。\n";
+        assert!(run_with(p01, md, all).is_empty());
+        // 文書の構造が要るので、断片の集まり (コードのコメントなど) には当てない
+        // (エンジンは文書単位のルールを断片の集まりに当てない)
+        assert_eq!(p01.unit(), RuleUnit::Document);
     }
 
     #[test]
@@ -233,12 +322,17 @@ mod tests {
                 .map(|r| (r.meta().lane, r.meta().status))
                 .unwrap()
         };
-        assert_eq!(get("P01"), (Lane::Slop, RuleStatus::Stable));
+        for id in ["P01", "P06", "P07", "P08", "P09"] {
+            assert_eq!(get(id), (Lane::Slop, RuleStatus::Stable), "{id}");
+        }
+        // 人の文章にも同じくらいかそれ以上に出たので、ルールごと実験的にしたもの
+        for id in ["P02", "P03", "P13"] {
+            assert_eq!(get(id), (Lane::Slop, RuleStatus::Experimental), "{id}");
+        }
         assert_eq!(get("P04"), (Lane::Readability, RuleStatus::Experimental));
         assert_eq!(get("P05"), (Lane::Slop, RuleStatus::Experimental));
         assert_eq!(get("P10"), (Lane::Slop, RuleStatus::Experimental));
         assert_eq!(get("P11"), (Lane::Slop, RuleStatus::Experimental));
-        assert_eq!(get("P13"), (Lane::Slop, RuleStatus::Stable));
         assert_eq!(get("P14"), (Lane::Slop, RuleStatus::Experimental));
         for id in ["P15", "P16", "P17"] {
             assert_eq!(get(id), (Lane::Readability, RuleStatus::Stable), "{id}");

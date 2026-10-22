@@ -643,17 +643,11 @@ fn mixed_ruby_heredocs_and_arbitrary_percent_delimiters_remain_independent() {
 fn ruby_heredocs_keep_nested_scopes_and_delimiter_quotes_independent() {
     let sources = [
         (
-            "def earlier\n  x = <<'INNER'\n内側の文\\u3068\nINNER\nend\nx = <<OUTER\n\\u3068言えるでしょう\nOUTER\n",
-            vec!["内側の文\\u3068", "と言えるでしょう"],
+            "def earlier\n  x = <<'INNER'\n内側の文\\u3068\nINNER\nend\nx = <<OUTER\n\\u975e常に重要\nOUTER\n",
+            vec!["内側の文\\u3068", "非常に重要"],
         ),
-        (
-            "x = <<\"A'B\"\n\\u3068言えるでしょう\nA'B\n",
-            vec!["と言えるでしょう"],
-        ),
-        (
-            "x = <<~\"A'B\"\n\\u3068言えるでしょう\nA'B\n",
-            vec!["と言えるでしょう"],
-        ),
+        ("x = <<\"A'B\"\n\\u975e常に重要\nA'B\n", vec!["非常に重要"]),
+        ("x = <<~\"A'B\"\n\\u975e常に重要\nA'B\n", vec!["非常に重要"]),
     ];
     for (src, expected) in sources {
         assert_eq!(texts(src, CodeLanguage::Ruby), expected);
@@ -662,9 +656,9 @@ fn ruby_heredocs_keep_nested_scopes_and_delimiter_quotes_independent() {
         let d = report
             .diagnostics
             .iter()
-            .find(|d| d.rule_id == "P01")
+            .find(|d| d.rule_id == "P06")
             .expect("引用形式に応じて復号した後続ヒアドキュメントを検査する");
-        assert_eq!(report.doc.slice(d.span), "\\u3068言えるでしょう");
+        assert_eq!(report.doc.slice(d.span), "\\u975e常に重要");
     }
 }
 
@@ -719,15 +713,15 @@ fn go_numeric_byte_escapes_decode_utf8_and_cut_invalid_byte_sequences() {
 
 #[test]
 fn go_byte_escaped_phrase_reaches_sentence_rules_at_the_original_escape_range() {
-    let src = "package a; var x = \"この案で十分\\xe3\\x81\\xa8言えるでしょう。\"";
+    let src = "package a; var x = \"この点は\\xe9\\x9d\\x9e常に重要です。\"";
     let engine = crate::engine::Engine::new(crate::engine::EngineOptions::default()).unwrap();
     let report = engine.lint(doc(src, CodeLanguage::Go));
     let d = report
         .diagnostics
         .iter()
-        .find(|d| d.rule_id == "P01")
+        .find(|d| d.rule_id == "P06")
         .expect("復号した語句を検査する");
-    assert_eq!(report.doc.slice(d.span), "\\xe3\\x81\\xa8言えるでしょう");
+    assert_eq!(report.doc.slice(d.span), "\\xe9\\x9d\\x9e常に重要");
 }
 
 #[test]

@@ -19,14 +19,14 @@ use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, option_f64, opti
 use crate::text;
 
 /// 構造系の組み込みルール。
-pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
+pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(BoldDensity::new()),
         Box::new(BulletRatio::new()),
         Box::new(BoilerplateHeading),
         Box::new(NumberedPhases::new()),
         Box::new(EmojiDensity::new()),
-        Box::new(BoldLabelList::new()),
+        Box::new(BoldLabelList::new(genre)),
         Box::new(HeadingTemplate::new()),
         Box::new(HeadingEmphasis),
         Box::new(StructureDensity::new()),
@@ -134,7 +134,8 @@ static BOLD_META: RuleMeta = RuleMeta {
     explanation: "\
 ### 何を見るか
 
-太字 (`**…**`) が 3 箇所以上あり、原文 1000 字あたり 3 箇所以上の密度で使われている文書を指します。
+太字 (`**…**`) が 3 箇所以上あり、原文 1000 字あたり 3 箇所以上の密度で使われている文書を指します。\
+文字数は、文書の先頭の front matter (題名やタグなどのメタデータ) を除いた原文で数えます。
 
 ### なぜ問題か
 
@@ -212,7 +213,7 @@ impl Rule for BoldDensity {
         }
         vec![Measure::new(
             "bold_per_1000",
-            per_thousand(n, ctx.doc.char_count()),
+            per_thousand(n, ctx.doc.body_char_count()),
             "per_1000",
             Fires::AtOrAbove,
         )]
@@ -220,7 +221,7 @@ impl Rule for BoldDensity {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let spans = bold_spans(ctx);
-        let density = per_thousand(spans.len(), ctx.doc.char_count());
+        let density = per_thousand(spans.len(), ctx.doc.body_char_count());
         if spans.len() < self.min_count || density < self.per_1000 {
             return;
         }
@@ -593,7 +594,8 @@ static EMOJI_META: RuleMeta = RuleMeta {
 ### 何を見るか
 
 絵文字や装飾記号 (✅ ⭐ 📌 🚀 など) が 3 個以上あり、原文 1000 字あたり 2 個以上の密度で使われて\
-いる文書を指します。コードブロックの中は数えません。
+いる文書を指します。コードブロックの中は数えません。文字数は、文書の先頭の front matter を除いた\
+原文で数えます。
 
 ### なぜ問題か
 
@@ -687,7 +689,7 @@ impl Rule for EmojiDensity {
         }
         vec![Measure::new(
             "emoji_per_1000",
-            per_thousand(n, ctx.doc.char_count()),
+            per_thousand(n, ctx.doc.body_char_count()),
             "per_1000",
             Fires::AtOrAbove,
         )]
@@ -695,7 +697,7 @@ impl Rule for EmojiDensity {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let spans = emoji_spans(ctx);
-        let density = per_thousand(spans.len(), ctx.doc.char_count());
+        let density = per_thousand(spans.len(), ctx.doc.body_char_count());
         if spans.len() < self.min_count || density < self.per_1000 {
             return;
         }
@@ -720,19 +722,14 @@ impl Rule for EmojiDensity {
 // S06 BOLD_LABEL_LIST
 // ---------------------------------------------------------------------------
 
-static LABEL_META: RuleMeta = RuleMeta {
-    id: "S06",
-    name: "BOLD_LABEL_LIST",
-    title: "「**項目**: 説明」の定型",
-    lane: Lane::Slop,
-    status: RuleStatus::Experimental,
-    default_severity: Severity::Info,
-    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる",
-    explanation: "\
+/// S06 の説明 (既定で動くジャンルとほかのジャンルで共有する)。
+const LABEL_EXPLANATION: &str = "\
 ### 何を見るか
 
 箇条書きの項目が「**ラベル**: 説明」の形 (項目の先頭が太字で、直後にコロンやダッシュが続く) で \
-3 つ以上並んでいる箇所を指します。
+3 つ以上並んでいる箇条書きを指します。間に段落や見出しを挟まずに続く項目を 1 つの箇条書きとして数え、\
+箇条書き 1 つに 1 件出します。技術文書 (ジャンル tech) と一般向けの文書 (ジャンル general。ジャンルを\
+指定しないときの既定) では既定で動き、業務文書・随筆では実験的です。
 
 ### なぜ問題か
 
@@ -751,8 +748,35 @@ static LABEL_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。定量的な校正はしていません。
-",
+書式を保った人の技術記事 130 本 (2022 年より前に書かれ、更新も 2022 年 11 月より前の Markdown の原文) \
+のうち 1 本 (指標の名前を並べた一覧) に反応し、2026 年のモデルの技術文書 328 本では 74 本 (22.6%)、\
+2025 年頃のモデルの技術文書 44 本では 19 本に反応しました。書式を保った人の一般向けの記事 108 本 \
+(2022 年 11 月より前の版) では 0 本 (片側 95% の上限 2.4%) で、2026 年のモデルの一般向けの文書 340 本では \
+68 本 (20.0%)、2025 年頃のモデルの一般向けの文書 201 本では 30 本 (14.9%) に反応しました。HTML から取った\
+人の文書は太字が失われているので、書式を保った人の対照のない業務文書と随筆は実験的にしています。\
+業務文書では「**日時**: 〜」のような項目の並びが正当な慣習なので、校正の対象にしていません。ジャンルを\
+指定せずに業務文書を検査すると、この型の項目の並びにも情報として出ます。
+";
+
+/// S06 (業務文書・随筆)。書式を保った人の対照で確かめるまで実験的。
+static LABEL_META: RuleMeta = LABEL_META_BASE;
+
+const LABEL_META_BASE: RuleMeta = RuleMeta {
+    id: "S06",
+    name: "BOLD_LABEL_LIST",
+    title: "「**項目**: 説明」の定型",
+    lane: Lane::Slop,
+    status: RuleStatus::Experimental,
+    default_severity: Severity::Info,
+    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech・general 以外では実験的)",
+    explanation: LABEL_EXPLANATION,
+};
+
+/// S06 (技術文書と一般向けの文書)。書式を保った人の記事で誤検知率を確かめたので既定で動かす。
+static LABEL_META_STABLE: RuleMeta = RuleMeta {
+    status: RuleStatus::Stable,
+    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech・general では既定)",
+    ..LABEL_META_BASE
 };
 
 /// ラベルの直後に続く区切り。
@@ -761,55 +785,68 @@ fn starts_with_label_separator(rest: &str) -> bool {
     rest.starts_with([':', '：', '-', '—', '―', '－', '|', '｜'])
 }
 
-/// 「**ラベル**: 説明」の型の箇条書きの項目 (太字の原文上の範囲と、ラベル)。
-fn bold_labels(ctx: &RuleContext<'_>) -> Vec<(Span, String)> {
-    ctx.doc
-        .blocks
+/// 箇条書きの項目が「**ラベル**: 説明」の型なら、太字の原文上の範囲とラベル。
+fn bold_label(b: &Block) -> Option<(Span, String)> {
+    let lead = b.text.len() - b.text.trim_start().len();
+    let mark = b
+        .marks
         .iter()
-        .filter(|b| b.kind == BlockKind::ListItem)
-        .filter_map(|b| {
-            let lead = b.text.len() - b.text.trim_start().len();
-            let mark = b
-                .marks
-                .iter()
-                .find(|m| m.kind == MarkKind::Strong && m.range.start == lead)?;
-            let label = &b.text[mark.range.clone()];
-            let colon_inside = label.trim_end().ends_with([':', '：']);
-            if !colon_inside && !starts_with_label_separator(&b.text[mark.range.end..]) {
-                return None;
-            }
-            let label = label.trim_end_matches([':', '：']).trim().to_string();
-            Some((mark.span, label))
-        })
-        .collect()
+        .find(|m| m.kind == MarkKind::Strong && m.range.start == lead)?;
+    let label = &b.text[mark.range.clone()];
+    let colon_inside = label.trim_end().ends_with([':', '：']);
+    if !colon_inside && !starts_with_label_separator(&b.text[mark.range.end..]) {
+        return None;
+    }
+    let label = label.trim_end_matches([':', '：']).trim().to_string();
+    Some((mark.span, label))
 }
 
-/// S06 BOLD_LABEL_LIST。
+/// 続いて並ぶ箇条書き (間に段落・見出し・表を挟まない項目の並び) ごとの、「**ラベル**: 説明」の型の
+/// 項目。型の項目が 1 つもない並びは含めない。
+fn bold_label_runs(ctx: &RuleContext<'_>) -> Vec<Vec<(Span, String)>> {
+    let mut runs = Vec::new();
+    let mut current: Vec<(Span, String)> = Vec::new();
+    for b in &ctx.doc.blocks {
+        if b.kind != BlockKind::ListItem {
+            if !current.is_empty() {
+                runs.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.extend(bold_label(b));
+    }
+    if !current.is_empty() {
+        runs.push(current);
+    }
+    runs
+}
+
+/// S06 BOLD_LABEL_LIST。技術文書と一般向けの文書では既定で動き、業務文書・随筆では実験的。
 pub struct BoldLabelList {
+    meta: &'static RuleMeta,
     min_count: usize,
 }
 
 impl BoldLabelList {
-    pub fn new() -> Self {
-        Self { min_count: 3 }
-    }
-}
-
-impl Default for BoldLabelList {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(genre: Genre) -> Self {
+        let meta = if matches!(genre, Genre::Tech | Genre::General) {
+            &LABEL_META_STABLE
+        } else {
+            &LABEL_META
+        };
+        Self { meta, min_count: 3 }
     }
 }
 
 impl Rule for BoldLabelList {
     fn meta(&self) -> &'static RuleMeta {
-        &LABEL_META
+        self.meta
     }
 
     fn configure(&mut self, key: &str, value: &toml::Value) -> Result<(), String> {
         match key {
             "min_count" => self.min_count = option_count(key, value)?,
-            _ => return Err(unknown_option(&LABEL_META, key)),
+            _ => return Err(unknown_option(self.meta, key)),
         }
         Ok(())
     }
@@ -818,28 +855,28 @@ impl Rule for BoldLabelList {
         vec![("min_count", self.min_count.to_string())]
     }
 
-    /// 「**ラベル**: 説明」の項目の数を `min_count` と比べる値として返す。1 つもない文書は
-    /// 値を返さない。
+    /// 1 つの箇条書きに並ぶ「**ラベル**: 説明」の項目の数のうち最も多いものを、`min_count` と
+    /// 比べる値として返す。1 つもない文書は値を返さない。
     fn measure(&self, ctx: &RuleContext<'_>) -> Vec<Measure> {
-        count_measure("bold_label_items", bold_labels(ctx).len())
+        let most = bold_label_runs(ctx).iter().map(Vec::len).max().unwrap_or(0);
+        count_measure("bold_label_items", most)
     }
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
-        let labels = bold_labels(ctx);
-        if labels.len() < self.min_count {
-            return;
-        }
-        let related: Vec<Span> = labels.iter().map(|(s, _)| *s).collect();
-        let n = labels.len();
-        for (span, label) in &labels {
+        for labels in bold_label_runs(ctx) {
+            let n = labels.len();
+            if n < self.min_count {
+                continue;
+            }
+            let (span, label) = &labels[0];
             out.push(
-                LABEL_META
+                self.meta
                     .diagnostic(
                         *span,
-                        format!("箇条書きが「**{label}**: 説明」の型で {n} 項目並んでいます"),
+                        format!("箇条書きの {n} 項目が「**{label}**: 説明」の型で並んでいます"),
                     )
                     .with_hint("説明が短ければラベルを外して一文にまとめ、項目が多ければ表や見出しにしてください")
-                    .with_related(related.clone())
+                    .with_related(labels.iter().map(|(s, _)| *s).collect())
                     .with_metric("count", n),
             );
         }
@@ -1116,7 +1153,7 @@ static DENSITY_META: RuleMeta = RuleMeta {
 
 原文が 1000 字以上ある文書で、原文 1000 字あたりの見出しの数と箇条書きの項目の数を数えます。見出しが \
 4 個以上か、箇条書きの項目が 10 個以上なら 1 件出します。1 つの項目の中に段落が複数あれば、段落ごとに \
-1 項目と数えます。
+1 項目と数えます。文字数は、文書の先頭の front matter を除いた原文で数えます。
 
 ### なぜ問題か
 
@@ -1177,7 +1214,7 @@ impl StructureDensity {
 
     /// 判定の前提 (原文が `min_chars` 字以上) を満たす文書で数える。
     fn density<'a>(&self, ctx: &RuleContext<'a>) -> Option<Density<'a>> {
-        let chars = ctx.doc.char_count();
+        let chars = ctx.doc.body_char_count();
         if chars < self.min_chars {
             return None;
         }
@@ -1583,7 +1620,7 @@ mod tests {
 
         for rule in [
             Box::new(NumberedPhases::new()) as Box<dyn Rule>,
-            Box::new(BoldLabelList::new()),
+            Box::new(BoldLabelList::new(Genre::General)),
             Box::new(LabelStyle::new()),
         ] {
             assert!(
@@ -1605,11 +1642,13 @@ mod tests {
         for r in &rules {
             assert_eq!(
                 r.meta().status,
-                if matches!(r.meta().id, "S11" | "S12") {
+                if matches!(r.meta().id, "S06" | "S11" | "S12") {
                     RuleStatus::Stable
                 } else {
                     RuleStatus::Experimental
-                }
+                },
+                "{}",
+                r.meta().id
             );
             assert_eq!(
                 r.meta().lane,
@@ -1625,6 +1664,15 @@ mod tests {
             );
             assert_eq!(r.allowed_in(Genre::Business), !blocked, "{}", r.meta().id);
             assert!(r.allowed_in(Genre::Tech));
+        }
+        // S06 は書式を保った人の対照で確かめた技術文書と一般向けの文書でだけ既定で動く
+        for (genre, status) in [
+            (Genre::General, RuleStatus::Stable),
+            (Genre::Tech, RuleStatus::Stable),
+            (Genre::Business, RuleStatus::Experimental),
+            (Genre::Essay, RuleStatus::Experimental),
+        ] {
+            assert_eq!(BoldLabelList::new(genre).meta().status, status, "{genre}");
         }
     }
 
@@ -1921,11 +1969,24 @@ mod tests {
     #[test]
     fn s06_flags_bold_label_lists() {
         let md = "- **速度**: 起動が速い\n- **安全性**: 権限を絞れる\n- **拡張性:** プラグインを足せる\n";
-        let d = run(&BoldLabelList::new(), md);
-        assert_eq!(d.len(), 3);
-        assert!(d[2].message.contains("「**拡張性**: 説明」"));
+        let d = run(&BoldLabelList::new(Genre::General), md);
+        assert_eq!(d.len(), 1, "1 つの箇条書きに 1 件");
+        assert!(d[0].message.contains("3 項目が「**速度**: 説明」"));
+        assert_eq!(d[0].related.len(), 3);
+        assert_eq!(matched(md, &d), vec!["**速度**"]);
         let plain = "- 速度: 起動が速い\n- **安全性**は高い\n- 拡張性\n";
-        assert!(run(&BoldLabelList::new(), plain).is_empty());
+        assert!(run(&BoldLabelList::new(Genre::General), plain).is_empty());
+    }
+
+    #[test]
+    fn s06_counts_each_list_separately() {
+        // 段落を挟んだ 2 つの箇条書きに 2 項目ずつなら、どちらも 3 項目に届かない
+        let md = "- **速度**: 起動が速い\n- **安全性**: 権限を絞れる\n\n比べた結果を書く。\n\n- **費用**: 安い\n- **保守**: 楽になる\n";
+        assert!(run(&BoldLabelList::new(Genre::General), md).is_empty());
+        // 型でない項目を挟んでも、同じ箇条書きの中なら数える
+        let md =
+            "- **速度**: 起動が速い\n- 補足の項目\n- **安全性**: 権限を絞れる\n- **費用**: 安い\n";
+        assert_eq!(run(&BoldLabelList::new(Genre::General), md).len(), 1);
     }
 
     #[test]
