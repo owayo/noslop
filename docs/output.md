@@ -180,10 +180,10 @@ files[1]:
       P03,3,1,「このように」は前の内容を機械的に束ねる接続です…,このように、定例会議を減らしたことは…と言えるだろう。
 ```
 
-TOON は、ルールと該当箇所を 1 行 1 要素の表にするぶん短くなります。同梱の [examples/ai-smelly.md](../examples/ai-smelly.md) の改稿指示では、トークン数（`o200k_base`）が TOON 2,770・Markdown 2,980・JSON 3,137（改行なし）/ 3,802（整形）でした。
+TOON は、ルールと該当箇所を 1 行 1 要素の表にするぶん短くなります。同梱の [examples/ai-smelly.md](../examples/ai-smelly.md) を `--no-config --dict bundled` で検査しました。改稿指示のトークン数（`o200k_base`）は TOON 2,687・Markdown 2,894・JSON 3,024（改行なし）/ 3,644（整形）でした。
 
 ### toon
 
-全指摘のレポート（`--format json` と同じデータ）と `noslop diff` の結果を TOON で出します（`--format toon`）。整形した JSON より 2〜3 割短くなりますが、指摘ごとに `metrics` の項目が違うなど表にできない部分が多いため、改行なしの JSON よりは長くなります。LLM に指摘を渡すなら、改稿指示の TOON（`--report brief --format toon`）を使ってください。
+全指摘のレポート（`--format json` と同じデータ）と `noslop diff` の結果を TOON で出します（`--format toon`）。指摘ごとに `metrics` の項目が違うなど、表にできない部分もあります。LLM に指摘を渡すなら、改稿指示の TOON（`--report brief --format toon`）を使ってください。
 
-TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust)（仕様 v3.0）で行い、末尾に改行は付けません。出力は、仕様 v4.1 のリファレンス実装（`@toon-format/toon` 4.1.1）の strict モードで JSON と同じデータに戻ることを確かめています。
+TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust)（仕様 v4.1）で行い、末尾に改行は付けません。レーン別件数などの同じ形のオブジェクトは、キー付きの表になることがあります。行の配置を固定とみなさず、TOON のデコーダーで読み取ってください。全指摘・改稿指示・diff の出力は、リファレンス実装（`@toon-format/toon` 4.1.1）の strict モードで JSON と同じデータに戻ることを確かめています。

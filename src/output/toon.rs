@@ -3,7 +3,7 @@
 //! JSON と同じデータを、インデントと表形式 (一様な object の配列は、項目名の見出し 1 行と
 //! 1 要素 1 行) で表す。同じ内容をより少ないトークンで LLM に渡すために使う。符号化は
 //! 公式の Rust 実装 [`toon-format`](https://github.com/toon-format/toon-rust) に任せる
-//! (対応する仕様は v3.0)。区切りはカンマ、インデントは 2、キーの折りたたみはしない。
+//! (対応する仕様は v4.1)。区切りはカンマ、インデントは 2。
 //!
 //! `toon-format` は `serde_json` の `preserve_order` を有効にするので、`serde_json::Map`
 //! (`json!` マクロ) で組み立てる JSON のキー順は、辞書順ではなく書いた順になる。
@@ -63,5 +63,28 @@ mod tests {
             "区切り文字とコロンを含む値は引用符で囲む: {s}"
         );
         assert!(!s.ends_with('\n'), "末尾に改行を付けない: {s:?}");
+    }
+
+    #[test]
+    fn nested_counts_and_escaped_excerpts_round_trip_without_losing_types() {
+        let original = serde_json::json!({
+            "counts": {
+                "slop": {"error": 0, "warning": 1, "info": 0},
+                "readability": {"error": 0, "warning": 0, "info": 2},
+                "custom": {"error": 0, "warning": 0, "info": 0}
+            },
+            "excerpts": [
+                {"text": "カンマ, コロン: 引用符\" バックスラッシュ\\", "hint": null},
+                {"text": "- 箇条書き\n# 見出し\t本文", "hint": ""},
+                {"text": "true", "hint": "0123"}
+            ],
+            "空の配列": [],
+            "空のオブジェクト": {},
+            "enabled": false
+        });
+        let encoded = encode(&original).unwrap();
+        let decoded: serde_json::Value = toon_format::decode_strict(&encoded).unwrap();
+        assert_eq!(decoded, original);
+        assert!(!encoded.ends_with('\n'));
     }
 }

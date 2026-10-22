@@ -367,7 +367,7 @@ mod tests {
         render_toon(&report, &RenderOptions::default(), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("schemaVersion: 2\n"), "{s}");
-        assert!(s.contains("counts:\n"), "{s}");
-        assert!(!s.contains("score"), "{s}");
+        let decoded: serde_json::Value = toon_format::decode_strict(&s).unwrap();
+        assert_eq!(decoded, v, "TOON の表現形式によらず JSON と同じ件数を返す");
     }
 }

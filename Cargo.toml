@@ -29,7 +29,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.104", default-features = false, features = ["analyzer", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.105", default-features = false, features = ["analyzer", "download"] }
 
 [features]
 default = ["bundled-dict"]
@@ -61,8 +61,8 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
-toon-format = { version = "0.5.0", default-features = false }
-toml = "1.1.6"
+toon-format = { version = "0.6.1", default-features = false }
+toml = "1.1.7"
 # コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。文法はすべて常に入れる (feature で分けない)。
 # 文法の crate は tree-sitter 0.27 で読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の
 # 対応を確かめる)
@@ -78,7 +78,7 @@ tree-sitter-java = "=0.23.5"
 tree-sitter-javascript = "=0.25.0"
 tree-sitter-kotlin-ng = "=1.1.0"
 tree-sitter-lua = "=0.5.0"
-tree-sitter-php = "=0.24.2"
+tree-sitter-php = "=0.25.1"
 tree-sitter-python = "=0.25.0"
 # astro-sight と同じく owayo のフォークを使う
 tree-sitter-ruby = { git = "https://github.com/owayo/tree-sitter-ruby.git", branch = "master" }
