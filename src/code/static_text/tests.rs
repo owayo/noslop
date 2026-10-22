@@ -177,6 +177,58 @@ fn decoding_follows_each_language_and_preserves_transformed_ranges() {
 }
 
 #[test]
+fn css_hex_escapes_keep_unicode_spaces_and_their_source_ranges() {
+    for space in ['\u{a0}', '\u{b}', '\u{2003}', '\u{3000}'] {
+        let source = format!("p {{ content: \"日\\672c{space}語\"; }}");
+        let d = doc(&source, CodeLanguage::Css);
+        assert_eq!(d.blocks.len(), 1);
+        let b = &d.blocks[0];
+        assert_eq!(b.text, format!("日本{space}語"));
+        assert_eq!(d.slice(b.to_source(3..6)), r"\672c");
+        assert_eq!(
+            d.slice(b.to_source(6..6 + space.len_utf8())),
+            space.to_string()
+        );
+    }
+}
+
+#[test]
+fn css_hex_escapes_consume_one_css_whitespace_character() {
+    for space in [" ", "\t", "\n", "\r", "\r\n", "\u{c}"] {
+        let source = format!("p {{ content: \"日\\672c{space} 語\"; }}");
+        let d = doc(&source, CodeLanguage::Css);
+        assert_eq!(d.blocks.len(), 1, "{space:?}");
+        let b = &d.blocks[0];
+        assert_eq!(b.text, "日本 語", "{space:?}");
+        assert_eq!(d.slice(b.to_source(3..6)), format!("\\672c{space}"));
+        assert_eq!(d.slice(b.to_source(6..7)), " ");
+    }
+}
+
+#[test]
+fn css_line_continuations_follow_css_newline_preprocessing() {
+    for newline in ["\n", "\r", "\r\n", "\u{c}"] {
+        let source = format!("p {{ content: \"日\\{newline}本語\"; }}");
+        let d = doc(&source, CodeLanguage::Css);
+        assert_eq!(d.blocks.len(), 1, "{newline:?}");
+        assert_eq!(d.blocks[0].text, "日本語", "{newline:?}");
+        exact(&d);
+    }
+}
+
+#[test]
+fn css_invalid_code_points_become_replacement_characters() {
+    for escape in [r"\0 ", r"\d800 ", r"\dfff ", r"\110000 ", r"\ffffff "] {
+        let source = format!("p {{ content: \"日本{escape}語\"; }}");
+        let d = doc(&source, CodeLanguage::Css);
+        assert_eq!(d.blocks.len(), 1, "{escape}");
+        let b = &d.blocks[0];
+        assert_eq!(b.text, "日本�語", "{escape}");
+        assert_eq!(d.slice(b.to_source(6..9)), escape);
+    }
+}
+
+#[test]
 fn html_entities_do_not_consume_literal_ampersands_or_attribute_markup() {
     let source = "<p title=\"日本&<b>本文;\" aria-label=\"日本&&#x672c;\">表示文</p>";
     let d = doc(source, CodeLanguage::Html);

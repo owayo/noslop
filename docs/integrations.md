@@ -81,11 +81,11 @@ Markdown と同じ改稿指示を、データとして出します。JSON と TO
 | `rules[]` | `ruleId`・`ruleName`・`title`・`lane`・`maxSeverity`・`experimentalOnly`・`count` (未抑制の件数)・`omittedCount` (`--brief-limit` を超えて載せなかった件数)・`why` (なぜ疑わしいか)・`hint` (直し方の方向。2 つあれば ` / ` でつなぐ) |
 | `occurrences[]` | `ruleId` (`rules` を参照)・`line`・`column` (1 始まり。列は Unicode スカラー値の個数)・`message`・`excerpt` (指摘を含む文の抜粋。文を持たない指摘は `null`) |
 
-ルールと該当箇所を入れ子にせず、2 つの表に分けているのは、TOON で 1 行 1 要素の表 (tabular form) にするためです。入れ子にすると、ルールごとに項目名の行が並んで、改行なしの JSON より長くなりました。表に分けると、同梱の `examples/ai-smelly.md` の改稿指示で、トークン数 (`o200k_base`) が TOON 2,770・Markdown 2,980・JSON 3,137 (改行なし) / 3,802 (整形) になります。
+ルールと該当箇所を入れ子にせず、2 つの表に分けているのは、TOON で 1 行 1 要素の表 (tabular form) にするためです。同梱の `examples/ai-smelly.md` を `--no-config --dict bundled` で検査した改稿指示では、トークン数 (`o200k_base`) が TOON 2,687・Markdown 2,894・JSON 3,024 (改行なし) / 3,644 (整形) になります。
 
 データには、metrics・fingerprint・抑制した指摘・バイト位置を入れません。指摘の追跡や前回の結果との突き合わせには全指摘のレポート (`--format json`・`--format toon`) を使います。`note` は指摘がないときだけ入り、内容の正しさまでは確かめていないことを伝えます。
 
-TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust) (仕様 v3.0) で行います。区切りはカンマ、インデントは 2、キーの折りたたみはせず、末尾に改行を付けません。出力は、仕様 v4.1 のリファレンス実装 (`@toon-format/toon` 4.1.1) の strict モードで、JSON と同じデータに戻ることを確かめています (カンマ・コロン・引用符・バックスラッシュ・`-` や `#` で始まる文字列を含む抜粋も含めて)。
+TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust) (仕様 v4.1) で行います。区切りはカンマ、インデントは 2、末尾に改行を付けません。レーン別件数などのマップも表として出るため、行の配置を固定とみなさず、TOON のデコーダーで読み取ってください。全指摘・改稿指示・diff の出力は、リファレンス実装 (`@toon-format/toon` 4.1.1) の strict モードで JSON と同じデータに戻ることを確かめています。引用符・改行などを含む抜粋と値の型は、Rust 側でも復号して照合します。
 
 ## スキル (`noslop skill-install`)
 

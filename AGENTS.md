@@ -29,6 +29,8 @@ noslop は、日本語の文章から「AI 臭さ」を機械的に拾う Rust �
 
 Markdown の HTML 本文は、`Event::Html` の各行を原文位置の対応表とともに集め、`src/code/mod.rs` の `HtmlBody` で既存の HTML 抽出を使って読む。コードの文言と違い、表示属性は読まず、英語だけの段落も残す。HTML の見出し・リスト・表・引用と、Markdown 側の引用・脚注・リストの文脈を保つ。空行をまたぐ未閉じのタグも引き継ぎ、コード・非表示要素の本文を除く。
 
+CSS の `content` の復号は `src/code/static_text/decode.rs` が行う。16進エスケープの終端は CSS の空白だけを一つ消費し、CRLF は一つとして扱う。全角空白・NBSP・VT は本文に残し、ゼロ・サロゲート・範囲外の符号位置は置換文字にする。バックスラッシュの後の LF・CR・CRLF・FF は改行継続として除く。復号後も、終端の空白を含む原文範囲を保つ。
+
 `noslop review`は通常のlintとは別に、全文・目的・読者・必須情報を18観点のレビュー依頼に組み立てる。`src/review.rs`が入出力と原文照合、`src/review/techniques.rs`が観点と必要な前提、`src/review/runner.rs`が明示した判定器の実行を担当する。意味の判断は確認候補で、点数や自動の失敗判定にしない。必須情報の欠落は全文を確認したcoverageで返し、presentとclearには根拠を要求する。引用の一致は推論の正しさを保証しない。MCPのreviewはクライアントが意味を読み、返した結果だけを照合する。
 
 `src/structure.rs`はMarkdownの親子・兄弟・節の境界と原文の範囲を保ち、各ノードをblockIdsで文章ブロックへ結び付ける。構造の読みやすさは`src/rules/structure/relations.rs`のS11（予告した項目数と直接リストの数）・S12（本文のない節）で検査する。実文書1,253本と境界事例を確認し、両方ともstable/infoで既定有効。S11はリストを含めた文脈で差分を絞り、S12は全文だけで判定する。S12の空欄はMarkdown上の事実であり、書き手の誤りや変換前の説明の欠落とは断定しない。[文章レビュー](docs/review.md)にCLIと返答の書式がある。

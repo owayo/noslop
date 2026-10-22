@@ -734,6 +734,25 @@ mod tests {
     }
 
     #[test]
+    fn toon_output_decodes_to_the_same_data_as_json() {
+        let r = report(
+            "さて、問い合わせは40件あった。効果があると言えるでしょう。\n",
+            "問い合わせは35件あった。\n\n満足度は8割だと言えるでしょう。\n\n検証は非常に重要だ。\n",
+        );
+        let mut buf = Vec::new();
+        render_toon(&r, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.starts_with("schemaVersion: 2\nkind: diff\n"), "{s}");
+        assert!(!s.ends_with('\n'), "TOON は末尾に改行を付けない");
+        let decoded: serde_json::Value = toon_format::decode_strict(&s).unwrap();
+        assert_eq!(
+            decoded,
+            json_of(&r),
+            "TOON の表現形式によらず JSON と同じデータを描く"
+        );
+    }
+
+    #[test]
     fn suppressed_findings_carry_the_reason_in_both_formats() {
         let r = report(
             "効果があると言えるでしょう。\n",

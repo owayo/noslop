@@ -81,6 +81,26 @@ fn cli_reports_original_code_positions_for_literals_attributes_and_inline_text()
 }
 
 #[test]
+fn css_escapes_preserve_whitespace_and_report_the_original_phrase() {
+    let dir = workspace();
+    let source = concat!(
+        ".hex { content: \"仮の\\6587\r\n言\"; }\n",
+        ".space { content: \"仮の\\6587　言\"; }\n",
+        ".continued { content: \"仮の文\\\r言\"; }\n",
+    );
+    fs::write(dir.path().join("sample.css"), source).unwrap();
+    let report = check(dir.path(), "sample.css");
+    let findings = diagnostics(&report);
+    assert_eq!(findings.len(), 2, "{report}");
+    for (finding, expected) in findings.iter().zip(["仮の\\6587\r\n言", "仮の文\\\r言"]) {
+        let start = finding["range"]["start"]["offset"].as_u64().unwrap() as usize;
+        let end = finding["range"]["end"]["offset"].as_u64().unwrap() as usize;
+        assert_eq!(&source[start..end], expected);
+        assert_eq!(finding["excerpt"], expected);
+    }
+}
+
+#[test]
 fn static_text_setting_is_layered_and_no_config_restores_the_default() {
     let dir = workspace();
     let home = tempfile::tempdir().unwrap();
