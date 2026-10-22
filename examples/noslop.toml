@@ -131,7 +131,7 @@ enabled = false
 # 文長の単調さ。地の文が min_sentences 文以上あるとき、burstiness が threshold 未満なら警告。
 # 文数が info_min_sentences 以上 min_sentences 未満のときは、info_threshold 未満で情報を出す。
 # severity を書くと、この 2 段の重大度がどちらもその値に置き換わる点に注意。
-threshold = -0.38
+threshold = -0.45
 min_sentences = 20
 info_threshold = -0.45
 info_min_sentences = 10
@@ -142,12 +142,13 @@ max_chars = 90
 
 [rules.R05]
 # 否定→肯定の対比の反復。min_count 回以上あるとき、総文数に対する比率で重大度を決める。
-#   比率 < info_below          → info
-#   info_below 〜 error_above  → warning
-#   比率 >= error_above         → error (tech の既定は 0.045)
+#   比率 < min_ratio           → 指摘しない
+#   min_ratio 〜 error_above   → info
+#   比率 >= error_above         → error (ジャンルによらず同じ)
+# info_below を書くと、info_below 〜 error_above を warning にする (既定は書かない)。
 min_count = 3
-info_below = 0.02
-error_above = 0.03
+min_ratio = 0.02
+error_above = 0.05
 
 [rules.S03]
 # 「まとめ」「おわりに」などの定型見出し (実験的)。

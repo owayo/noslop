@@ -128,10 +128,10 @@ fn static_text_setting_is_layered_and_no_config_restores_the_default() {
     assert!(diagnostics(&run(&["--only-rules", "X01"])).is_empty());
     fs::write(
         dir.path().join("sample.tsx"),
-        "const x = \"この説明で十分と言えるでしょう。\";",
+        "const x = \"この説明は非常に重要です。\";",
     )
     .unwrap();
-    let report = run(&["--no-config", "--only-rules", "P01"]);
+    let report = run(&["--no-config", "--only-rules", "P06"]);
     assert!(!diagnostics(&report).is_empty());
 }
 

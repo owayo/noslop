@@ -28,7 +28,8 @@ const EXPLANATION: &str = "\
 地の文の文頭 (記号・括弧・インラインコードを除いた最初の数文字) を比べ、同じ書き出しが 6 回以上 \
 (エッセイは 5 回、技術文書・ビジネス文書は 7 回) 繰り返されている文を指します。「また、」「そして、」\
 のように読点で終わる短い書き出しはそれ自体を、それ以外は最初の 4 字を比べます。「この」「その」の\
-ような 2 字の共通部分だけの一致では反応しません。
+ような 2 字の共通部分だけの一致では反応しません。「開発環境: Vue CLI」のように、ラベルと値を改行で\
+並べた項目の行は地の文に数えないので、ラベルの繰り返しは文頭の反復になりません。
 
 ### なぜ問題か
 
@@ -359,6 +360,21 @@ mod tests {
         let d = run(&RepeatedSentenceLead::new(Genre::General), &md);
         assert_eq!(d.len(), 6);
         assert!(d[0].message.contains("技術用語"));
+    }
+
+    #[test]
+    fn label_value_lines_are_not_sentence_leads() {
+        // 改行で並べた「ラベル: 値」の行は地の文に数えないので、ラベルの繰り返しは文頭の反復にならない
+        let rule = RepeatedSentenceLead::new(Genre::General);
+        let labels = (0..6)
+            .map(|i| format!("スター数: {i}.5k  \n"))
+            .collect::<String>();
+        assert!(run(&rule, &labels).is_empty());
+        // 同じ書き出しの地の文の文は、今まで通り数える
+        let prose = (0..6)
+            .map(|i| format!("スター数は{i}回目の集計でも増えた。"))
+            .collect::<String>();
+        assert_eq!(run(&rule, &prose).len(), 6);
     }
 
     #[test]

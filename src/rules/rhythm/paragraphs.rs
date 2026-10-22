@@ -56,6 +56,10 @@ const UNIFORM_EXPLANATION: &str = "\
 つまりどの段落もほぼ同じ文数でできているときに 1 件出します。数えるのは日本語の文だけで、\
 日本語の文を含まない段落 (英語の段落など) は段落の数にも入れません。
 
+段落あたりの平均の文数が 1.5 未満の文書は対象にしません。ほとんどの段落が 1 文でできている、\
+1 文ごとに段落を分ける書き方の文書です。このルールが見るのは、複数の文でできた段落の厚みが\
+そろっていることです。
+
 ### なぜ問題か
 
 人が書くと、じっくり語る段落もあれば、短く済ませる段落もあります。生成された文章は「3 文で 1 段落」\
@@ -76,12 +80,18 @@ const UNIFORM_EXPLANATION: &str = "\
 ### 根拠
 
 既定で動かす検出器ですが、人の文書との差を示す数値はまだ十分ではないため、情報に留めています。\
-段落の文数だけを見るので、一文ずつ段落を分ける書式の文書でも反応します。
+段落あたりの平均の文数の下限 1.5 は、1 文の段落と 2 文の段落の中間に置いた値です。変動係数が 0.15 \
+未満の文書は、段落あたりの平均が 1.03 文以下か 1.9 文以上に分かれ、noslop のコーパスでは下限を \
+1.03〜1.9 のどこに置いても指摘は変わりませんでした。このコーパス (人の文書 176 本、生成文書 1,729 本) \
+で指摘のある文書は、人の文書で 0 本、生成文書で 106 本です。段落の文数がそろっていても下限に届かずに\
+対象から外れる文書は、人の文書で 9 本 (どれも段落あたりの平均が 1.03 文以下)、生成文書で 3 本でした。
 ";
 
 /// R07 UNIFORM_PARAGRAPHS。
 pub struct UniformParagraphs {
     min_paragraphs: usize,
+    /// 段落あたりの平均の文数の下限。これ未満の文書 (ほとんどの段落が 1 文) は判定しない。
+    min_mean_sentences: f64,
     cv_threshold: f64,
 }
 
@@ -89,17 +99,19 @@ impl UniformParagraphs {
     pub fn new(_genre: Genre) -> Self {
         Self {
             min_paragraphs: 4,
+            min_mean_sentences: 1.5,
             cv_threshold: 0.15,
         }
     }
 
-    /// 段落ごとの (日本語の) 文数と、その (平均, 変動係数)。段落が足りないか平均が 0 以下なら `None`。
+    /// 段落ごとの (日本語の) 文数と、その (平均, 変動係数)。段落が `min_paragraphs` に満たないか、
+    /// 段落あたりの平均の文数が `min_mean_sentences` に満たなければ `None`。
     fn stats(
+        &self,
         ctx: &RuleContext<'_>,
         paragraphs: &[(usize, &Block)],
-        min_paragraphs: usize,
     ) -> Option<(Vec<usize>, f64, f64)> {
-        if paragraphs.len() < min_paragraphs {
+        if paragraphs.len() < self.min_paragraphs {
             return None;
         }
         let counts: Vec<usize> = paragraphs
@@ -108,7 +120,7 @@ impl UniformParagraphs {
             .collect();
         let values: Vec<f64> = counts.iter().map(|&c| c as f64).collect();
         let (mean, sd) = mean_sd(&values)?;
-        if mean <= 0.0 {
+        if mean <= 0.0 || mean < self.min_mean_sentences {
             return None;
         }
         Some((counts, mean, sd / mean))
@@ -123,6 +135,9 @@ impl Rule for UniformParagraphs {
     fn configure(&mut self, key: &str, value: &toml::Value) -> Result<(), String> {
         match key {
             "min_paragraphs" => self.min_paragraphs = option_count(key, value)?.max(2),
+            "min_mean_sentences" => {
+                self.min_mean_sentences = option_f64_in(key, value, 0.0, 10.0)?;
+            }
             "cv_threshold" => self.cv_threshold = option_f64_in(key, value, 0.0, 10.0)?,
             _ => return Err(unknown_option(&UNIFORM_META, key)),
         }
@@ -132,15 +147,17 @@ impl Rule for UniformParagraphs {
     fn options(&self) -> Vec<(&'static str, String)> {
         vec![
             ("min_paragraphs", self.min_paragraphs.to_string()),
+            ("min_mean_sentences", self.min_mean_sentences.to_string()),
             ("cv_threshold", self.cv_threshold.to_string()),
         ]
     }
 
-    /// 地の文の段落が `min_paragraphs` 以上ある文書で、段落ごとの文数の変動係数を
-    /// `cv_threshold` と比べる値として返す (これより小さいと指摘する)。
+    /// 地の文の段落が `min_paragraphs` 以上あり、段落あたりの平均の文数が `min_mean_sentences`
+    /// 以上の文書で、段落ごとの文数の変動係数を `cv_threshold` と比べる値として返す (これより
+    /// 小さいと指摘する)。`min_mean_sentences` は判定の前提で、掃引する閾値ではない。
     fn measure(&self, ctx: &RuleContext<'_>) -> Vec<Measure> {
         let paragraphs = prose_paragraphs(ctx);
-        Self::stats(ctx, &paragraphs, self.min_paragraphs)
+        self.stats(ctx, &paragraphs)
             .map(|(_, _, cv)| {
                 vec![Measure::new(
                     "paragraph_sentence_cv",
@@ -154,7 +171,7 @@ impl Rule for UniformParagraphs {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let paragraphs = prose_paragraphs(ctx);
-        let Some((counts, mean, cv)) = Self::stats(ctx, &paragraphs, self.min_paragraphs) else {
+        let Some((counts, mean, cv)) = self.stats(ctx, &paragraphs) else {
             return;
         };
         if cv >= self.cv_threshold {
@@ -395,7 +412,7 @@ impl Rule for ParagraphLeadConjunction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::testing::{matched, run};
+    use crate::rules::testing::{matched, measure_md, run};
 
     #[test]
     fn r07_flags_paragraphs_with_the_same_sentence_count() {
@@ -455,6 +472,36 @@ mod tests {
         let few = "一文。二文。\n\n一文。二文。\n\n一文。二文。\n";
         assert_eq!(run(&r, few).len(), 1);
         assert!(r.configure("cv", &toml::Value::Float(0.1)).is_err());
+        assert!(
+            r.configure("min_mean_sentences", &toml::Value::Float(11.0))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn r07_skips_documents_written_one_sentence_per_paragraph() {
+        let rule = UniformParagraphs::new(Genre::General);
+        // 1 文ごとに段落を分けた文書 (段落あたりの平均 1 文) は対象にしない
+        let one = "設定を開いた。\n\n保存先を選んだ。\n\n名前を付けた。\n\n画面を閉じた。\n\n\
+                   結果を確かめた。\n\n記録を残した。\n";
+        assert!(run(&rule, one).is_empty());
+        assert!(measure_md(&rule, one).is_empty());
+        // 2 文の段落が 1 つ交ざっても、ほとんどが 1 文なら同じ (平均 1.25 文)
+        let mostly = "設定を開いた。\n\n保存先を選んだ。もう一度確かめた。\n\n名前を付けた。\n\n\
+                      画面を閉じた。\n";
+        assert!(measure_md(&rule, mostly).is_empty());
+        // 2 文ずつの段落の並びは、今まで通り指摘する (平均 2 文)
+        let two = "設定を開いた。保存先を選んだ。\n\n".repeat(4);
+        let d = run(&rule, &two);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].message.contains("文数 2, 2, 2, 2"), "{}", d[0].message);
+        // 下限を 1 文にすると、1 文ごとの段落の文書も判定する
+        let mut all = UniformParagraphs::new(Genre::General);
+        all.configure("min_mean_sentences", &toml::Value::Float(1.0))
+            .unwrap();
+        let d = run(&all, one);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].message.contains("段落 6 個"), "{}", d[0].message);
     }
 
     #[test]

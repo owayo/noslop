@@ -338,6 +338,28 @@ mod tests {
         }
     }
 
+    /// docs/rule-catalog.md のルールの表が、組み込みルールの ID・名前・レーン・状態と食い違わない。
+    /// ジャンルで状態が変わるルール (P27) は、表の状態の欄に両方の状態が書かれていればよい。
+    #[test]
+    fn the_rule_catalog_matches_the_builtin_rules() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let catalog = std::fs::read_to_string(root.join("docs/rule-catalog.md")).unwrap();
+        let tech = builtin_rules(Genre::Tech);
+        for (rule, tech_rule) in builtin_rules(Genre::General).iter().zip(&tech) {
+            let m = rule.meta();
+            let row = catalog
+                .lines()
+                .find(|line| line.starts_with(&format!("| {} | ", m.id)))
+                .unwrap_or_else(|| panic!("docs/rule-catalog.md に {} の行がない", m.id));
+            let cells: Vec<&str> = row.trim_matches('|').split(" | ").map(str::trim).collect();
+            assert_eq!(cells[1], format!("`{}`", m.name), "{row}");
+            assert_eq!(cells[3], m.lane.as_str(), "{row}");
+            for status in [m.status, tech_rule.meta().status] {
+                assert!(cells[4].contains(status.as_str()), "{row}");
+            }
+        }
+    }
+
     #[test]
     fn measures_mark_severity_switches() {
         let m = Measure::new("ratio", 0.04, "error_above", Fires::AtOrAbove);

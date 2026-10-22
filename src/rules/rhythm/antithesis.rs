@@ -16,7 +16,7 @@ static META: RuleMeta = RuleMeta {
     title: "否定→肯定の対比の反復",
     lane: Lane::Slop,
     status: RuleStatus::Stable,
-    default_severity: Severity::Warning,
+    default_severity: Severity::Error,
     summary: "「〜ではなく」「〜だけでなく〜も」の対比が文書全体で繰り返され、構文のリズムが目立っている",
     explanation: EXPLANATION,
 };
@@ -24,9 +24,11 @@ static META: RuleMeta = RuleMeta {
 const EXPLANATION: &str = "\
 ### 何を見るか
 
-「〜ではなく」「〜だけでなく〜も」という、否定してから肯定へ転じる対比を文書全体で数えます。\
-3 回以上あれば、対比の数を対象の総文数で割った比率で重大度を決めます。比率が 2% 未満なら情報、\
-3% 未満なら警告、それ以上なら重大です (技術文書は 4.5% 以上で重大)。
+「〜ではなく」「〜だけでなく〜も」という、否定してから肯定へ転じる対比を文書全体で数え、\
+対比の数を対象の総文数で割った比率を求めます。対比が 3 回以上あり、比率が 2% 以上の文書で、\
+対比を 1 件ずつ指します。重大度は比率で決め、5% 以上なら重大、5% 未満なら情報です。比率が 2% \
+未満の文書は、回数が多くても指摘しません。区切りはジャンルによらず同じです。設定で `info_below` を\
+指定したときだけ、その比率以上・重大未満を警告にします (既定では指定しません)。
 
 ### なぜ問題か
 
@@ -48,11 +50,13 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-校正済みです。回数だけで重く判定すると、長い文書では薄い頻度でも指摘が並び、質の高い書き手の\
-修辞にも反応していました。人の書いた質の高い文書では、3 回以上使っている文書でも総文数に対する\
-比率の中央値は 1.5%、最大でも 4.6% でした。生成された文書では中央値 8.3%、最小でも 2.65% で、\
-両者の分布はほとんど重なりません。2%・3% の区切りで人の文書が重大になる割合は 4.9% です。技術文書\
-では人の記事の 11% が重大になったため、重大の区切りを 4.5% に緩めています。
+校正済みです。noslop のコーパス (人の文書 176 本、生成文書 1,729 本) で、対比が 3 回以上ある文書の\
+比率を測りました。人の文書は 26 本が当たり、2% 未満が 11 本、2〜5% が 13 本、5% 以上が 2 本です。\
+生成文書は 79 本が当たり、2% 未満が 3 本、2〜5% が 18 本、5% 以上が 58 本でした。2% 未満の文書は\
+ほとんどが人の長い文書なので、指摘しません。2〜5% の文書は人の文書のほうが割合が高い (人 176 本中 \
+13 本、生成 1,729 本中 18 本) ので、情報に留めます。5% 以上で重大になるのは、人の文書で 176 本中 \
+2 本 (1.1%)、生成文書で 1,729 本中 58 本です。技術文書でも 5% 以上になった人の文書は 50 本中 1 本で、\
+区切りはジャンルによらずそろえています。
 ";
 
 /// 「ではなく」(直後の 30 字まで) と「だけでなく〜も」。
@@ -67,32 +71,34 @@ static NOT_ONLY_RE: LazyLock<Regex> =
 pub struct AntithesisRepetition {
     /// 発火する最小の回数。
     min_count: usize,
-    /// この比率未満なら情報。
-    info_below: f64,
-    /// この比率以上なら重大。
+    /// 指摘する最小の比率 (これ未満の文書は指摘しない)。
+    min_ratio: f64,
+    /// この比率以上なら重大 (未満なら情報)。
     error_above: f64,
+    /// 設定で指定したときだけ、この比率以上・`error_above` 未満を警告にする。
+    ///
+    /// 以前の既定 (2〜3% を警告) の設定ファイルをそのまま読めるように残している。既定では
+    /// 指定がなく、警告の帯はない。校正では動かさない (`measure` は値を返さない)。
+    info_below: Option<f64>,
 }
 
 impl AntithesisRepetition {
-    pub fn new(genre: Genre) -> Self {
-        let error_above = match genre {
-            Genre::Tech => 0.045,
-            Genre::General | Genre::Business | Genre::Essay => 0.03,
-        };
+    pub fn new(_genre: Genre) -> Self {
         Self {
             min_count: 3,
-            info_below: 0.02,
-            error_above,
+            min_ratio: 0.02,
+            error_above: 0.05,
+            info_below: None,
         }
     }
 
     fn severity(&self, ratio: f64) -> Severity {
-        if ratio < self.info_below {
-            Severity::Info
-        } else if ratio < self.error_above {
+        if ratio >= self.error_above {
+            Severity::Error
+        } else if self.info_below.is_some_and(|below| ratio >= below) {
             Severity::Warning
         } else {
-            Severity::Error
+            Severity::Info
         }
     }
 }
@@ -155,42 +161,57 @@ impl Rule for AntithesisRepetition {
     fn configure(&mut self, key: &str, value: &toml::Value) -> Result<(), String> {
         match key {
             "min_count" => self.min_count = option_count(key, value)?,
-            "info_below" => self.info_below = option_f64_in(key, value, 0.0, 1.0)?,
+            "min_ratio" => self.min_ratio = option_f64_in(key, value, 0.0, 1.0)?,
             "error_above" => self.error_above = option_f64_in(key, value, 0.0, 1.0)?,
+            "info_below" => self.info_below = Some(option_f64_in(key, value, 0.0, 1.0)?),
             _ => return Err(unknown_option(&META, key)),
         }
         Ok(())
     }
 
     fn options(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let mut options = vec![
             ("min_count", self.min_count.to_string()),
-            ("info_below", self.info_below.to_string()),
+            ("min_ratio", self.min_ratio.to_string()),
             ("error_above", self.error_above.to_string()),
-        ]
+        ];
+        if let Some(below) = self.info_below {
+            options.push(("info_below", below.to_string()));
+        }
+        options
     }
 
-    /// 校正の基準は重大。元の校正は「人の文書で重大になる割合」(4.9%) で区切りを決めた。
+    /// 校正の基準は重大。人の文書で重大になる割合で区切り (`error_above`) を決めている。
     fn calibration_basis(&self) -> Severity {
         Severity::Error
     }
 
-    /// 対比の回数を `min_count` と比べる値として返す。回数が `min_count` 以上で、総文数比が
-    /// `info_below` 以上の文書では、重大になるかを決める総文数比も `error_above` と比べる値
-    /// (重大への切り替え) として返す。総文数比が `info_below` 未満の文書は `error_above` を
-    /// どう変えても情報のままなので、総文数比を返さない。`info_below` は情報と警告の境目で、
-    /// 見直しの基準 (重大) に関わらないので返さない。
+    /// 指摘するのは、対比の回数が `min_count` 以上で、総文数比が `min_ratio` 以上の文書。
+    /// 2 つの条件のどちらか一方の閾値を動かしたときの結果が測定値から分かるよう、それぞれの値は
+    /// もう一方の条件を満たす文書でだけ返す。
+    ///
+    /// - 回数 (`min_count` と比べる): 対比が 1 回以上あり、総文数比が `min_ratio` 以上の文書
+    /// - 総文数比 (`min_ratio` と比べる): 回数が `min_count` 以上の文書
+    /// - 総文数比 (`error_above` と比べる、重大への切り替え): 指摘する文書 (情報か重大かを決める)
     fn measure(&self, ctx: &RuleContext<'_>) -> Vec<Measure> {
         let (hits, total_sentences) = collect_hits(ctx);
         let count = hits.len();
-        let mut out = vec![Measure::new(
-            "count",
-            count as f64,
-            "min_count",
-            Fires::AtOrAbove,
-        )];
         let ratio = ratio_of(count, total_sentences);
-        if count >= self.min_count && ratio >= self.info_below {
+        let enough = count >= self.min_count;
+        let dense = ratio >= self.min_ratio;
+        let mut out = Vec::new();
+        if count > 0 && dense {
+            out.push(Measure::new(
+                "count",
+                count as f64,
+                "min_count",
+                Fires::AtOrAbove,
+            ));
+        }
+        if enough {
+            out.push(Measure::new("ratio", ratio, "min_ratio", Fires::AtOrAbove));
+        }
+        if enough && dense {
             out.push(
                 Measure::new("ratio", ratio, "error_above", Fires::AtOrAbove).at(Severity::Error),
             );
@@ -200,11 +221,11 @@ impl Rule for AntithesisRepetition {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let (hits, total_sentences) = collect_hits(ctx);
-        if hits.len() < self.min_count {
-            return;
-        }
         let count = hits.len();
         let ratio = ratio_of(count, total_sentences);
+        if count < self.min_count || ratio < self.min_ratio {
+            return;
+        }
         let severity = self.severity(ratio);
         let related: Vec<Span> = hits.iter().map(|h| h.span).collect();
         for hit in &hits {
@@ -234,7 +255,10 @@ impl Rule for AntithesisRepetition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::testing::{Options, matched, measure_md, run, run_with};
+    use crate::document::Document;
+    use crate::rules::testing::{
+        Options, assert_measures_agree, matched, measure_md, run, run_with,
+    };
 
     /// 対比を 3 回含み、総文数が `total` の本文。
     ///
@@ -261,39 +285,45 @@ mod tests {
         assert!(run(&rule(Genre::General), md).is_empty());
     }
 
+    /// 指摘の重大度 (指摘がなければ空)。3 件とも同じ重大度であることも確かめる。
+    fn severities(d: &[Diagnostic]) -> Vec<Severity> {
+        let mut s: Vec<Severity> = d.iter().map(|d| d.severity).collect();
+        s.dedup();
+        s
+    }
+
     #[test]
     fn severity_follows_the_ratio() {
-        // 3/200 = 1.5% → 情報
-        let d = run(&rule(Genre::General), &text_with(200));
-        assert_eq!(d.len(), 3);
-        assert!(d.iter().all(|d| d.severity == Severity::Info));
-        // 3/120 = 2.5% → 警告
-        let d = run(&rule(Genre::General), &text_with(120));
-        assert!(d.iter().all(|d| d.severity == Severity::Warning));
+        let r = rule(Genre::General);
+        // 3/200 = 1.5%: 下限 (2%) 未満なので、回数が足りていても指摘しない
+        assert!(run(&r, &text_with(200)).is_empty());
+        // 3/150 = 2%: 下限ちょうどから情報
+        assert_eq!(severities(&run(&r, &text_with(150))), [Severity::Info]);
+        // 3/120 = 2.5%・3/61 ≈ 4.9%: 情報 (警告の帯はない)
+        assert_eq!(severities(&run(&r, &text_with(120))), [Severity::Info]);
+        assert_eq!(severities(&run(&r, &text_with(61))), [Severity::Info]);
+        // 3/60 = 5%: 重大の区切りちょうどから重大
+        assert_eq!(severities(&run(&r, &text_with(60))), [Severity::Error]);
         // 3/10 = 30% → 重大
-        let d = run(&rule(Genre::General), &text_with(10));
-        assert!(d.iter().all(|d| d.severity == Severity::Error));
+        let d = run(&r, &text_with(10));
+        assert_eq!(severities(&d), [Severity::Error]);
+        assert_eq!(d.len(), 3);
         assert_eq!(d[0].related.len(), 3);
     }
 
     #[test]
-    fn tech_genre_has_a_higher_error_threshold() {
-        // 3/75 = 4% → 一般なら重大、技術文書なら警告
-        let md = text_with(75);
-        assert!(
-            run(&rule(Genre::General), &md)
-                .iter()
-                .all(|d| d.severity == Severity::Error)
-        );
-        let tech = Options {
-            genre: Genre::Tech,
-            ..Options::default()
-        };
-        assert!(
-            run_with(&rule(Genre::Tech), &md, tech)
-                .iter()
-                .all(|d| d.severity == Severity::Warning)
-        );
+    fn every_genre_uses_the_same_thresholds() {
+        for genre in [Genre::General, Genre::Tech, Genre::Business, Genre::Essay] {
+            let options = Options {
+                genre,
+                ..Options::default()
+            };
+            let at = |total: usize| severities(&run_with(&rule(genre), &text_with(total), options));
+            // 3/75 = 4% は情報、3/50 = 6% は重大
+            assert_eq!(at(75), [Severity::Info], "{genre:?}");
+            assert_eq!(at(50), [Severity::Error], "{genre:?}");
+            assert!(at(200).is_empty(), "{genre:?}");
+        }
     }
 
     #[test]
@@ -316,24 +346,36 @@ mod tests {
         assert!(run(&rule(Genre::General), md).is_empty());
     }
 
+    /// 測定値の (設定キー, 値, 切り替え先の重大度)。
+    fn keys(m: &[Measure]) -> Vec<(&'static str, f64, Option<Severity>)> {
+        m.iter()
+            .map(|m| (m.threshold_key, m.value, m.switches_to))
+            .collect()
+    }
+
     #[test]
-    fn measures_the_count_and_the_ratio_that_switches_to_error() {
+    fn measures_each_condition_where_the_other_one_holds() {
         let r = rule(Genre::General);
-        // 3/200 = 1.5%: 情報のままなので、重大への切り替えの値は返さない
+        // 3/200 = 1.5%: 回数は足りるが下限未満。回数を動かしても指摘しないので、比率だけを返す
         let m = measure_md(&r, &text_with(200));
-        assert_eq!(m.len(), 1);
-        assert_eq!((m[0].threshold_key, m[0].value), ("min_count", 3.0));
-        assert_eq!(m[0].switches_to, None);
-        // 3/120 = 2.5%: 警告。error_above と比べる値を返す
+        assert_eq!(keys(&m), [("min_ratio", 0.015, None)]);
+        assert!(!m[0].fires_at(0.02) && m[0].fires_at(0.015));
+        // 3/120 = 2.5%: 回数・下限との比率・重大への切り替えの比率の 3 つ
         let m = measure_md(&r, &text_with(120));
-        assert_eq!(m.len(), 2);
-        assert_eq!(m[1].threshold_key, "error_above");
-        assert_eq!(m[1].switches_to, Some(Severity::Error));
-        assert!((m[1].value - 0.025).abs() < 1e-9);
-        assert!(!m[1].fires_at(0.03));
-        // 回数が足りない文書は回数だけ
+        assert_eq!(
+            keys(&m),
+            [
+                ("min_count", 3.0, None),
+                ("min_ratio", 0.025, None),
+                ("error_above", 0.025, Some(Severity::Error)),
+            ]
+        );
+        assert!(!m[2].fires_at(0.05) && m[2].fires_at(0.025));
+        // 1/1 = 100%: 下限は越えるが回数が足りない。比率の値は返さない
         let m = measure_md(&r, "これは通知ではなく、仕組みだ。\n");
-        assert_eq!(m.len(), 1);
+        assert_eq!(keys(&m), [("min_count", 1.0, None)]);
+        // 対比のない文書は、どの閾値でも指摘しないので何も返さない
+        assert!(measure_md(&r, "仕組みを説明する。\n").is_empty());
         assert_eq!(r.calibration_basis(), Severity::Error);
     }
 
@@ -345,12 +387,47 @@ mod tests {
         r.configure("min_count", &toml::Value::Integer(3)).unwrap();
         r.configure("error_above", &toml::Value::Float(0.5))
             .unwrap();
+        assert_eq!(severities(&run(&r, &text_with(10))), [Severity::Info]);
+        // 下限を 1% に下げると、1.5% の文書も情報として指摘する
+        r.configure("min_ratio", &toml::Value::Float(0.01)).unwrap();
+        assert_eq!(severities(&run(&r, &text_with(200))), [Severity::Info]);
+        assert!(r.configure("min_ratio", &toml::Value::Float(1.5)).is_err());
         assert!(
-            run(&r, &text_with(10))
-                .iter()
-                .all(|d| d.severity == Severity::Warning)
+            r.configure("error_above", &toml::Value::Float(2.0))
+                .is_err()
         );
-        assert!(r.configure("info_below", &toml::Value::Float(2.0)).is_err());
         assert!(r.configure("unknown", &toml::Value::Float(0.1)).is_err());
+        assert_eq!(
+            r.options().iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            ["min_count", "min_ratio", "error_above"]
+        );
+    }
+
+    #[test]
+    fn info_below_still_configures_a_warning_band() {
+        // 以前の設定ファイルの `info_below` は、指定したときだけ警告の帯を作る (既定では帯がない)
+        let mut r = rule(Genre::General);
+        r.configure("error_above", &toml::Value::Float(0.5))
+            .unwrap();
+        assert_eq!(severities(&run(&r, &text_with(10))), [Severity::Info]);
+        r.configure("info_below", &toml::Value::Float(0.2)).unwrap();
+        assert_eq!(severities(&run(&r, &text_with(10))), [Severity::Warning]);
+        assert!(r.configure("info_below", &toml::Value::Float(1.5)).is_err());
+        assert_eq!(
+            r.options().iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            ["min_count", "min_ratio", "error_above", "info_below"]
+        );
+        let make = || -> Box<dyn Rule> {
+            let mut r = rule(Genre::General);
+            r.configure("error_above", &toml::Value::Float(0.5))
+                .unwrap();
+            r.configure("info_below", &toml::Value::Float(0.2)).unwrap();
+            Box::new(r)
+        };
+        let docs = [
+            Document::markdown(text_with(10)),
+            Document::markdown(text_with(40)),
+        ];
+        assert_measures_agree(make, &docs);
     }
 }
