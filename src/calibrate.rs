@@ -973,7 +973,7 @@ impl Scan<'_> {
             SourceFormat::from_path(&source.path),
             &self.base.options().parse,
         );
-        let characters = doc.char_count();
+        let characters = doc.body_char_count();
         let line_per_paragraph = looks_line_per_paragraph(&doc);
         let measures: Vec<Vec<Measure>> = self
             .evaluated
@@ -2904,10 +2904,10 @@ mod tests {
         assert_eq!((sweep.rule_id, sweep.measure), ("R01", "burstiness"));
         assert_eq!((sweep.measured_human, sweep.measured_ai), (12, 12));
         let current = sweep.current.as_ref().unwrap();
-        assert_eq!(current.threshold, -0.38);
+        assert_eq!(current.threshold, -0.45);
         assert_eq!((current.all.human_fired, current.all.ai_fired), (0, 12));
         // 現在の閾値で誤検知 0・検出 100% なので、動かす理由がない
-        assert_eq!(sweep.suggested.as_ref().unwrap().threshold, -0.38);
+        assert_eq!(sweep.suggested.as_ref().unwrap().threshold, -0.45);
         assert!(report.promotions.is_empty());
         assert!(report.reviews.is_empty());
         assert!(!report.warnings.iter().any(|w| w.contains("1 群")));
@@ -3050,21 +3050,21 @@ mod tests {
 
     #[test]
     fn weak_items_alone_make_a_light_burden_review() {
-        // P02 の「さて、」は人の文書にも出る弱い手掛かり (情報)。基準は警告以上
+        // P06 の「重要なのは」は人の文書にも出る弱い手掛かり (情報)。基準は警告以上
         let dir = tempfile::tempdir().unwrap();
         write_docs(
             &dir.path().join("human"),
-            (0..10).map(|i| format!("さて、{i}件目の話を始める。\n")),
+            (0..10).map(|i| format!("重要なのは、{i}件目の話だ。\n")),
         );
         write_docs(
             &dir.path().join("ai"),
-            (0..10).map(|i| format!("それでは、{i}件目の手順を見ていきましょう。\n")),
+            (0..10).map(|i| format!("これは{i}件目の手順として非常に重要です。\n")),
         );
-        let report = calibrate(&corpus_options(dir.path(), only(&["P02"]))).unwrap();
+        let report = calibrate(&corpus_options(dir.path(), only(&["P06"]))).unwrap();
         let review = &report.reviews[0];
         assert_eq!(
             (review.rule_id, review.reason, review.calibration_basis),
-            ("P02", ReviewReason::InfoBurden, Severity::Warning)
+            ("P06", ReviewReason::InfoBurden, Severity::Warning)
         );
         assert_eq!(
             (review.outcome.human_fired, review.any_severity.human_fired),
@@ -3075,12 +3075,15 @@ mod tests {
             .iter()
             .map(|i| (i.item.as_str(), i.severity))
             .collect();
-        assert_eq!(items, vec![("さて、", Severity::Info)]);
+        assert_eq!(items, vec![("重要なのは", Severity::Info)]);
         let mut md = Vec::new();
         render_markdown(&report, &mut md).unwrap();
         let md = String::from_utf8(md).unwrap();
         assert!(md.contains("### 軽い指摘が多い"), "{md}");
-        assert!(md.contains("「さて、」(情報、人 10 件・生成 0 件)"), "{md}");
+        assert!(
+            md.contains("「重要なのは」(情報、人 10 件・生成 0 件)"),
+            "{md}"
+        );
     }
 
     #[test]

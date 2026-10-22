@@ -15,6 +15,7 @@ use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
 
 use super::engine::diagnostic;
+use super::quotes::QuoteRanges;
 
 // ---------------------------------------------------------------------------
 // P13 INANIMATE_SUBJECT
@@ -25,12 +26,14 @@ static P13_META: RuleMeta = RuleMeta {
     name: "INANIMATE_SUBJECT",
     title: "無生物主語＋他動詞",
     lane: Lane::Slop,
-    status: RuleStatus::Stable,
+    status: RuleStatus::Experimental,
     default_severity: Severity::Info,
-    summary: "「この事実は〜を示している」のような、無生物を主語にして他動詞で結ぶ直訳調の構文を指摘する",
+    summary: "「この事実は〜を示している」のような、無生物を主語にして他動詞で結ぶ直訳調の構文を指摘する (実験的)",
     explanation: r"### 何を見るか
 
-「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「物語る」「浮き彫りにする」「後押しする」が来る文を探します。「暗示する」は実験的な述語で、`--experimental` か設定で有効にしたときだけ数えます。主語のあとで開いた括弧の中の述語 (「これは「〜と証明した」ものではない」) は、主語の述語ではないので数えません。
+「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「物語る」「浮き彫りにする」「後押しする」「暗示する」が来る文を探します。主語のあとで開いた括弧の中の述語 (「これは「〜と証明した」ものではない」) は、主語の述語ではないので数えません。主語が括弧の中にあり、述語より前でその括弧が閉じる文 (「「〜ことが大切」との見解を示した」の「ことが」) も、主語が括弧の中の節に属するので数えません。
+
+「〜ことが示された」「〜がもたらされる」のような受け身は数えません。未然形の「示さ」「もたらさ」「生み出さ」に「れ」が続く形で、主語は動作を受ける側になり、無生物が他動詞の主体になる構文ではないためです。「何も生み出さない」のような否定は数えます。
 
 ### なぜ問題か
 
@@ -47,7 +50,9 @@ static P13_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-人間とAIのコーパスで確かめた構文で、重大度は情報です。辞書を使わず、述語は活用の語幹 (「示し」「もたらさ」など) で照合します。未然形の「もたらさ」「示さ」「生み出さ」(「何も生み出さない」) も拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は人の随筆にも出る語で、誤検知率を測っていないため実験的にしています。",
+実験的です。受け身と括弧の中の主語を除いても、人の文書 176 本 (一般・技術・業務・随筆・スライド) のうち 11 本 (6.3%) に反応し、生成文書 (2025 年頃のモデルなどの 390 本で 22 本・5.6%、2026 年のモデルの 1,339 本で 29 本・2.2%) と同じかそれ以上でした。人の白書・随筆・技術記事は「これは〜を意味する」「〜を示す」をよく使います (「示す」は人 3 本・生成 15 本、「意味する」は人 3 本・生成 6 本)。生成文書に偏るのは「もたらす」(人 2 本・生成 20 本) くらいで、構文全体では人と生成を見分けられないため、既定では動かしません。辞書を使わず、述語は活用の語幹 (「示し」「もたらさ」など) で照合します。未然形の「もたらさ」「示さ」「生み出さ」は、否定 (「何も生み出さない」) のときだけ拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は人の随筆にも出る語です。
+
+受け身と、括弧の中の主語を除くと、人の文書 176 本の指摘は 27 件から 15 件に、生成文書 1,729 本の指摘は 61 件から 57 件になりました。外れたのは、白書や報告書に多い「〜ことが示された」の形 (人の文書 10 件・生成文書 4 件) と、発言を引いた括弧の中の「ことが」(人の文書 2 件) です。",
 };
 
 /// 抽象的な主語と主題・主格の助詞。長い候補を先に置く。
@@ -122,15 +127,16 @@ impl InanimateSubject {
             let window = &text[subject.end()..window_end];
             let verb = VERB_RE.find_iter(window).find(|m| {
                 let start = subject.end() + m.start();
+                let end = subject.end() + m.end();
                 // 「指示」「表示」「提示」のように前に漢字が付く「示」は名詞の一部
                 let compound = m.as_str().starts_with('示')
                     && text[..start]
                         .chars()
                         .next_back()
                         .is_some_and(text::is_kanji);
-                // 主語のあとで開いた括弧の中の述語は、引用や名詞修飾の中の述語で主語の述語ではない
                 !compound
-                    && !opens_bracket(&text[subject.end()..start])
+                    && !is_passive(m.as_str(), &text[end..])
+                    && !crosses_bracket(&text[..subject.start()], &text[subject.end()..start])
                     && (experimental || !p13_experimental_verb(m.as_str()))
             });
             if let Some(verb) = verb {
@@ -146,17 +152,45 @@ impl InanimateSubject {
     }
 }
 
-/// `s` の中で開いたまま閉じていない括弧があるか。
-fn opens_bracket(s: &str) -> bool {
-    let mut open: Vec<char> = Vec::new();
-    for c in s.chars() {
+/// 一致した述語が受け身の形か (「示さ」「もたらさ」「生み出さ」の未然形に「れ」が続く)。
+///
+/// 「〜ことが示された」「〜がもたらされる」の主語は動作を受ける側で、無生物が他動詞の主体になる
+/// 直訳調の構文ではない。否定 (「示さない」) は主体のままなので数える。`rest` は述語の直後から文末まで。
+fn is_passive(verb: &str, rest: &str) -> bool {
+    verb.ends_with('さ') && rest.starts_with('れ')
+}
+
+/// 主語と述語が、括弧の同じ深さにないか。
+///
+/// 次の 2 つは、括弧が主語と述語を隔てているので、主語の述語とみなさない。
+///
+/// - 主語のあとで開いて閉じていない括弧の中の述語 (引用や名詞修飾の中の述語。
+///   「これは「〜と証明した」ものではない」)
+/// - 主語を囲む括弧が、述語より前で閉じる場合 (「「〜ことが大切」との見解を示した」の
+///   「ことが」は、括弧の中の節の主語)
+///
+/// `before` は文頭から主語の手前まで、`between` は主語の後ろから述語の手前まで。
+fn crosses_bracket(before: &str, between: &str) -> bool {
+    fn step(open: &mut Vec<char>, c: char) -> bool {
         if let Some(close) = text::closing_bracket(c) {
             open.push(close);
         } else if open.last() == Some(&c) {
             open.pop();
+            return true;
+        }
+        false
+    }
+    let mut open: Vec<char> = Vec::new();
+    for c in before.chars() {
+        step(&mut open, c);
+    }
+    let depth = open.len();
+    for c in between.chars() {
+        if step(&mut open, c) && open.len() < depth {
+            return true;
         }
     }
-    !open.is_empty()
+    open.len() > depth
 }
 
 impl Rule for InanimateSubject {
@@ -172,7 +206,9 @@ impl Rule for InanimateSubject {
         for (idx, block) in ctx.scoped_blocks() {
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
-                for (range, subject, verb) in Self::find(text, ctx.experimental) {
+                // ルール自体が実験的なら、有効にされた時点で全述語を使う
+                let all = ctx.experimental || P13_META.status == RuleStatus::Experimental;
+                for (range, subject, verb) in Self::find(text, all) {
                     let matched = &text[range.clone()];
                     let status = if p13_experimental_verb(&verb) {
                         RuleStatus::Experimental
@@ -220,7 +256,7 @@ static P14_META: RuleMeta = RuleMeta {
     summary: "「〜——つまり〜——〜」のような、ダッシュで挟んだ挿入句を指摘する (実験的)",
     explanation: r"### 何を見るか
 
-日本語の文の中で、ダッシュ (「——」「―」「—」) を対にして補足を挟む挿入句と、日本語どうしの間に置かれた二倍ダッシュ「——」を探します。
+日本語の文の中で、ダッシュ (「——」「―」「—」) を対にして補足を挟む挿入句と、日本語どうしの間に置かれた二倍ダッシュ「——」を探します。同じブロック内で対応する「」・『』・“”・二重引用符の内側に完全に収まる一致と、開き引用符の直後の一致は、語句への言及として除きます。意味による判定ではないため、書名の副題 (『〜——〜』) や、引用された発言で実際に使われたダッシュも指摘しません。
 
 ### なぜ問題か
 
@@ -237,7 +273,7 @@ static P14_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-翻訳調の手癖として知られている書き方ですが、コーパスでの誤検知率は測っていません。「東京—大阪」のような区間の表記と区別するため、単独のダッシュの対は、挟まれた部分にひらがなを含むときだけ挿入句とみなします。実験的なルールとして `--experimental` か設定で有効にしたときだけ動きます。",
+翻訳調の手癖として知られている書き方ですが、コーパスでの誤検知率は測っていません。「東京—大阪」のような区間の表記と区別するため、単独のダッシュの対は、挟まれた部分にひらがなを含むときだけ挿入句とみなします。実験的なルールとして `--experimental` か設定で有効にしたときだけ動きます。引用符の内側の一致は、人の文書 176 本で 4 件 (書名の副題と、引いた発言・独白の中のダッシュ)、生成文書 1,729 本で 0 件でした。",
 };
 
 fn is_dash(c: char) -> bool {
@@ -328,6 +364,7 @@ impl Rule for EmDash {
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         for (idx, block) in ctx.scoped_blocks() {
+            let quotes = QuoteRanges::new(&block.text);
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
                 if !text::contains_japanese(text) {
@@ -337,6 +374,9 @@ impl Rule for EmDash {
                     let matched = &text[range.clone()];
                     let abs =
                         (sentence.range.start + range.start)..(sentence.range.start + range.end);
+                    if quotes.excludes(&abs) {
+                        continue;
+                    }
                     out.push(
                         diagnostic(
                             &P14_META,
@@ -473,7 +513,7 @@ impl Rule for ColonContinuation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::testing::{Options, matched, run, run_with};
+    use crate::rules::testing::{matched, run};
 
     #[test]
     fn p13_flags_inanimate_subjects_with_conjugated_verbs() {
@@ -521,26 +561,21 @@ mod tests {
     }
 
     #[test]
-    fn p13_anji_is_an_experimental_verb() {
-        // 「暗示する」は未校正なので、実験的な項目を有効にしたときだけ数える
+    fn p13_is_experimental_and_uses_every_verb_once_enabled() {
+        // ルールごと実験的なので、有効にされれば「暗示する」も数え、指摘はすべて実験的
+        assert_eq!(P13_META.status, RuleStatus::Experimental);
         let md = "この事実は、需要が戻らないことを暗示している。\n";
-        assert!(run(&InanimateSubject, md).is_empty());
-        let experimental = Options {
-            experimental: true,
-            ..Options::default()
-        };
-        let d = run_with(&InanimateSubject, md, experimental);
+        let d = run(&InanimateSubject, md);
         assert_eq!(
             matched(md, &d),
             vec!["この事実は、需要が戻らないことを暗示し"]
         );
         assert_eq!(item(&d[0]), "暗示する");
         assert_eq!(d[0].status, RuleStatus::Experimental);
-        // 実験的な述語が先にあっても、そのあとの校正済みの述語は既定で数える
-        let md = "これは変化を暗示し、需要の減少を示している。\n";
+        let md = "これは需要の減少を示している。\n";
         let d = run(&InanimateSubject, md);
         assert_eq!(item(&d[0]), "示す");
-        assert_eq!(d[0].status, RuleStatus::Stable);
+        assert_eq!(d[0].status, RuleStatus::Experimental);
     }
 
     #[test]
@@ -563,6 +598,67 @@ mod tests {
             matched(md, &run(&InanimateSubject, md)),
             vec!["これは誤りを示す"]
         );
+    }
+
+    #[test]
+    fn p13_ignores_subjects_whose_bracket_closes_before_the_predicate() {
+        // 主語が括弧の中の節にあり、述語より前で括弧が閉じる文は、主語の述語ではない
+        for md in [
+            "経団連側は、「生産性を上げることが大切」との見解を示した。\n",
+            "会長は「働き手の声を聞くことが重要」と述べ、労使の対話が要るとの認識を示した。\n",
+            "「これは誤りだ」と前置きし、根拠を示した。\n",
+            "（それが前提）と書いたうえで、手順を示した。\n",
+        ] {
+            assert!(run(&InanimateSubject, md).is_empty(), "{md}");
+        }
+        // 括弧の中で述語まで続く文と、括弧より前の主語の文は数える
+        for (md, expected) in [
+            (
+                "会長は「このことは手順の誤りを示している」と述べた。\n",
+                "このことは手順の誤りを示し",
+            ),
+            (
+                "このことは「確認が大切」という考えを示している。\n",
+                "このことは「確認が大切」という考えを示し",
+            ),
+            // 主語より前に閉じ括弧だけがある・主語のあとに閉じ括弧だけがある (注や箇条の番号)
+            ("注1）これは誤りを示す。\n", "これは誤りを示す"),
+            ("これは 2) の誤りを示す。\n", "これは 2) の誤りを示す"),
+        ] {
+            assert_eq!(
+                matched(md, &run(&InanimateSubject, md)),
+                vec![expected],
+                "{md}"
+            );
+        }
+    }
+
+    #[test]
+    fn p13_ignores_passive_predicates_but_keeps_negations() {
+        // 未然形に「れ」が続く受け身は、主語が他動詞の主体ではない
+        for md in [
+            "調査の結果、利用者が増えたことが示された。\n",
+            "睡眠を削ることが、集中力を下げると複数の研究で示されている。\n",
+            "それがもたらされた経緯を調べる。\n",
+            "このことは、新しい市場が生み出される前触れだ。\n",
+        ] {
+            assert!(run(&InanimateSubject, md).is_empty(), "{md}");
+        }
+        // 否定は主体のままなので数える
+        let md = "このことは何も示さない。\n";
+        let d = run(&InanimateSubject, md);
+        assert_eq!(matched(md, &d), vec!["このことは何も示さ"]);
+        assert_eq!(item(&d[0]), "示す");
+        let md = "それは変化をもたらさない。\n";
+        assert_eq!(
+            matched(md, &run(&InanimateSubject, md)),
+            vec!["それは変化をもたらさ"]
+        );
+        // 受け身を飛ばしても、同じ主語のあとの能動の述語は数える
+        let md = "これは、前に示された結果を反映している。\n";
+        let d = run(&InanimateSubject, md);
+        assert_eq!(matched(md, &d), vec!["これは、前に示された結果を反映し"]);
+        assert_eq!(item(&d[0]), "反映する");
     }
 
     #[test]
@@ -610,6 +706,30 @@ mod tests {
         assert_eq!(matched(md, &run(&EmDash, md)), vec!["——"]);
         let md = "指摘が出なくなるまで—つまり収束するまで—繰り返す。\n";
         assert_eq!(matched(md, &run(&EmDash, md)), vec!["—つまり収束するまで—"]);
+    }
+
+    #[test]
+    fn p14_skips_dashes_quoted_as_mentions() {
+        // 書名の副題・引用した発言の中のダッシュ・ダッシュそのものへの言及は除く
+        for md in [
+            "著書『贈与の論理——資本主義のすきま』に入れられなかった文章を載せる。\n",
+            "会長は「人口減少と社会構造の転換——を柱に整理した」と述べた。\n",
+            "「——そう思えば——気が楽だ。\n",
+            "「〜——つまり〜——〜」のような挿入句を探す。\n",
+        ] {
+            assert!(run(&EmDash, md).is_empty(), "{md}");
+        }
+        // 引用の外のダッシュは、同じ文に引用があっても拾う
+        let md = "作業は明日——予定どおりに進めば——終わる。「早い」と言われた。\n";
+        assert_eq!(
+            matched(md, &run(&EmDash, md)),
+            vec!["——予定どおりに進めば——"]
+        );
+        let md = "結論は「速さ」で決まる——ほかは要らない。\n";
+        assert_eq!(matched(md, &run(&EmDash, md)), vec!["——"]);
+        // 閉じない引用符は、開き引用符の直後のダッシュだけを除く
+        let md = "「前置き——ここから本題——続く。\n";
+        assert_eq!(matched(md, &run(&EmDash, md)), vec!["——ここから本題——"]);
     }
 
     #[test]

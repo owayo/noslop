@@ -104,20 +104,20 @@ fn repeated_short_slogans_are_experimental_and_do_not_count_fragments() {
 
 #[test]
 fn html_line_breaks_lint_following_prose_at_original_positions() {
-    let phrase = "と言えるでしょう";
+    let phrase = "非常に重要";
     for filename in ["sample.md", "sample.html"] {
         for tag in ["<br>", "<br/>", "<br />", "<BR>", "<br class=\"line\">"] {
             for template in [
-                "<p>前の文。{br}この案なら十分と言えるでしょう。</p>",
-                "<div>前の行{br}この案なら十分と言えるでしょう。</div>",
-                "<p>前の行{br}この案なら十分と言えるでしょう。{br}別の案も十分と言えるでしょう。</p>",
-                "<p>この案なら十分と言えるでしょう。{br}次の行</p>",
-                "<p>前の行{br}続き<span>この案なら十分と言えるでしょう。</span></p>",
-                "前の行{br}この案なら十分と言えるでしょう。",
-                "<html><body><p>前の行{br}この案なら十分と言えるでしょう。</p></body></html>",
-                "<p>前の行{br}\n  この案なら十分と言えるでしょう。</p>",
-                "<p>前の行{br}{br}この案なら十分と言えるでしょう。</p>",
-                "<p>前の行{br}この案なら十分と言えるでしょう。",
+                "<p>前の文。{br}この案は非常に重要です。</p>",
+                "<div>前の行{br}この案は非常に重要です。</div>",
+                "<p>前の行{br}この案は非常に重要です。{br}別の案も非常に重要です。</p>",
+                "<p>この案は非常に重要です。{br}次の行</p>",
+                "<p>前の行{br}続き<span>この案は非常に重要です。</span></p>",
+                "前の行{br}この案は非常に重要です。",
+                "<html><body><p>前の行{br}この案は非常に重要です。</p></body></html>",
+                "<p>前の行{br}\n  この案は非常に重要です。</p>",
+                "<p>前の行{br}{br}この案は非常に重要です。</p>",
+                "<p>前の行{br}この案は非常に重要です。",
             ] {
                 let source = template.replace("{br}", tag);
                 let output = noslop()
@@ -129,7 +129,7 @@ fn html_line_breaks_lint_following_prose_at_original_positions() {
                         "--no-config",
                         "--no-dict",
                         "--only-rules",
-                        "P01",
+                        "P06",
                         "--format",
                         "json",
                     ])
@@ -148,7 +148,7 @@ fn html_line_breaks_lint_following_prose_at_original_positions() {
                     "{filename}: {source}: {report}"
                 );
                 for (diagnostic, (start, _)) in diagnostics.iter().zip(expected) {
-                    assert_eq!(diagnostic["ruleId"], "P01");
+                    assert_eq!(diagnostic["ruleId"], "P06");
                     for (endpoint, offset) in [("start", start), ("end", start + phrase.len())] {
                         let position = &diagnostic["range"][endpoint];
                         assert_eq!(position["offset"], offset, "{filename}: {source}");
@@ -264,6 +264,8 @@ fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
                 "--no-dict",
                 "--only-rules",
                 "P06",
+                // 「ポイントは」は実験的な項目
+                "--experimental",
                 "--format",
                 "json",
             ])
@@ -278,7 +280,7 @@ fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
         let diagnostic = &report["files"][0]["diagnostics"][0];
         assert_eq!(diagnostic["metrics"]["matched"], "ポイントは");
         assert_eq!(diagnostic["severity"], "info");
-        assert_eq!(diagnostic["status"], "stable");
+        assert_eq!(diagnostic["status"], "experimental");
         let start = source.rfind("ポイントは").unwrap();
         assert_eq!(diagnostic["range"]["start"]["offset"], start);
         assert_eq!(
@@ -1339,7 +1341,7 @@ fn builtin_rules_separate_the_bundled_examples() {
         .iter()
         .map(|d| d["ruleId"].as_str().unwrap())
         .collect();
-    for id in ["P01", "P02", "R05"] {
+    for id in ["P01", "P06", "R05"] {
         assert!(ids.contains(&id), "{id} が出ていない: {ids:?}");
     }
     // 文書全体の点数は出さず、AI 臭さの指摘をレーン・重大度ごとに数える

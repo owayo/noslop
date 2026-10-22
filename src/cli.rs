@@ -2360,7 +2360,7 @@ mode = "required"
                 .clone()
         };
         assert_eq!(basis("P01"), "warning");
-        assert_eq!(basis("P03"), "info", "既定の重大度が情報のルールは情報");
+        assert_eq!(basis("R06"), "info", "既定の重大度が情報のルールは情報");
         assert_eq!(basis("R05"), "error", "重大の率で校正した");
         assert!(basis("S01").is_null(), "実験的なルールは校正していない");
 

@@ -1,6 +1,10 @@
 //! 文字種の判定と、文長の数え方。
 //!
-//! 形態素解析を使わない (Zero-Dictionary) ため、判定はすべて Unicode の文字範囲で行う。
+//! 形態素解析を使わない (Zero-Dictionary) ため、判定は Unicode の文字範囲と字の一覧で行う。
+
+use std::sync::LazyLock;
+
+mod chinese;
 
 /// インラインコード・数式・画像など、解析テキストで 1 文字ぶんの「語」に置き換えた箇所。
 ///
@@ -55,6 +59,21 @@ pub fn is_alnum(c: char) -> bool {
 /// 文字列に日本語の文字が 1 字でも含まれるか。
 pub fn contains_japanese(s: &str) -> bool {
     s.chars().any(is_japanese)
+}
+
+/// 日本語では使わない簡体字か (中国の常用の簡体字のうち、日本語の文字集合 JIS X 0213 にない字)。
+pub fn is_simplified_only(c: char) -> bool {
+    static SET: LazyLock<Vec<char>> = LazyLock::new(|| chinese::SIMPLIFIED_ONLY.chars().collect());
+    SET.binary_search(&c).is_ok()
+}
+
+/// 日本語ではなく中国語の文とみなせるか。
+///
+/// かなを 1 字も含まず、日本語では使わない簡体字 ([`is_simplified_only`]) を含む文を中国語の文とする。
+/// かなのない日本語の行 (宛名・肩書き・見出し・出典) は簡体字を含まないので、中国語とはみなさない。
+/// 日本語の文の中で中国語の語を引くと、かなを含むので中国語の文とはみなさない。
+pub fn is_chinese_sentence(s: &str) -> bool {
+    !s.chars().any(|c| is_hiragana(c) || is_katakana(c)) && s.chars().any(is_simplified_only)
 }
 
 /// 全角・半角の読点類。
@@ -155,6 +174,48 @@ mod tests {
         assert!(is_nounish('A'));
         assert!(is_nounish(PLACEHOLDER));
         assert!(!is_nounish('す'));
+    }
+
+    #[test]
+    fn the_simplified_only_list_is_sorted_and_excludes_japanese_kanji() {
+        let chars: Vec<char> = chinese::SIMPLIFIED_ONLY.chars().collect();
+        assert_eq!(chars.len(), 1078);
+        // 二分探索で引くので、符号位置の順で重複がない
+        assert!(chars.windows(2).all(|w| w[0] < w[1]));
+        assert!(chars.iter().all(|&c| is_kanji(c)));
+        for c in ['这', '们', '说', '时', '过', '还', '钟', '颜', '样', '选'] {
+            assert!(is_simplified_only(c), "{c}");
+        }
+        // 日本語の字体と、日中で同じ字体の字は含めない
+        for c in [
+            '這', '説', '時', '過', '様', '選', '日', '本', '学', '会', '国', '的', '了', '是',
+        ] {
+            assert!(!is_simplified_only(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn chinese_sentences_have_no_kana_and_a_simplified_only_character() {
+        for s in [
+            "有一天下雨，他忘了带伞，我也没带。",
+            "全程三十七分钟，一天来回七十四分钟。",
+            "我自己就是这样的。",
+        ] {
+            assert!(is_chinese_sentence(s), "{s}");
+        }
+        for s in [
+            // かなのない日本語の行
+            "報告者：業務改革推進室　主任　佐伯",
+            "令和八年十月一日　総務企画部",
+            "午前五時十五分。",
+            // 中国語の語を引いた日本語の文
+            "「这个」は中国語で「この」の意味だ。",
+            // かなを含むが簡体字を含まない文・空の文
+            "顧客情報統合管理基盤を移す。",
+            "",
+        ] {
+            assert!(!is_chinese_sentence(s), "{s}");
+        }
     }
 
     #[test]

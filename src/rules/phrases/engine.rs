@@ -45,6 +45,10 @@ pub(super) struct Entry {
 pub(super) const WEAK_SIGNAL_NOTE: &str =
     "人間の文章にもよく出るため、弱い手掛かりとして扱っています";
 
+/// 人の文章にも同じくらいかそれ以上に出ると測れたため、既定から外した語句に添える注記。
+pub(super) const HUMAN_COMMON_NOTE: &str =
+    "人の文章にも同じくらいかそれ以上に出るため、既定では指摘しない語句です";
+
 impl Entry {
     /// 校正済みのリテラル。
     pub const fn lit(s: &'static str, severity: Severity) -> Self {
@@ -287,6 +291,10 @@ pub(super) fn diagnostic(
 }
 
 /// 語句辞書で動くルール。
+///
+/// 同じブロック内で対応する引用符 (「」・『』・“”・二重引用符) の内側に完全に収まる一致と、
+/// 開き引用符の直後の一致は、語句への言及として除く ([`QuoteRanges`])。辞書の語句は書き手の
+/// 言い回しの癖を指すもので、引用した語句や発言は書き手の言い回しではないため。
 pub(super) struct PhraseRule {
     spec: &'static PhraseSpec,
     /// 校正済みの項目だけの照合器。
@@ -294,6 +302,8 @@ pub(super) struct PhraseRule {
     /// 実験的な項目も含む照合器。
     full: Matcher,
     exclude_quoted_mentions: bool,
+    /// 文書の結び (地の文の最後の段落) だけを見るときの段落の数。
+    closing_paragraphs: Option<usize>,
 }
 
 impl PhraseRule {
@@ -302,20 +312,36 @@ impl PhraseRule {
             spec,
             stable: Matcher::new(spec.entries, false),
             full: Matcher::new(spec.entries, true),
-            exclude_quoted_mentions: false,
+            exclude_quoted_mentions: true,
+            closing_paragraphs: None,
         }
     }
 
-    /// 対応する引用符の内側と、開き引用符の直後にある語句を言及として除く。
-    pub fn excluding_quoted_mentions(mut self) -> Self {
-        self.exclude_quoted_mentions = true;
+    /// 引用の内側の一致も数える (辞書の照合だけを確かめるテスト向け)。
+    #[cfg(test)]
+    pub fn including_quoted_mentions(mut self) -> Self {
+        self.exclude_quoted_mentions = false;
+        self
+    }
+
+    /// 文書の結び ([`Document::closing_paragraphs`] の最後の `count` 段落) にある語句だけを拾う。
+    ///
+    /// 判定に文書の構造が要るので、断片の集まり (コードのコメント・表計算のセル) には当てない。
+    ///
+    /// [`Document::closing_paragraphs`]: crate::document::Document::closing_paragraphs
+    pub fn only_in_closing(mut self, count: usize) -> Self {
+        self.closing_paragraphs = Some(count);
         self
     }
 }
 
 impl Rule for PhraseRule {
     fn unit(&self) -> RuleUnit {
-        RuleUnit::Sentence
+        if self.closing_paragraphs.is_some() {
+            RuleUnit::Document
+        } else {
+            RuleUnit::Sentence
+        }
     }
 
     fn meta(&self) -> &'static RuleMeta {
@@ -326,7 +352,13 @@ impl Rule for PhraseRule {
         // ルール自体が実験的なら、有効にされた時点で全項目を使う
         let use_full = self.spec.meta.status == RuleStatus::Experimental || ctx.experimental;
         let matcher = if use_full { &self.full } else { &self.stable };
+        let closing = self
+            .closing_paragraphs
+            .map(|count| ctx.doc.closing_paragraphs(count));
         for (idx, block) in ctx.scoped_blocks() {
+            if closing.as_ref().is_some_and(|c| !c.contains(&idx)) {
+                continue;
+            }
             let quotes = self
                 .exclude_quoted_mentions
                 .then(|| QuoteRanges::new(&block.text));
