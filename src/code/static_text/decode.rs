@@ -279,17 +279,28 @@ fn css_escape(s: &str) -> Option<(usize, String)> {
     if digits > 0 {
         let value = u32::from_str_radix(&s[1..1 + digits], 16).ok()?;
         let mut len = 1 + digits;
-        if let Some(c) = s[len..].chars().next().filter(|c| c.is_whitespace()) {
-            len += c.len_utf8();
+        // CSS の空白だけを終端として消費する。入力の CRLF は一つの改行に相当する。
+        if s[len..].starts_with("\r\n") {
+            len += 2;
+        } else if matches!(
+            s.as_bytes().get(len),
+            Some(b' ' | b'\t' | b'\n' | b'\r' | 12)
+        ) {
+            len += 1;
         }
-        return Some((len, char::from_u32(value)?.to_string()));
+        let c = if value == 0 {
+            '\u{fffd}'
+        } else {
+            char::from_u32(value).unwrap_or('\u{fffd}')
+        };
+        return Some((len, c.to_string()));
     }
     let c = s[1..].chars().next()?;
-    if c == '\n' {
-        return Some((2, String::new()));
-    }
     if c == '\r' && s.starts_with("\\\r\n") {
         return Some((3, String::new()));
+    }
+    if matches!(c, '\n' | '\r' | '\u{c}') {
+        return Some((2, String::new()));
     }
     Some((1 + c.len_utf8(), c.to_string()))
 }
