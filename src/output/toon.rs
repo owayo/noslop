@@ -83,6 +83,10 @@ mod tests {
             "enabled": false
         });
         let encoded = encode(&original).unwrap();
+        assert!(
+            encoded.contains("counts[3:]{error,warning,info}:\n"),
+            "同じ形の件数マップをキー付きの表にする: {encoded}"
+        );
         let decoded: serde_json::Value = toon_format::decode_strict(&encoded).unwrap();
         assert_eq!(decoded, original);
         assert!(!encoded.ends_with('\n'));
