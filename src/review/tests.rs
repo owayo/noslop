@@ -240,6 +240,8 @@ fn timeout_kills_the_reviewers_descendants() {
 #[cfg(unix)]
 #[test]
 fn reviewer_receives_stdin_and_arguments_without_shell_expansion() {
+    // 待ち時間はこのテストの対象ではない。CI の VM が数十秒止まっても期限切れで落ちないよう、
+    // CLI の既定 (120 秒) と同じにする
     let output = runner::invoke(
         std::path::Path::new("/bin/sh"),
         &[
@@ -249,7 +251,7 @@ fn reviewer_receives_stdin_and_arguments_without_shell_expansion() {
             "$(exit 9)".into(),
         ],
         "本文".as_bytes().to_vec(),
-        5,
+        120,
     )
     .unwrap();
     assert_eq!(String::from_utf8(output).unwrap(), "本文$(exit 9)");
