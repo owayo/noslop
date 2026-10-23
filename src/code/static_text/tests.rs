@@ -195,6 +195,14 @@ fn rust_string_continuations_skip_ascii_whitespace_and_keep_source_positions() {
     let source = r#"let x = "保\
     \t存します。";"#;
     assert_eq!(texts(source, CodeLanguage::Rust), ["保\t存します。"]);
+    for (source, expected) in [
+        ("let x = \"保\\\n  \\\n  存\";", "保存"),
+        ("let x = \"保\\\\\n  存\";", "保\\\n  存"),
+        ("let x = r\"保\\\n  存\";", "保\\\n  存"),
+    ] {
+        assert_eq!(texts(source, CodeLanguage::Rust), [expected]);
+        exact(&doc(source, CodeLanguage::Rust));
+    }
 }
 
 #[test]
@@ -214,6 +222,20 @@ fn toml_string_continuations_match_the_parsed_value_and_keep_source_positions() 
             );
             exact(&d);
         }
+    }
+    for source in [
+        "message = \"\"\"保存\\\n  \"\"\"",
+        "message = \"\"\"保\\\n  \\\n  存\"\"\"",
+        "message = \"\"\"保\\\n \u{3000}存\"\"\"",
+        "message = \"\"\"保\\\n \\t存\"\"\"",
+        "message = \"\"\"保\\\\\n  存\"\"\"",
+        "message = '''保\\\n  存'''",
+    ] {
+        let parsed: toml::Table = toml::from_str(source).unwrap();
+        let d = doc(source, CodeLanguage::Toml);
+        assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.blocks[0].text, parsed["message"].as_str().unwrap());
+        exact(&d);
     }
 }
 

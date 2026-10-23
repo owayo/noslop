@@ -681,6 +681,9 @@ mod tests {
             r"\0",
             r"\00",
             r"\000",
+            r"\08",
+            r"\400",
+            r"\x0",
             r"\x00",
             r"\u0000",
             r"\U00000000",
@@ -697,6 +700,10 @@ mod tests {
         assert_eq!(
             only(r"gws docs +write --text $'\0検査しない'"),
             vec![s("docs"), s("+write"), s("--text"), s("")]
+        );
+        assert_eq!(
+            only(r"gws docs +write --text $'保\\0存'"),
+            vec![s("docs"), s("+write"), s("--text"), s(r"保\0存")]
         );
         // NUL より前の不正な UTF-8 は、値の決まらない1語として残す。
         assert_eq!(
