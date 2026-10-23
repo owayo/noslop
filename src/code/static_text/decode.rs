@@ -139,6 +139,9 @@ fn hex(s: &str, n: usize) -> Option<u32> {
 fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, String)> {
     use CodeLanguage::*;
     let tail = s.get(prefix_len..)?;
+    if let Some(len) = continuation(tail, lang) {
+        return Some((prefix_len + len, String::new()));
+    }
     let c = tail.chars().next()?;
     let basic = match c {
         'n' => Some('\n'),
@@ -268,6 +271,20 @@ fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, Stri
         return Some((prefix_len + digits, char::from_u32(value)?.to_string()));
     }
     None
+}
+
+/// Rust・TOML の行継続は字下げと後続の空行も除く。Unicode の空白は本文に残す。
+fn continuation(tail: &str, lang: CodeLanguage) -> Option<usize> {
+    let next = match lang {
+        CodeLanguage::Rust => tail,
+        // TOML はバックスラッシュと改行の間の空白・タブも許す。
+        CodeLanguage::Toml => tail.trim_start_matches([' ', '\t']),
+        _ => return None,
+    };
+    if !next.starts_with('\n') && !next.starts_with("\r\n") {
+        return None;
+    }
+    Some(tail.len() - tail.trim_start_matches([' ', '\t', '\n', '\r']).len())
 }
 
 fn css_escape(s: &str) -> Option<(usize, String)> {

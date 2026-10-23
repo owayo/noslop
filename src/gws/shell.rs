@@ -564,6 +564,11 @@ fn ansi_c(text: &str) -> Option<String> {
                 bytes.extend_from_slice(e.encode_utf8(&mut buf).as_bytes());
             }
         }
+        // Bash の ANSI-C クォートは NUL で終わる。後ろの文字列の連結は呼び出し側が扱う。
+        if bytes.last() == Some(&0) {
+            bytes.pop();
+            break;
+        }
     }
     String::from_utf8(bytes).ok()
 }
@@ -667,6 +672,36 @@ mod tests {
                 s("一\n二Aあ"),
                 s("--z=12"),
             ]
+        );
+    }
+
+    #[test]
+    fn ansi_c_quotes_stop_at_nul_and_keep_the_following_quoted_suffix() {
+        for escape in [
+            r"\0",
+            r"\00",
+            r"\000",
+            r"\x00",
+            r"\u0000",
+            r"\U00000000",
+            r"\c@",
+        ] {
+            let command =
+                format!("gws docs +write --text $'保{escape}検査しない\\xff'\"存します。\"");
+            assert_eq!(
+                only(&command),
+                vec![s("docs"), s("+write"), s("--text"), s("保存します。")],
+                "{escape}"
+            );
+        }
+        assert_eq!(
+            only(r"gws docs +write --text $'\0検査しない'"),
+            vec![s("docs"), s("+write"), s("--text"), s("")]
+        );
+        // NUL より前の不正な UTF-8 は、値の決まらない1語として残す。
+        assert_eq!(
+            only(r"gws docs +write --text $'\xff\0検査しない'"),
+            vec![s("docs"), s("+write"), s("--text"), Arg::Unknown]
         );
     }
 
