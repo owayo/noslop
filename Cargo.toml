@@ -29,7 +29,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.105", default-features = false, features = ["analyzer", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.106", default-features = false, features = ["analyzer", "download"] }
 
 [features]
 default = ["bundled-dict"]
@@ -62,11 +62,11 @@ sha2 = "0.11.0"
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
 toon-format = { version = "0.6.1", default-features = false }
-toml = "1.1.7"
+toml = "1.1.8"
 # コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。文法はすべて常に入れる (feature で分けない)。
 # 文法の crate は tree-sitter 0.27 で読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の
 # 対応を確かめる)
-tree-sitter = "0.27.0"
+tree-sitter = "0.27.1"
 tree-sitter-bash = "=0.25.1"
 tree-sitter-c = "=0.24.2"
 tree-sitter-c-sharp = "=0.23.5"

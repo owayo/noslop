@@ -6,11 +6,11 @@
 
 | 項目 | 値 |
 |---|---|
-| 出所 | hasami v26.10.105 のリリースに添付された `ipadic.hsd` |
+| 出所 | hasami v26.10.106 のリリースに添付された `ipadic.hsd` |
 | 形式 | HSD v5 |
 | 元のデータ | mecab-ipadic 2.7.0-20070801 (辞書のメタデータ `sources=ipadic@61b90ba6e669`) |
 | 語数 | 390,860 |
-| SHA-256 | `a9b884b3b3bd9605359d88ed0e4fea48d12f82ab3df8e5fe4f90c1f5d8a1516f` |
+| SHA-256 | `cee46c23e98b83d4723bd64d5cf8fb24cff3428c372e049e572d433c65f8844b` |
 | ライセンス | NAIST-2003 (条文は [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)) |
 
 NEologd の語彙を含む辞書 (ipadic-neologd など) は同梱しません。`noslop dict download <名前>` で hasami の share ディレクトリに取得すると、辞書を指定しないとき (`dictionary = "auto"`) に、この同梱の辞書より先に使われます (いくつかあれば hasami の推奨順)。名前で固定するなら `--dict share:<名前>` か設定の `dictionary` で指定し、同梱の辞書に固定するなら `bundled` を指定します。`noslop dict download ipadic` で取れる `ipadic.hsd` は、取得に使う目録の版のもので、この同梱の辞書とは版が違うことがあります。
