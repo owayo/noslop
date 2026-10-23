@@ -841,6 +841,23 @@ severity = "info"
     }
 
     #[test]
+    fn ansi_c_nul_suffixes_do_not_block_text_that_bash_does_not_pass() {
+        let ws = Workspace::new();
+        let event = ws.event(
+            r"gws docs +write --document D1 --text $'保存します。\0ユーザー様の声を集めました。'",
+        );
+        assert!(ws.run(&event).is_none());
+        assert!(ws.records().is_empty());
+
+        // NUL の後に別の引用文字列で連結した文言は、Bash が渡すので検査する。
+        let event = ws.event(
+            r#"gws docs +write --document D1 --text $'保存します。\0検査しない'"ユーザー様の声を集めました。""#,
+        );
+        ws.run(&event).unwrap().deny();
+        assert_eq!(ws.records().len(), 1);
+    }
+
+    #[test]
     fn the_same_write_in_another_quoting_is_the_same_retry() {
         let ws = Workspace::new();
         ws.run(&ws.event(WRITE)).unwrap().deny();

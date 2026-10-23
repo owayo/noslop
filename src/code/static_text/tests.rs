@@ -177,6 +177,110 @@ fn decoding_follows_each_language_and_preserves_transformed_ranges() {
 }
 
 #[test]
+fn rust_string_continuations_skip_ascii_whitespace_and_keep_source_positions() {
+    for newline in ["\n", "\r\n"] {
+        let source = format!("let x = \"保\\{newline} \t{newline}  存します。\";");
+        let d = doc(&source, CodeLanguage::Rust);
+        assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.blocks[0].text, "保存します。");
+        assert_eq!(
+            d.slice(d.blocks[0].to_source(0.."保存".len())),
+            format!("保\\{newline} \t{newline}  存")
+        );
+        exact(&d);
+    }
+    // Unicode の空白と、エスケープで書いた空白は継続後も本文に残る。
+    let source = "let x = \"保\\\n \t\u{3000}存します。\";";
+    assert_eq!(texts(source, CodeLanguage::Rust), ["保\u{3000}存します。"]);
+    let source = r#"let x = "保\
+    \t存します。";"#;
+    assert_eq!(texts(source, CodeLanguage::Rust), ["保\t存します。"]);
+    for (source, expected) in [
+        ("let x = \"保\\\n  \\\n  存\";", "保存"),
+        ("let x = \"保\\\\\n  存\";", "保\\\n  存"),
+        ("let x = r\"保\\\n  存\";", "保\\\n  存"),
+    ] {
+        assert_eq!(texts(source, CodeLanguage::Rust), [expected]);
+        exact(&doc(source, CodeLanguage::Rust));
+    }
+}
+
+#[test]
+fn toml_string_continuations_match_the_parsed_value_and_keep_source_positions() {
+    for newline in ["\n", "\r\n"] {
+        for before in ["", " \t"] {
+            let source =
+                format!("message = \"\"\"保\\{before}{newline} \t{newline}  存します。\"\"\"");
+            let parsed: toml::Table = toml::from_str(&source).unwrap();
+            let d = doc(&source, CodeLanguage::Toml);
+            assert_eq!(d.blocks.len(), 1);
+            assert_eq!(d.blocks[0].text, parsed["message"].as_str().unwrap());
+            assert_eq!(d.blocks[0].text, "保存します。");
+            assert_eq!(
+                d.slice(d.blocks[0].to_source(0.."保存".len())),
+                format!("保\\{before}{newline} \t{newline}  存")
+            );
+            exact(&d);
+        }
+    }
+    for source in [
+        "message = \"\"\"保存\\\n  \"\"\"",
+        "message = \"\"\"保\\\n  \\\n  存\"\"\"",
+        "message = \"\"\"保\\\n \u{3000}存\"\"\"",
+        "message = \"\"\"保\\\n \\t存\"\"\"",
+        "message = \"\"\"保\\\\\n  存\"\"\"",
+        "message = '''保\\\n  存'''",
+    ] {
+        let parsed: toml::Table = toml::from_str(source).unwrap();
+        let d = doc(source, CodeLanguage::Toml);
+        assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.blocks[0].text, parsed["message"].as_str().unwrap());
+        exact(&d);
+    }
+}
+
+#[test]
+fn continued_phrases_reach_sentence_rules_at_the_original_range() {
+    let engine = crate::engine::Engine::new(crate::engine::EngineOptions::default()).unwrap();
+    for (language, source) in [
+        (
+            CodeLanguage::Rust,
+            "let x = \"この点は非常に\\\n  重要です。\";",
+        ),
+        (
+            CodeLanguage::Toml,
+            "message = \"\"\"この点は非常に\\ \t\r\n  重要です。\"\"\"",
+        ),
+    ] {
+        let report = engine.lint(doc(source, language));
+        let finding = report
+            .diagnostics
+            .iter()
+            .find(|d| d.rule_id == "P06")
+            .expect("行継続をまたぐ語句を検査する");
+        let start = source.find("非常に").unwrap();
+        let end = source.find("重要").unwrap() + "重要".len();
+        assert_eq!(finding.span, crate::diagnostic::Span::new(start, end));
+        assert_eq!(report.doc.slice(finding.span), &source[start..end]);
+    }
+}
+
+#[test]
+fn line_continuations_in_other_languages_keep_following_indentation() {
+    for (language, source) in [
+        (
+            CodeLanguage::JavaScript,
+            "const x = \"保\\\n  存します。\";",
+        ),
+        (CodeLanguage::Python, "x = \"保\\\n  存します。\""),
+        (CodeLanguage::C, "char *x = \"保\\\n  存します。\";"),
+    ] {
+        assert_eq!(texts(source, language), ["保  存します。"]);
+        exact(&doc(source, language));
+    }
+}
+
+#[test]
 fn css_hex_escapes_keep_unicode_spaces_and_their_source_ranges() {
     for space in ['\u{a0}', '\u{b}', '\u{2003}', '\u{3000}'] {
         let source = format!("p {{ content: \"日\\672c{space}語\"; }}");
