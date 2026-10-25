@@ -68,7 +68,7 @@ fn main() {
                 .unwrap_or_else(|e| panic!("同梱辞書を確認できません: {e}"));
         assert!(
             matches,
-            "同梱辞書がないか、dict/bundled.json と一致しません。make setup または cargo run --locked -p noslop-xtask -- prepare を実行してください。辞書なしでビルドするなら --no-default-features を指定してください"
+            "同梱辞書がないか、dict/bundled.json と一致しません。make setup または cargo run --locked -p noslop-xtask -- prepare を実行してください。辞書を同梱しない CLI なら --no-default-features --features cli、文書用のライブラリだけなら --no-default-features を指定してください"
         );
     }
     let path = manifest.join("dict").join("catalog.json");

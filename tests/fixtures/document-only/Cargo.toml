@@ -1,0 +1,13 @@
+[package]
+name = "noslop-document-only-test"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# 別のアプリケーションの依存解決として検査する。
+[workspace]
+
+[dependencies]
+noslop = { path = "../../..", default-features = false }
+# 異なる系列との共存を検証するため、0.27 へ更新しない。
+tree-sitter = "=0.26.13"

@@ -294,6 +294,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn relation_is_returned_when_only_the_list_changed() {
         let source = "次の3項目です。\n\n- 名前\n- 住所\n\n別の段落です。\n";
         let d = run(&EnumerationCount, source).remove(0);

@@ -185,9 +185,12 @@ impl Rule for MarkupResidue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "code")]
     use crate::code::CodeLanguage;
     use crate::diagnostic::Metric;
-    use crate::document::{Document, ParseOptions};
+    use crate::document::Document;
+    #[cfg(feature = "code")]
+    use crate::document::ParseOptions;
     use crate::rules::testing::{Options, matched, run, run_doc};
 
     fn item(d: &Diagnostic) -> &str {
@@ -205,6 +208,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "code")]
     fn run_rust(source: &str) -> Vec<Diagnostic> {
         let doc = Document::parse(
             "<input>.rs",
@@ -320,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "code")]
     fn plain_comments_keep_the_markers_but_doc_comments_render_them() {
         let d = run_rust("// **注意**: 設定を先に読む\nfn main() {}\n");
         assert_eq!(d.len(), 1);

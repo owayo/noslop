@@ -8,7 +8,8 @@ use tree_sitter::Node;
 
 use super::CodeLanguage;
 use crate::diagnostic::Span;
-use crate::document::{Block, BlockKind, TextMap};
+use crate::document::Block;
+use crate::html::text::Builder;
 
 /// 文字列、本文、表示属性のそれぞれを独立した断片として取り出す。
 pub(super) fn extract(
@@ -71,85 +72,6 @@ fn walk(
 fn owned(node: Node<'_>, comments: &[Span]) -> bool {
     let at = comments.partition_point(|s| s.start <= node.start_byte());
     at > 0 && node.end_byte() <= comments[at - 1].end
-}
-
-#[derive(Default)]
-struct Builder {
-    text: String,
-    map: TextMap,
-    span: Option<Span>,
-    breaks: Vec<usize>,
-    sentence_breaks: Vec<usize>,
-    /// Markdown の HTML 本文では、英語だけの文章も残す。
-    keep_non_japanese: bool,
-}
-
-impl Builder {
-    fn exact(&mut self, source: &str, span: Span) {
-        if span.start >= span.end {
-            return;
-        }
-        let at = self.text.len();
-        self.text.push_str(&source[span.range()]);
-        self.map.push_exact(at, span.start, span.end - span.start);
-        self.extend_span(span);
-        for (i, c) in source[span.range()].char_indices() {
-            if c == '\n' {
-                self.breaks.push(at + i);
-            }
-        }
-    }
-
-    fn opaque(&mut self, value: &str, span: Span) {
-        let at = self.text.len();
-        self.text.push_str(value);
-        self.map.push_opaque(at, value.len(), span);
-        self.extend_span(span);
-        for (i, c) in value.char_indices() {
-            if c == '\n' {
-                self.breaks.push(at + i);
-            }
-        }
-    }
-
-    fn extend_span(&mut self, span: Span) {
-        self.span = Some(Span::new(
-            self.span.map_or(span.start, |s| s.start),
-            span.end,
-        ));
-    }
-
-    fn finish(&mut self, out: &mut Vec<Block>) {
-        let b = std::mem::take(self);
-        self.keep_non_japanese = b.keep_non_japanese;
-        let trimmed = b.text.trim();
-        if trimmed.is_empty()
-            || !b.keep_non_japanese && !crate::text::contains_japanese(trimmed)
-            || ["http://", "https://", "ftp://"]
-                .iter()
-                .any(|prefix| trimmed.starts_with(prefix))
-                && !trimmed.chars().any(char::is_whitespace)
-        {
-            return;
-        }
-        out.push(Block {
-            kind: BlockKind::Paragraph,
-            text: b.text,
-            map: b.map,
-            span: b.span.unwrap_or(Span::new(0, 0)),
-            in_quote: false,
-            in_footnote: false,
-            line_breaks: b.breaks,
-            sentence_breaks: b.sentence_breaks,
-            marks: Vec::new(),
-            sentences: 0..0,
-        });
-    }
-}
-
-/// Markdown からは本文だけを取り、コードの検査では表示属性も取る。
-pub(super) fn html_body(source: &str, root: Node<'_>) -> (Vec<Block>, String, bool) {
-    markup::body(source, root)
 }
 
 #[cfg(test)]

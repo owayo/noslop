@@ -17,6 +17,7 @@ readme-languages = ["ja"]
 [[bin]]
 name = "noslop"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "noslop"
@@ -29,68 +30,83 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.106", default-features = false, features = ["analyzer", "download"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.106", default-features = false, features = ["analyzer"] }
 
 [features]
-default = ["bundled-dict"]
+default = ["cli", "bundled-dict"]
+# 配布する CLI は、すべての言語と連携機能を有効にする。
+cli = ["code", "dictionary-download", "dep:clap", "dep:anstream", "dep:anyhow", "dep:globset", "dep:ignore", "dep:process-wrap", "dep:sha2"]
+# ライブラリでは、コードの検査を文書の検査と別に選べる。
+code = [
+    "dep:tree-sitter", "dep:tree-sitter-bash", "dep:tree-sitter-c",
+    "dep:tree-sitter-c-sharp", "dep:tree-sitter-cpp", "dep:tree-sitter-css",
+    "dep:tree-sitter-go", "dep:tree-sitter-html", "dep:tree-sitter-java",
+    "dep:tree-sitter-javascript", "dep:tree-sitter-kotlin-ng", "dep:tree-sitter-lua",
+    "dep:tree-sitter-php", "dep:tree-sitter-python", "dep:tree-sitter-ruby",
+    "dep:tree-sitter-rust", "dep:tree-sitter-swift", "dep:tree-sitter-toml-ng",
+    "dep:tree-sitter-typescript", "dep:tree-sitter-yaml",
+]
+dictionary-download = ["hasami/download", "dep:sha2"]
 # 形態素解析の辞書 (dict/ipadic.hsd) をバイナリに埋め込む。外すと、辞書は --dict・設定の
 # dictionary・HASAMI_DICT・~/.local/share/hasami から探し、なければ辞書なしの近似で判定する
 bundled-dict = []
 
 [dependencies]
 aho-corasick = "1.1.5"
-anstream = "1.0.0"
+anstream = { version = "1.0.0", optional = true }
 anstyle = "1.0.14"
-anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
-globset = "0.4.20"
+anyhow = { version = "1.0.104", optional = true }
+clap = { version = "4.6.7", features = ["derive", "wrap_help"], optional = true }
+globset = { version = "0.4.20", optional = true }
 # 文分割 (辞書を使わない hasami::sentence) と、辞書があるときの形態素解析 (analyzer)、配布辞書の取得
 # (download。noslop dict download が使う。HTTP は ureq の rustls で、社内の CA を入れた環境でも通るよう
 # OS の証明書ストアで検証する。圧縮版の展開は ruzstd)。crates.io の同名クレートは別物なので、git の
 # タグで入れる。既定の feature (cli) は辞書の構築と CLI の依存を引くので切る
 hasami = { workspace = true }
-ignore = "0.4.33"
+ignore = { version = "0.4.33", optional = true }
+html5gum = { version = "0.8.4", default-features = false }
 pulldown-cmark = { version = "0.13.4", default-features = false }
-process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object"] }
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object"], optional = true }
 rayon = "1.12.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # gws のフックが止めた書き込みの記録の名前 (セッション・書き込み先・値のハッシュ)。hasami の download と
 # 同じ版で、依存の木に新しく加わらない
-sha2 = "0.11.0"
+sha2 = { version = "0.11.0", optional = true }
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
 toon-format = { version = "0.6.1", default-features = false }
 toml = "1.1.8"
-# コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。文法はすべて常に入れる (feature で分けない)。
+# コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。code で全言語をまとめて有効にする。
 # 文法の crate は tree-sitter 0.27 で読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の
 # 対応を確かめる)
-tree-sitter = "0.27.1"
-tree-sitter-bash = "=0.25.1"
-tree-sitter-c = "=0.24.2"
-tree-sitter-c-sharp = "=0.23.5"
-tree-sitter-cpp = "=0.23.4"
-tree-sitter-css = "=0.25.0"
-tree-sitter-go = "=0.25.0"
-tree-sitter-html = "=0.23.2"
-tree-sitter-java = "=0.23.5"
-tree-sitter-javascript = "=0.25.0"
-tree-sitter-kotlin-ng = "=1.1.0"
-tree-sitter-lua = "=0.5.0"
-tree-sitter-php = "=0.25.1"
-tree-sitter-python = "=0.25.0"
+tree-sitter = { version = "0.27.1", optional = true }
+tree-sitter-bash = { version = "=0.25.1", optional = true }
+tree-sitter-c = { version = "=0.24.2", optional = true }
+tree-sitter-c-sharp = { version = "=0.23.5", optional = true }
+tree-sitter-cpp = { version = "=0.23.4", optional = true }
+tree-sitter-css = { version = "=0.25.0", optional = true }
+tree-sitter-go = { version = "=0.25.0", optional = true }
+tree-sitter-html = { version = "=0.23.2", optional = true }
+tree-sitter-java = { version = "=0.23.5", optional = true }
+tree-sitter-javascript = { version = "=0.25.0", optional = true }
+tree-sitter-kotlin-ng = { version = "=1.1.0", optional = true }
+tree-sitter-lua = { version = "=0.5.0", optional = true }
+tree-sitter-php = { version = "=0.25.1", optional = true }
+tree-sitter-python = { version = "=0.25.0", optional = true }
 # astro-sight と同じく owayo のフォークを使う
-tree-sitter-ruby = { git = "https://github.com/owayo/tree-sitter-ruby.git", branch = "master" }
-tree-sitter-rust = "=0.24.2"
+tree-sitter-ruby = { git = "https://github.com/owayo/tree-sitter-ruby.git", branch = "master", optional = true }
+tree-sitter-rust = { version = "=0.24.2", optional = true }
 # SQL (tree-sitter-sequel) は入れない: cc を ~1.2 に固定させ、ring が引く新しい cc とぶつかるため
-tree-sitter-swift = "=0.7.4"
-tree-sitter-toml-ng = "=0.7.0"
-tree-sitter-typescript = "=0.23.2"
-tree-sitter-yaml = "=0.7.2"
+tree-sitter-swift = { version = "=0.7.4", optional = true }
+tree-sitter-toml-ng = { version = "=0.7.0", optional = true }
+tree-sitter-typescript = { version = "=0.23.2", optional = true }
+tree-sitter-yaml = { version = "=0.7.2", optional = true }
 unicode-width = "0.2.2"
 
 [dev-dependencies]
+anstream = "1.0.0"
 assert_cmd = "2.2.2"
 # テストで小さな辞書を組み立てる (build)。CI に辞書を置かずに、辞書ありの判定を確かめるため
 hasami = { workspace = true, features = ["build"] }
@@ -107,3 +123,31 @@ sha2 = "0.11.0"
 lto = true
 codegen-units = 1
 strip = true
+
+[[test]]
+name = "cli"
+required-features = ["cli"]
+
+[[test]]
+name = "code_comments"
+required-features = ["cli"]
+
+[[test]]
+name = "gws_hook"
+required-features = ["cli"]
+
+[[test]]
+name = "integrations"
+required-features = ["cli"]
+
+[[test]]
+name = "review"
+required-features = ["cli"]
+
+[[test]]
+name = "static_code_text"
+required-features = ["cli"]
+
+[[test]]
+name = "stop_hook"
+required-features = ["cli"]

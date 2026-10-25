@@ -4,10 +4,7 @@ use super::{
     Builder, CodeLanguage,
     decode::{self, Mode},
 };
-use crate::{
-    diagnostic::Span,
-    document::{Block, BlockKind},
-};
+use crate::{diagnostic::Span, document::Block};
 use tree_sitter::Node;
 
 const DISPLAY_ATTRIBUTES: &[&str] = &[
@@ -236,82 +233,6 @@ fn html_children<'t>(source: &str, n: Node<'t>, line_break: bool) -> Vec<Task<'t
         }
     }
     ordered
-}
-
-/// 本文のブロックと、次の Markdown ブロックにも続く HTML 要素を返す。
-pub(super) fn body(source: &str, root: Node<'_>) -> (Vec<Block>, String, bool) {
-    let mut blocks = Vec::new();
-    extract_with_attributes(source, CodeLanguage::Html, root, &[], &mut blocks, false);
-    for block in &mut blocks {
-        let mut node = root.descendant_for_byte_range(block.span.start, block.span.end);
-        let mut kind = None;
-        while let Some(n) = node {
-            if is_element(n)
-                && let Some(open) = opening(n)
-            {
-                let tag = tag_name(open, source).to_ascii_lowercase();
-                let k = match tag.as_str() {
-                    "h1" => Some(BlockKind::Heading(1)),
-                    "h2" => Some(BlockKind::Heading(2)),
-                    "h3" => Some(BlockKind::Heading(3)),
-                    "h4" => Some(BlockKind::Heading(4)),
-                    "h5" => Some(BlockKind::Heading(5)),
-                    "h6" => Some(BlockKind::Heading(6)),
-                    "li" => Some(BlockKind::ListItem),
-                    "td" | "th" => Some(BlockKind::TableCell),
-                    _ => None,
-                };
-                kind = kind.or(k);
-                block.in_quote |= tag == "blockquote";
-            }
-            node = n.parent();
-        }
-        block.kind = kind.unwrap_or(BlockKind::Paragraph);
-    }
-    // 不完全なタグは ERROR の下にも現れる。タグのノードを順に読み、閉じるまで持ち越す。
-    let mut nodes = vec![root];
-    let mut stack: Vec<(&str, &str, bool)> = Vec::new();
-    while let Some(n) = nodes.pop() {
-        if n.kind() == "end_tag" {
-            let name = tag_name(n, source);
-            if let Some(at) = stack
-                .iter()
-                .rposition(|(open, _, _)| open.eq_ignore_ascii_case(name))
-            {
-                stack.truncate(at);
-            }
-            continue;
-        }
-        if matches!(n.kind(), "start_tag" | "self_closing_tag") {
-            let name = tag_name(n, source);
-            let tag = name.to_ascii_lowercase();
-            let raw = &source[n.byte_range()];
-            let does_not_carry = [
-                "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
-                "param", "source", "track", "wbr", "p", "li", "td", "th", "dt", "dd", "option",
-                "optgroup", "thead", "tbody", "tfoot", "tr", "html", "head", "body",
-            ]
-            .contains(&tag.as_str());
-            if !does_not_carry && !raw.ends_with("/>") {
-                stack.push((
-                    name,
-                    raw,
-                    EXCLUDED.contains(&tag.as_str()) || tag == "textarea" || hidden(n, source),
-                ));
-            }
-            continue;
-        }
-        let mut c = n.walk();
-        nodes.extend(
-            n.named_children(&mut c)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev(),
-        );
-    }
-    let excluded = stack.iter().any(|(_, _, excluded)| *excluded);
-    let pending = stack.into_iter().map(|(_, raw, _)| raw).collect();
-    (blocks, pending, excluded)
 }
 
 fn opening(n: Node<'_>) -> Option<Node<'_>> {

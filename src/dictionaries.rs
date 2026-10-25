@@ -11,7 +11,7 @@
 //!   確かめる)。目録の辞書の形式が依存の hasami で読めることもテストで確かめる
 //! - 取得そのもの (HTTP・zstd の展開・大きさと SHA-256 の照合・辞書として読めることの確認・一時ファイル
 //!   からの置き換え) は hasami の `download` (feature `download`) に任せる。noslop は目録の値と取得元を
-//!   固定して渡し、誤りを日本語に言い換える ([`download`])。既定では zstd で圧縮した版 (`<名前>.hsd.zst`。
+//!   固定して渡し、誤りを日本語に言い換える (`download`、feature `dictionary-download`)。既定では zstd で圧縮した版 (`<名前>.hsd.zst`。
 //!   3 分の 1 ほどの大きさ) を取って展開し、圧縮版と展開後の両方を確かめる。圧縮版を置いていない取得元
 //!   (ミラー) では、展開前の辞書を取る指定 (`--uncompressed`) を使う
 //! - 取得した辞書は、辞書を指定しないとき (`auto`) に使う。share ディレクトリの配布辞書のうち、依存の
@@ -23,9 +23,11 @@
 //! - 取得は保存先と同じディレクトリの一時ファイルに書き、確かめてから rename で置く。途中で失敗しても、
 //!   置き場所にある既存のファイルは消さず、壊さない (hasami の `download` の動き)
 
+#[cfg(feature = "dictionary-download")]
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "dictionary-download")]
 use hasami::download::{
     CompressedFile, DistributedDict, DownloadError as HasamiError, DownloadOptions,
     Outcome as HasamiOutcome, Verification,
@@ -75,6 +77,7 @@ impl Distributed {
     }
 
     /// hasami の取得の API に渡す形。
+    #[cfg(feature = "dictionary-download")]
     fn to_hasami(self) -> DistributedDict {
         let mut dict = DistributedDict::new(self.name, self.size, self.sha256);
         dict.summary = self.summary.to_string();
@@ -218,6 +221,7 @@ fn existing(path: PathBuf, name: &str) -> Result<PathBuf, ShareError> {
 
 /// 置き場所のファイルの状態。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "dictionary-download")]
 pub enum Check {
     /// ファイルがない。
     Missing,
@@ -229,6 +233,7 @@ pub enum Check {
 
 /// 置き場所のファイルを、配布辞書の大きさと SHA-256 で確かめる。大きさが違えばハッシュを計算しない
 /// (`hasami::download::verify`)。
+#[cfg(feature = "dictionary-download")]
 pub fn check_file(path: &Path, dict: &Distributed) -> io::Result<Check> {
     Ok(match hasami::download::verify(path, &dict.to_hasami())? {
         Verification::Missing => Check::Missing,
@@ -239,6 +244,7 @@ pub fn check_file(path: &Path, dict: &Distributed) -> io::Result<Check> {
 
 /// 配布辞書の一覧の 1 行 ([`list`])。
 #[derive(Debug)]
+#[cfg(feature = "dictionary-download")]
 pub struct Listed {
     pub dictionary: &'static Distributed,
     /// 置き場所 (`<dir>/<名前>.hsd`)。
@@ -248,6 +254,7 @@ pub struct Listed {
 }
 
 /// 各配布辞書の、`dir` の中の置き場所とその状態。通信しない。
+#[cfg(feature = "dictionary-download")]
 pub fn list(dir: &Path) -> Vec<Listed> {
     let all: &'static [Distributed] = &DICTIONARIES;
     all.iter()
@@ -268,15 +275,18 @@ pub fn list(dir: &Path) -> Vec<Listed> {
 // ---------------------------------------------------------------------------
 
 /// hasami が、圧縮版を展開したものの誤りの出所 (`<URL>`) の後ろに付ける印。
+#[cfg(feature = "dictionary-download")]
 const DECOMPRESSED: &str = " (decompressed)";
 
 /// 取得の失敗 (hasami の取得の誤りを、利用者向けの日本語に言い換えたもの)。
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
+#[cfg(feature = "dictionary-download")]
 pub struct DownloadError {
     message: String,
 }
 
+#[cfg(feature = "dictionary-download")]
 impl DownloadError {
     /// hasami の誤りを言い換える。`dict` は取ろうとした辞書。
     fn from_hasami(e: HasamiError, dict: &Distributed) -> Self {
@@ -383,6 +393,7 @@ impl DownloadError {
 /// 受け取るたびに呼ぶ。圧縮版を取るときの全体は圧縮版の大きさ ([`Distributed::transfer_size`])。
 /// 非圧縮版へ切り替えるときは、その大きさと受信 0 で呼び直す。
 /// 通信しないときは呼ばない。
+#[cfg(feature = "dictionary-download")]
 pub fn download(
     dict: &Distributed,
     dir: &Path,
@@ -407,6 +418,7 @@ pub fn download(
 mod tests {
     use std::fs;
 
+    #[cfg(feature = "dictionary-download")]
     use sha2::{Digest, Sha256};
 
     use super::*;
@@ -609,6 +621,7 @@ mod tests {
     /// 本体とテストは workspace の hasami を共有する。タグと同梱辞書の固定情報も、リンクした
     /// リリースと一致する (`make hasami-update` でそろえる)。
     #[test]
+    #[cfg(feature = "dictionary-download")]
     fn the_hasami_dependencies_point_to_the_linked_release() {
         let manifest: toml::Table = toml::from_str(include_str!("../Cargo.toml")).unwrap();
         assert_eq!(
@@ -635,6 +648,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// 中身 `bytes` の大きさと SHA-256 を持つ、テスト用の配布辞書 (圧縮版なし)。
+    #[cfg(feature = "dictionary-download")]
     fn distributed(name: &'static str, bytes: &[u8]) -> Distributed {
         let sha256: String = Sha256::digest(bytes)
             .iter()
@@ -650,6 +664,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "dictionary-download")]
     fn files_are_checked_by_size_and_hash() {
         let dir = tempfile::tempdir().unwrap();
         let dict = distributed("t", b"abcdef");
@@ -672,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "dictionary-download")]
     fn list_reports_each_distributed_dictionary() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("ipadic.hsd"), b"not the real one").unwrap();
@@ -690,6 +706,7 @@ mod tests {
     /// 目録の圧縮版の情報を落とさずに hasami に渡し、hasami の検証にも通る。受け取る大きさは圧縮版を
     /// 取るかで変わる。
     #[test]
+    #[cfg(feature = "dictionary-download")]
     fn catalog_entries_are_passed_to_hasami_with_the_compressed_file() {
         for dict in &DICTIONARIES {
             let converted = dict.to_hasami();
@@ -724,6 +741,7 @@ mod tests {
 
     /// 既存の中身にかかわらず取得を試み、接続できなければ既存のファイルを保つ。
     #[test]
+    #[cfg(feature = "dictionary-download")]
     fn failed_downloads_preserve_existing_files() {
         let dir = tempfile::tempdir().unwrap();
         let dict = distributed("t", b"abcdef");
@@ -743,6 +761,7 @@ mod tests {
 
     /// hasami の取得の誤りを、どこで何が起きたかが分かる日本語に言い換える。
     #[test]
+    #[cfg(feature = "dictionary-download")]
     fn download_errors_are_explained_in_japanese() {
         let dict = find(RECOMMENDED).unwrap();
         let zst = format!("{DEFAULT_SOURCE}/{}.zst", dict.file_name());
@@ -824,6 +843,7 @@ mod tests {
     /// 目録と同じことも確かめる。
     #[test]
     #[ignore = "ネットワークが必要"]
+    #[cfg(feature = "dictionary-download")]
     fn the_default_source_serves_the_catalog() {
         let remote = hasami::download::catalog_from(DEFAULT_SOURCE)
             .unwrap_or_else(|e| panic!("{DEFAULT_SOURCE}: {e}"));
@@ -847,6 +867,7 @@ mod tests {
     /// Release のワークフローが目録を更新したときに回す)。
     #[test]
     #[ignore = "ネットワークが必要 (目録の辞書をすべて圧縮版で取得し、非圧縮版の ipadic も取得する)"]
+    #[cfg(feature = "dictionary-download")]
     fn every_catalog_dictionary_can_be_downloaded_and_read() {
         let dir = tempfile::tempdir().unwrap();
         let smallest = &DICTIONARIES[0];

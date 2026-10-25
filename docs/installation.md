@@ -39,7 +39,7 @@ macOS でブラウザから取得した場合は、実行の前に隔離属性�
 ### cargo
 
 ```bash
-cargo install --git https://github.com/owayo/noslop --locked --no-default-features noslop
+cargo install --git https://github.com/owayo/noslop --locked --no-default-features --features cli noslop
 ```
 
 `--locked` を付けると、CI とリリースのビルドと同じく `Cargo.lock` のとおりに依存を解決します。この方法では辞書を同梱しません。取得した配布辞書・設定の辞書を使え、どちらもなければ辞書なしで動きます。同梱辞書を使う版は Homebrew・winget・GitHub Releases、または次のソースからの手順で入れます。

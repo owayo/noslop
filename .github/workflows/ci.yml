@@ -47,7 +47,7 @@ jobs:
       # クリーンなソースには HSD がない。同梱しないビルドは取得前にも動くことを確かめる。
       - name: Run tests before dictionary preparation
         if: runner.os == 'Linux'
-        run: cargo test --locked --workspace --no-default-features --no-fail-fast
+        run: cargo test --locked --workspace --no-default-features --features cli --no-fail-fast
 
       # 検査の中身は Makefile の ci が定義する (fmt-check・clippy・test・docs/rules.md の差分・
       # 辞書を同梱しないビルドのテスト)。
@@ -107,7 +107,10 @@ jobs:
       # (Makefile の ci を変えたらここも合わせる。docs/rules.md の差分は Linux と macOS で見る)
       - name: Check formatting (Windows)
         if: runner.os == 'Windows'
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path tests/fixtures/document-only/Cargo.toml -- --check
 
       - name: Run clippy (Windows)
         if: runner.os == 'Windows'
@@ -119,7 +122,24 @@ jobs:
 
       - name: Run tests without the bundled dictionary (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --locked --workspace --no-default-features --no-fail-fast
+        run: cargo test --locked --workspace --no-default-features --features cli --no-fail-fast
+
+      - name: Check library features (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($features in @('', 'code', 'dictionary-download', 'bundled-dict')) {
+            $featureArgs = @()
+            if ($features) { $featureArgs = @('--features', $features) }
+            cargo clippy --locked -p noslop --no-default-features @featureArgs --all-targets -- -D warnings
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --locked -p noslop --no-default-features @featureArgs --no-fail-fast
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Check library embedding (Windows)
+        if: runner.os == 'Windows'
+        run: cargo run --locked -p noslop-xtask -- check-library
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

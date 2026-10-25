@@ -7,16 +7,20 @@ pub mod text;
 pub mod toon;
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::io::{self, Write};
 
 use crate::config::FailOn;
 use crate::document::Document;
-use crate::engine::{Engine, RunReport};
+use crate::engine::Engine;
+#[cfg(feature = "cli")]
+use crate::engine::RunReport;
 use crate::genre::Genre;
 use crate::rules::RuleMeta;
 
 /// 検査結果の内容と形式。引数の既定値や組み合わせの検証は CLI・MCP それぞれで行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "cli")]
 pub(crate) enum CheckOutput {
     Text,
     Json,
@@ -27,6 +31,7 @@ pub(crate) enum CheckOutput {
     BriefToon,
 }
 
+#[cfg(feature = "cli")]
 impl CheckOutput {
     /// 選んだ形式で書き出す。端末の色・バッファリング・標準エラーへの出力は呼び出し元が扱う。
     pub(crate) fn render(

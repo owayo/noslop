@@ -18,12 +18,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::code::CodeLanguage;
 use crate::diagnostic::{Lane, Severity};
+use crate::document::DEFAULT_EXTENSIONS;
 use crate::genre::Genre;
+use crate::language::CodeLanguage;
 use crate::morph::MorphologyMode;
 use crate::segment::LineBreakMode;
-use crate::walk::DEFAULT_EXTENSIONS;
 
 /// 探索する設定ファイルの名前 (優先順)。
 pub const CONFIG_FILE_NAMES: [&str; 2] = ["noslop.toml", ".noslop.toml"];

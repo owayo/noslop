@@ -18,7 +18,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use crate::config::ConfigError;
 
 /// 既定で検査する拡張子。
-pub const DEFAULT_EXTENSIONS: [&str; 3] = ["md", "markdown", "txt"];
+pub use crate::document::DEFAULT_EXTENSIONS;
 
 /// 独自の除外ファイル名 (`.gitignore` と同じ書式)。
 pub const IGNORE_FILE_NAME: &str = ".noslopignore";

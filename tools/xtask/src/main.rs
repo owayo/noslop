@@ -8,6 +8,7 @@ use hasami::download::{DistributedDict, DownloadOptions};
 
 #[path = "../../bundled_manifest.rs"]
 mod bundled_manifest;
+mod library;
 #[path = "../../dict_bundled.rs"]
 mod update;
 
@@ -27,6 +28,7 @@ fn run() -> Result<(), String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
+        [command] if command == "check-library" => library::check(&root),
         [command] if command == "prepare" || command == "check" => {
             let manifest = read_manifest(&root.join("dict/bundled.json"))?;
             check_tag(&manifest)?;
@@ -45,7 +47,7 @@ fn run() -> Result<(), String> {
             let tag = tag.to_str().ok_or("タグが UTF-8 ではありません")?;
             update::update(&root, Path::new(dir), tag)
         }
-        _ => Err("使い方: cargo run --locked -p noslop-xtask -- prepare | check | update <取得したディレクトリ> <タグ>".into()),
+        _ => Err("使い方: cargo run --locked -p noslop-xtask -- prepare | check | check-library | update <取得したディレクトリ> <タグ>".into()),
     }
 }
 

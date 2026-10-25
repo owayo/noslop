@@ -303,8 +303,8 @@ struct Builder<'a> {
     html_spans: Vec<Span>,
     html_text: String,
     html_map: TextMap,
-    html_body: crate::code::HtmlBody,
-    inline_html_body: crate::code::HtmlBody,
+    html_body: crate::html::HtmlBody,
+    inline_html_body: crate::html::HtmlBody,
     current: Option<Current>,
     quote_depth: usize,
     footnote_depth: usize,
@@ -327,8 +327,8 @@ impl<'a> Builder<'a> {
             html_spans: Vec::new(),
             html_text: String::new(),
             html_map: TextMap::default(),
-            html_body: crate::code::HtmlBody::default(),
-            inline_html_body: crate::code::HtmlBody::default(),
+            html_body: crate::html::HtmlBody::default(),
+            inline_html_body: crate::html::HtmlBody::default(),
             current: None,
             quote_depth: 0,
             footnote_depth: 0,
@@ -543,7 +543,7 @@ impl<'a> Builder<'a> {
         match tag {
             TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell => {
                 self.flush();
-                self.inline_html_body = crate::code::HtmlBody::default();
+                self.inline_html_body = crate::html::HtmlBody::default();
             }
             TagEnd::BlockQuote(_) => {
                 self.flush();
