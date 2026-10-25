@@ -111,7 +111,7 @@ winget install owayo.noslop
 Rust 1.98 以上が必要です。
 
 ```bash
-cargo install --git https://github.com/owayo/noslop --locked --no-default-features noslop
+cargo install --git https://github.com/owayo/noslop --locked --no-default-features --features cli noslop
 ```
 
 Cargo から直接入れる版は辞書を同梱しません。辞書を同梱した版は Homebrew・winget・GitHub Releases、またはソースから `make install` で入れられます。辞書本体は Git に置かず、ビルド前に固定した版と SHA-256 で取得・照合します。
@@ -232,6 +232,35 @@ dictionary = "bundled"
 
 重ね方・独自ルール・抑制コメント・ジャンルは [設定と抑制コメント](docs/configuration.md) に、全項目は [設定の例](examples/noslop.toml) にあります。
 
+## ライブラリとして使う
+
+Markdown・テキストの検査と改稿前後の比較だけを使う場合は、既定の feature を外します。tree-sitter・CLI・フック・シェル連携・辞書の取得処理を依存に含めないので、別の tree-sitter を使うアプリにも組み込めます。
+
+```toml
+[dependencies]
+noslop = { git = "https://github.com/owayo/noslop", default-features = false }
+```
+
+```rust
+use noslop::{Document, engine::{Engine, EngineOptions}};
+
+let engine = Engine::new(EngineOptions::default())?;
+let before = engine.lint(Document::markdown("<p>料金は100円です。</p>"));
+let after = engine.lint(Document::plain_text("料金は200円です。"));
+let comparison = noslop::diff::compare(&engine, before, after)?;
+```
+
+Markdown 内の HTML 本文も検査し、見出し・リスト・表・引用と原文の位置を保ちます。辞書は同梱しません。辞書がなければ近似で判定し、手元の辞書を使う場合は `EngineOptions::morphology` で指定します。
+
+| feature | 有効になる機能 |
+|---|---|
+| `code` | コードのコメント・静的な文言の検査（全言語の tree-sitter 文法）|
+| `dictionary-download` | 配布辞書の取得・検証・一覧 |
+| `cli` | CLI・MCP・フック・シェル連携・レビュー。`code` と `dictionary-download` も有効にする |
+| `bundled-dict` | 準備済みの辞書を同梱する。ソースからビルドする前に `make dict-bundled` が必要 |
+
+既定は `cli` と `bundled-dict` で、配布する CLI の機能はすべて有効です。ライブラリでも `features = ["code"]` などで必要な機能を加えられます。入力形式は feature にかかわらず同じです。`code` を外してコードを指定すると、`Document::try_parse`・`Engine::try_lint_source`・`Engine::run` は誤りを返します。`Document::parse` と `Engine::lint_source` は、未対応の形式を指定すると panic するため、形式が実行時に決まる場合は `try_` の API を使ってください。
+
 ## 開発
 
 <!-- standard:dev:start -->
@@ -249,6 +278,10 @@ make ci      # CI と同じ検査 (書き換えない)
 | `make release` | リリース版をビルドする |
 | `make run` | デバッグ版を実行する (引数は ARGS="...") |
 | `make test` | テストを実行する |
+| `make test-no-default-features` | 文書用ライブラリだけでテストする (--no-default-features) |
+| `make test-no-bundled-dict` | 辞書を同梱しない CLI でテストする |
+| `make test-library` | ライブラリの feature ごとに clippy とテストを実行する |
+| `make test-embedding` | 別の tree-sitter を使うアプリへの組み込みを確かめる |
 | `make lint` | clippy を警告ゼロで通す |
 | `make fmt` | コードを整形する (書き換える) |
 | `make fmt-check` | 整形済みかを確かめる (書き換えない) |

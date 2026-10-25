@@ -22,7 +22,10 @@ make ci      # CI と同じ検査
 | `make install` | リリース版を INSTALL_PATH (既定 /usr/local/bin) に入れる (スキルも入れる) |
 | `make uninstall` | INSTALL_PATH から取り除く (スキルは残す) |
 | `make test` | テストを実行する |
-| `make test-no-default-features` | 辞書を同梱しないビルドでテストする (--no-default-features) |
+| `make test-no-default-features` | 文書用ライブラリだけでテストする (--no-default-features) |
+| `make test-no-bundled-dict` | 辞書を同梱しない CLI でテストする |
+| `make test-library` | ライブラリの feature ごとに clippy とテストを実行する |
+| `make test-embedding` | 別の tree-sitter を使うアプリへの組み込みを確かめる |
 | `make lint` | clippy を警告ゼロで通す |
 | `make clippy` | lint の別名 |
 | `make fmt` | コードを整形する (書き換える) |
@@ -39,7 +42,7 @@ make ci      # CI と同じ検査
 | `make dict-check` | 目録の辞書を実際に取得し (圧縮版を展開する)、大きさ・SHA-256・読めることを確かめる (通信が要る) |
 | `make help` | このヘルプを表示する |
 
-`make ci` は、フォーマットの確認、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かの確認、辞書を同梱しないビルドのテストを実行します。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
+`make ci` は、フォーマット、clippy（警告はエラー）、テスト、`docs/rules.md` が最新かを確かめます。辞書を同梱しない CLI と、ライブラリの各 feature も検査します。別の tree-sitter への組み込みでは、独立したアプリで文書の検査と改稿の比較を動かします。CI は Linux と macOS で `make setup` と `make ci` を実行し、Windows では make を使わず、`docs/rules.md` の確認以外の検査を cargo で直接実行します。ルールの定義や説明文を変えたら、`make docs` で `docs/rules.md` を作り直してください。忘れると `make ci` が失敗します。
 
 cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに依存を解決します。依存を足した直後など、`Cargo.lock` を更新したいときは `CARGO_FLAGS=` を付けます。mise を使わない場合は `SYSTEM_TOOLS=1` を付けると、`PATH` 上のツールで動きます（ツールの版はそろいません）。
 

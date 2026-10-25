@@ -81,4 +81,4 @@ noslop check docs/ --dict share:ipadic-neologd-sudachi
 
 share ディレクトリの外に置いた辞書は、ファイルのパスで指定します（`--dict path/to/ipadic-neologd.hsd`）。
 
-辞書を同梱しないバイナリは `cargo build --release --no-default-features` で作れます。このときの `auto` は、share ディレクトリに配布辞書がなければ、ほかの `*.hsd` を名前順に探します。それもなければ辞書なしの近似で判定します（`mode = "required"` なら設定の誤り）。`bundled` は使えず、設定の誤りになります。
+辞書を同梱しないバイナリは `cargo build --release --no-default-features --features cli` で作れます。このときの `auto` は、share ディレクトリに配布辞書がなければ、ほかの `*.hsd` を名前順に探します。それもなければ辞書なしの近似で判定します（`mode = "required"` なら設定の誤り）。`bundled` は使えず、設定の誤りになります。

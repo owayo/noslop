@@ -748,6 +748,8 @@ mod tests {
     #[test]
     fn the_bundled_dictionary_is_ipadic_from_hasami() {
         let m = Morphology::bundled().unwrap();
+        let manifest: toml::Table = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+        let linked_tag = manifest["workspace"]["dependencies"]["hasami"]["tag"].as_str();
         assert_eq!(m.info().name, "ipadic");
         assert_eq!(m.info().source, DictionarySource::Bundled);
         assert_eq!(m.info().path, None);
@@ -757,7 +759,7 @@ mod tests {
                 .get(hasami::hsd::meta::KEY_HASAMI_VERSION)
                 .map(|version| format!("v{version}"))
                 .as_deref(),
-            Some(hasami::download::CURRENT_TAG),
+            linked_tag,
             "同梱の辞書が依存の hasami と同じリリースのものではない。make dict-bundled で上げる"
         );
         // 2 度目からは同じ辞書を共有する

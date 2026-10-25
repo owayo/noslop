@@ -504,35 +504,6 @@ fn html_line_breaks_read_display_attributes_once() {
 }
 
 #[test]
-fn html_line_breaks_keep_markdown_element_context() {
-    use crate::document::BlockKind;
-    for (src, kind, quote) in [
-        (
-            "<blockquote><p>前の行<br>次の行</p></blockquote>",
-            BlockKind::Paragraph,
-            true,
-        ),
-        (
-            "<ul><li>前の行<br>次の行</li></ul>",
-            BlockKind::ListItem,
-            false,
-        ),
-        (
-            "<table><tr><td>前の行<br>次の行</td></tr></table>",
-            BlockKind::TableCell,
-            false,
-        ),
-    ] {
-        let d = Document::markdown(src);
-        assert_eq!(d.blocks.len(), 1, "{src}");
-        assert_eq!(d.blocks[0].text, "前の行\n次の行", "{src}");
-        assert_eq!(d.blocks[0].kind, kind, "{src}");
-        assert_eq!(d.blocks[0].in_quote, quote, "{src}");
-        exact(&d);
-    }
-}
-
-#[test]
 fn excluded_attributes_and_subtrees_do_not_leak_expression_strings() {
     use CodeLanguage::*;
     let jsx = r#"const x = <div className={"除外する値"} href="除外するURL" onClick={() => "除外する式"} title={"表示する属性"}><p hidden={true}>隠れた文{"隠れた式"}</p><p hidden={false}>見える文</p><p aria-hidden="true">視覚的な文</p><script>{"除外するコード"}</script><pre>除外する例</pre><p>残る文</p></div>;"#;

@@ -7,17 +7,20 @@
 use std::ops::Range;
 use std::path::Path;
 
-use crate::code::CodeLanguage;
 use crate::diagnostic::Span;
+use crate::language::CodeLanguage;
 use crate::segment::{self, LineBreakMode};
 use crate::text;
+
+/// 既定で検査する文書の拡張子。
+pub const DEFAULT_EXTENSIONS: [&str; 3] = ["md", "markdown", "txt"];
 
 /// 入力の形式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFormat {
     Markdown,
     PlainText,
-    /// コードのファイル。コメントと静的な文言を読む ([`crate::code`])。
+    /// コードのファイル。コメントと静的な文言を読む (feature `code`)。
     Code(CodeLanguage),
 }
 
@@ -46,6 +49,13 @@ impl SourceFormat {
             SourceFormat::Code(_) => DocumentKind::Fragments,
         }
     }
+}
+
+/// このビルドで入力形式を読めない理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ParseError {
+    #[error("このビルドではコードを検査できません (feature `code` が必要です)")]
+    CodeUnavailable(CodeLanguage),
 }
 
 /// 文書の組み立て。文書や段落をまたいで数えるルールを当てられるかを決める。
@@ -176,7 +186,7 @@ impl TextMap {
     /// `outer` をつないだ対応表 (解析用テキスト → 原文) を返す。
     ///
     /// コードのコメントのように、原文から記号を外して並べた中間のテキストを読み直すときに使う
-    /// ([`crate::code`])。1:1 に写した区間は、`outer` の区間が切り替わる位置 (中間のテキストで行が
+    /// (feature `code`)。1:1 に写した区間は、`outer` の区間が切り替わる位置 (中間のテキストで行が
     /// 変わる位置など) で分け、`outer` でも 1:1 なら 1:1 のまま写す。ほかの区間は、中間のテキスト上の
     /// 範囲を `outer` で原文に戻した範囲全体に対応させる。
     pub fn compose(&self, outer: &TextMap) -> TextMap {
@@ -425,12 +435,29 @@ pub struct Document {
 
 impl Document {
     /// 原文を読み込んでブロックと文に分ける。
+    ///
+    /// # Panics
+    ///
+    /// `code` feature がないビルドでコードを指定すると panic する。
+    /// 入力形式が実行時に決まる場合は [`Self::try_parse`] を使う。
+    #[track_caller]
     pub fn parse(
         name: impl Into<String>,
         source: impl Into<String>,
         format: SourceFormat,
         options: &ParseOptions,
     ) -> Self {
+        Self::try_parse(name, source, format, options).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// 入力形式が使えることを確かめ、原文をブロックと文に分ける。
+    /// 使えないコードの入力を空の文書やテキストに置き換えない。
+    pub fn try_parse(
+        name: impl Into<String>,
+        source: impl Into<String>,
+        format: SourceFormat,
+        options: &ParseOptions,
+    ) -> Result<Self, ParseError> {
         let mut source: String = source.into();
         let bom_len = if source.starts_with('\u{FEFF}') {
             source.drain(..'\u{FEFF}'.len_utf8());
@@ -441,13 +468,16 @@ impl Document {
         let (mut blocks, directives) = match format {
             SourceFormat::Markdown => crate::markdown::parse(&source),
             SourceFormat::PlainText => crate::plaintext::parse(&source),
+            #[cfg(feature = "code")]
             SourceFormat::Code(language) => {
                 crate::code::parse_with_options(&source, language, options)
             }
+            #[cfg(not(feature = "code"))]
+            SourceFormat::Code(language) => return Err(ParseError::CodeUnavailable(language)),
         };
         let sentences = split_sentences(&mut blocks, options);
         let lines = LineIndex::new(&source);
-        Self {
+        Ok(Self {
             name: name.into(),
             format,
             kind: format.kind(),
@@ -457,7 +487,7 @@ impl Document {
             blocks,
             sentences,
             directives,
-        }
+        })
     }
 
     /// Markdown として読み込む (テスト・ライブラリ利用向けの近道)。
@@ -532,7 +562,8 @@ impl Document {
     pub fn body_char_count(&self) -> usize {
         let front_matter = match self.format {
             SourceFormat::Markdown => crate::markdown::front_matter_len(&self.source),
-            SourceFormat::PlainText | SourceFormat::Code(_) => 0,
+            SourceFormat::PlainText => 0,
+            SourceFormat::Code(_) => 0,
         };
         self.source[front_matter..].chars().count()
     }

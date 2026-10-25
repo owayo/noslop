@@ -15,7 +15,7 @@
 # macOS 標準の GNU Make 3.81 で動く書き方に限っている
 # (.ONESHELL / .SHELLFLAGS / $(file ...) / != は使わない)。
 
-.PHONY: help setup build release run install uninstall test test-no-default-features lint clippy fmt fmt-check check docs docs-check ci clean hasami-update dict-bundled dict-bundled-update dict-catalog dict-check
+.PHONY: help setup build release run install uninstall test test-no-default-features test-no-bundled-dict test-library test-embedding lint clippy fmt fmt-check check docs docs-check ci clean hasami-update dict-bundled dict-bundled-update dict-catalog dict-check
 
 # 引数なしの make はヘルプを表示する
 .DEFAULT_GOAL := help
@@ -98,12 +98,22 @@ uninstall: ## INSTALL_PATH から取り除く (スキルは残す)
 test: ## テストを実行する
 	$(RUN) cargo test $(CARGO_FLAGS) --workspace
 
-# 辞書を同梱しないビルド (#[cfg(not(feature = "bundled-dict"))] の側) をコンパイルしてテストする。
-# cargo は feature を切り替えるたびに target/debug/noslop を置き直すので、これを単独で
-# 回した後の target/debug/noslop は辞書を同梱しない版になる (次に既定の feature で
-# build・run・test すると、作り直さずに既定の版へ戻る)
-test-no-default-features: ## 辞書を同梱しないビルドでテストする (--no-default-features)
-	$(RUN) cargo test $(CARGO_FLAGS) --workspace --no-default-features
+# CLI も文法も含めない文書用ライブラリのビルド。
+test-no-default-features: ## 文書用ライブラリだけでテストする (--no-default-features)
+	$(RUN) cargo test $(CARGO_FLAGS) -p noslop --no-default-features
+
+# CLI は全機能を残し、辞書だけを同梱しない。
+test-no-bundled-dict: ## 辞書を同梱しない CLI でテストする
+	$(RUN) cargo test $(CARGO_FLAGS) --workspace --no-default-features --features cli
+
+test-library: ## ライブラリの feature ごとに clippy とテストを実行する
+	@for features in "" code dictionary-download bundled-dict; do \
+		$(RUN) cargo clippy $(CARGO_FLAGS) -p noslop --no-default-features --features "$$features" --all-targets -- -D warnings && \
+		$(RUN) cargo test $(CARGO_FLAGS) -p noslop --no-default-features --features "$$features" || exit 1; \
+	done
+
+test-embedding: ## 別の tree-sitter を使うアプリへの組み込みを確かめる
+	$(RUN) cargo run $(CARGO_FLAGS) -p noslop-xtask -- check-library
 
 lint: ## clippy を警告ゼロで通す
 	$(RUN) cargo clippy $(CARGO_FLAGS) --workspace --all-targets -- -D warnings
@@ -112,9 +122,11 @@ clippy: lint ## lint の別名
 
 fmt: ## コードを整形する (書き換える)
 	$(RUN) cargo fmt --all
+	$(RUN) cargo fmt --manifest-path tests/fixtures/document-only/Cargo.toml
 
 fmt-check: ## 整形済みかを確かめる (書き換えない)
 	$(RUN) cargo fmt --all -- --check
+	$(RUN) cargo fmt --manifest-path tests/fixtures/document-only/Cargo.toml -- --check
 
 check: fmt-check lint ## 整形と静的検査 (書き換えない)
 
@@ -131,9 +143,9 @@ docs-check: ## docs/rules.md が最新かを確かめる (書き換えない)
 	@diff -u docs/rules.md $(RULES_MD_TMP) || { echo "docs/rules.md が古くなっています。make docs で作り直してください" >&2; exit 1; }
 
 # CI の Linux と macOS のジョブはこれを呼ぶ。書き換えを含めない。
-# 同梱しないビルドのテストを先に回し、既定の feature の test と docs-check を後に置く。
+# ライブラリと同梱しない CLI のテストを先に回し、既定の test と docs-check を後に置く。
 # こうすると make ci の後の target/debug/noslop が既定の版 (辞書を同梱) になる
-ci: check test-no-default-features test docs-check ## CI と同じ検査 (書き換えない)
+ci: check test-library test-embedding test-no-bundled-dict test docs-check ## CI と同じ検査 (書き換えない)
 
 clean: ## ビルド成果物を消す
 	$(RUN) cargo clean

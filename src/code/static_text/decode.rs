@@ -58,7 +58,7 @@ pub(super) fn append(
             continue;
         }
         let decoded = match mode {
-            Mode::Html => entity(&s[at..]),
+            Mode::Html => crate::html::text::entity(&s[at..]),
             Mode::Verbatim => Some((2, "\"".to_string())),
             Mode::YamlSingle => Some((2, "'".to_string())),
             Mode::SwiftRaw(_) => escape(&s[at..], CodeLanguage::Swift, swift_prefix.len()),
@@ -105,26 +105,6 @@ pub(super) fn append(
         plain = at;
     }
     builder.exact(source, Span::new(span.start + plain, span.end));
-}
-
-fn entity(s: &str) -> Option<(usize, String)> {
-    // 採用する長さの上限までで打ち切り、未知の & が続いても残り全文を繰り返し走査しない。
-    let end = s.bytes().take(64).position(|b| b == b';')? + 1;
-    if !s[1..end - 1]
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'#')
-    {
-        return None;
-    }
-    let entity = &s[..end];
-    // Markdown の実体参照だけを渡すため、タグや装飾として読む副作用はない。
-    let text: String = pulldown_cmark::Parser::new(entity)
-        .filter_map(|e| match e {
-            pulldown_cmark::Event::Text(t) => Some(t.into_string()),
-            _ => None,
-        })
-        .collect();
-    (text != entity).then_some((end, text))
 }
 
 fn hex(s: &str, n: usize) -> Option<u32> {
@@ -331,7 +311,7 @@ pub(super) fn markup(
     out: &mut Vec<crate::document::Block>,
 ) {
     if !jsx {
-        html_space(source, span, builder, out);
+        crate::html::text::markup(source, span, builder);
         return;
     }
     let s = &source[span.range()];
@@ -378,28 +358,6 @@ pub(super) fn markup(
         }
         offset += lines[i].len() + 1;
     }
-}
-
-fn html_space(source: &str, span: Span, b: &mut Builder, out: &mut Vec<crate::document::Block>) {
-    let mut at = span.start;
-    let mut plain = at;
-    while at < span.end {
-        let c = source[at..span.end].chars().next().unwrap();
-        if !matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{c}') {
-            at += c.len_utf8();
-            continue;
-        }
-        append(source, Span::new(plain, at), Mode::Html, b, out);
-        let start = at;
-        while at < span.end && matches!(source.as_bytes()[at], b' ' | b'\t' | b'\r' | b'\n' | 12) {
-            at += 1;
-        }
-        if !b.text.ends_with(' ') {
-            b.opaque(" ", Span::new(start, at));
-        }
-        plain = at;
-    }
-    append(source, Span::new(plain, span.end), Mode::Html, b, out);
 }
 
 /// Go の数値エスケープは Unicode 符号位置ではなく文字列のバイトを指定する。

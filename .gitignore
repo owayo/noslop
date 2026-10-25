@@ -36,3 +36,6 @@ mise.local.toml
 *.hsd
 *.hsd.zst
 *.hsd.tmp
+
+# 組み込みの検証時、本体の lockfile を種にして作る。
+/tests/fixtures/document-only/Cargo.lock

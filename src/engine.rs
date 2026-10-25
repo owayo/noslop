@@ -283,9 +283,30 @@ impl Engine {
     }
 
     /// 原文を読み込んで lint する。
+    ///
+    /// # Panics
+    ///
+    /// `code` feature がないビルドでコードを指定すると panic する。
+    /// 入力形式が実行時に決まる場合は [`Self::try_lint_source`] を使う。
+    #[track_caller]
     pub fn lint_source(&self, name: String, source: String, format: SourceFormat) -> FileReport {
         let doc = Document::parse(name, source, format, &self.options.parse);
         self.lint(doc)
+    }
+
+    /// 入力形式が使えない場合は、ファイルの誤りとして返す。
+    pub fn try_lint_source(
+        &self,
+        name: String,
+        source: String,
+        format: SourceFormat,
+    ) -> Result<FileReport, FileError> {
+        self.read_input(Input::Text {
+            name,
+            source,
+            format,
+        })
+        .map(|doc| self.lint(doc))
     }
 
     /// 読み込み済みの文書を lint する。
@@ -366,7 +387,12 @@ impl Engine {
     pub(crate) fn read_input(&self, input: Input) -> Result<Document, FileError> {
         match input {
             Input::Path(path) => {
-                let name = crate::walk::display(&path);
+                let name = path.to_string_lossy();
+                let name = if std::path::MAIN_SEPARATOR == '\\' {
+                    name.replace('\\', "/")
+                } else {
+                    name.into_owned()
+                };
                 let bytes = std::fs::read(&path).map_err(|e| FileError {
                     path: name.clone(),
                     message: format!("読み込めません: {e}"),
@@ -376,18 +402,27 @@ impl Engine {
                     message: "UTF-8 として読めません (文字コードを UTF-8 にしてください)"
                         .to_string(),
                 })?;
-                Ok(Document::parse(
-                    name,
+                Document::try_parse(
+                    name.clone(),
                     source,
                     SourceFormat::from_path(&path),
                     &self.options.parse,
-                ))
+                )
+                .map_err(|e| FileError {
+                    path: name,
+                    message: e.to_string(),
+                })
             }
             Input::Text {
                 name,
                 source,
                 format,
-            } => Ok(Document::parse(name, source, format, &self.options.parse)),
+            } => Document::try_parse(name.clone(), source, format, &self.options.parse).map_err(
+                |e| FileError {
+                    path: name,
+                    message: e.to_string(),
+                },
+            ),
         }
     }
 }
