@@ -3,12 +3,17 @@
 pub mod brief;
 pub mod github;
 pub mod json;
+#[cfg(feature = "cli")]
+pub(crate) mod rule_info;
 pub mod text;
 pub mod toon;
 
 use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::io::{self, Write};
+
+#[cfg(feature = "cli")]
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::FailOn;
 use crate::document::Document;
@@ -17,6 +22,28 @@ use crate::engine::Engine;
 use crate::engine::RunReport;
 use crate::genre::Genre;
 use crate::rules::RuleMeta;
+
+/// 表示幅に合わせて右に空白を足す。
+#[cfg(feature = "cli")]
+pub(crate) fn pad_end(s: &str, width: usize) -> String {
+    let w = s.width();
+    if w >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - w))
+    }
+}
+
+/// 右にそろえる ([`pad_end`] の逆)。
+#[cfg(feature = "cli")]
+pub(crate) fn pad_start(s: &str, width: usize) -> String {
+    let w = s.width();
+    if w >= width {
+        s.to_string()
+    } else {
+        format!("{}{s}", " ".repeat(width - w))
+    }
+}
 
 /// 検査結果の内容と形式。引数の既定値や組み合わせの検証は CLI・MCP それぞれで行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

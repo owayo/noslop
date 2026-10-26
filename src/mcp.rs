@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::document::SourceFormat;
 use crate::engine::{Engine, EngineOptions, Input, RunReport};
 use crate::genre::Genre;
-use crate::output::{CheckOutput, RenderOptions, RuleCatalog};
+use crate::output::{CheckOutput, RenderOptions, RuleCatalog, rule_info};
 
 /// 対応する版 (新しい順)。
 pub const SUPPORTED_VERSIONS: [&str; 5] = [
@@ -386,14 +386,14 @@ impl Server {
         let entry = engine.find(rule).ok_or_else(|| {
             format!("未知のルールです: {rule} (`rules` ツールで一覧を確認できます)")
         })?;
-        Ok(crate::cli::explain_text(engine, entry))
+        Ok(rule_info::explain_text(engine, entry))
     }
 
     /// `rules`: ルールの一覧を返す。
     fn rules(&mut self, args: &Map<String, Value>) -> Result<String, String> {
         let genre = genre_arg(args)?;
         let (engine, _) = self.engine(genre)?;
-        Ok(crate::cli::rules_text(engine))
+        Ok(rule_info::rules_text(engine))
     }
 }
 
