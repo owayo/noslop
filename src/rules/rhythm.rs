@@ -4,7 +4,7 @@
 //! 地の文 ([`crate::document::Document::prose_sentences`]) で、校正に使った条件
 //! (見出し・リスト・引用・表を除いた本文) に合わせている。改行で並べた「ラベル: 値」の行
 //! ([`crate::document::Sentence::label_value`]) も母集団に入れない。
-//! 実験的な R21 だけは、見出しと独立した短い段落を対象にする。
+//! R21 だけは、見出しと独立した短い段落を対象にする。
 
 mod action_closer;
 mod antithesis;
@@ -139,7 +139,7 @@ fn option_count(key: &str, value: &toml::Value) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{Lane, RuleStatus, Severity};
+    use crate::diagnostic::{Lane, Severity, Signal};
     use crate::document::Document;
     use crate::rules::RuleContext;
     use crate::rules::testing::{self, assert_measures_agree};
@@ -368,22 +368,36 @@ mod tests {
         assert_eq!(ids, expected);
     }
 
+    /// 手掛かりの強さは、人の文書 440 本と生成文書 390 本で測った反応率から決めた値
+    /// (測れないものは中程度)。読みやすさのレーンのルールは持たない。
     #[test]
-    fn new_rules_are_experimental_slop_rules_with_the_explanation_template() {
+    fn lanes_and_signals_follow_the_calibration() {
+        for genre in Genre::ALL {
+            for rule in rules(genre) {
+                let m = rule.meta();
+                let signal = match m.id {
+                    "R01" | "R05" | "R07" | "R09" | "R17" | "R18" => Some(Signal::Strong),
+                    "R06" | "R10" | "R15" | "R16" | "R19" | "R21" => Some(Signal::Moderate),
+                    "R08" | "R11" | "R12" | "R13" => Some(Signal::Weak),
+                    _ => None,
+                };
+                assert_eq!(m.signal, signal, "{} ({genre})", m.id);
+                let lane = if signal.is_some() {
+                    Lane::Slop
+                } else {
+                    Lane::Readability
+                };
+                assert_eq!(m.lane, lane, "{}", m.id);
+            }
+        }
+    }
+
+    /// 説明は 5 つの見出しと直す前・直した後の例を持つ。AI 臭さのレーンのルールは根拠に
+    /// 手掛かりの強さを書き、読みやすさのレーンのルールは書かない。実行の区分 (試験的) は書かない。
+    #[test]
+    fn metas_follow_the_explanation_template() {
         for rule in rules(Genre::General) {
             let m = rule.meta();
-            if !matches!(
-                m.id,
-                "R11" | "R12" | "R13" | "R14" | "R15" | "R16" | "R17" | "R18" | "R19" | "R21"
-            ) {
-                continue;
-            }
-            let lane = if m.id == "R14" {
-                Lane::Readability
-            } else {
-                Lane::Slop
-            };
-            assert_eq!((m.lane, m.status), (lane, RuleStatus::Experimental));
             for section in [
                 "### 何を見るか",
                 "### なぜ問題か",
@@ -396,6 +410,17 @@ mod tests {
             assert!(m.explanation.contains("- 直す前: "), "{}", m.id);
             assert!(m.explanation.contains("- 直した後: "), "{}", m.id);
             assert!(!m.summary.contains('\n'), "{}", m.id);
+            for text in [m.summary, m.explanation] {
+                assert!(!text.contains("実験的"), "{}: {text}", m.id);
+            }
+            let basis = m.explanation.split("### 根拠").nth(1).unwrap_or_default();
+            match m.signal {
+                Some(signal) => {
+                    assert!(basis.contains("手掛かりの強さ"), "{}", m.id);
+                    assert!(basis.contains(signal.level_ja()), "{}", m.id);
+                }
+                None => assert!(!m.explanation.contains("手掛かりの強さ"), "{}", m.id),
+            }
         }
     }
 }

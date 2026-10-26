@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::code::CodeLanguage;
 use crate::config::{self, ConfigError, ConfigLayers, CustomRuleConfig, FailOn, LoadedConfig};
-use crate::diagnostic::{RuleStatus, Severity};
+use crate::diagnostic::{Severity, Signal};
 use crate::dictionaries::{self, Check, Distributed};
 use crate::document::{ParseOptions, SourceFormat};
 use crate::engine::{Engine, EngineOptions, Input, RuleEntry, Selection};
@@ -115,15 +115,12 @@ pub struct EngineArgs {
     /// 止めるルール (ID か名前、カンマ区切り)
     #[arg(long, value_delimiter = ',', value_name = "IDS")]
     pub ignore_rules: Vec<String>,
-    /// 有効にするルール (実験的なルールも個別に有効にできる)
+    /// 有効にするルール (設定で止めたルールや、ジャンルで既定から外れるルールを動かす)
     #[arg(long, value_delimiter = ',', value_name = "IDS")]
     pub enable_rules: Vec<String>,
-    /// 指定したルールだけを動かす (実験的なルールも動く)
+    /// 指定したルールだけを動かす
     #[arg(long, value_delimiter = ',', value_name = "IDS")]
     pub only_rules: Vec<String>,
-    /// 実験的な (未校正の) ルールと語句もすべて動かす
-    #[arg(long)]
-    pub experimental: bool,
     /// 読みやすさのルールを止める
     #[arg(long)]
     pub no_readability: bool,
@@ -224,12 +221,6 @@ pub struct CalibrateArgs {
     /// 検証用に取り分ける文書の割合 (0 以上 1 未満)
     #[arg(long, default_value_t = crate::calibrate::DEFAULT_HOLDOUT, value_name = "RATE")]
     pub holdout: f64,
-    /// 校正済みに上げる候補とする検出率の下限 (0 以上 1 以下)
-    #[arg(long, default_value_t = crate::calibrate::DEFAULT_MIN_DETECTION, value_name = "RATE")]
-    pub min_detection: f64,
-    /// 実験的なルールと語句を測らない (既定では既定の動作と別に測る)
-    #[arg(long)]
-    pub no_experimental: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
 }
@@ -242,9 +233,6 @@ pub struct RulesArgs {
     /// ジャンル (既定で有効かの判定に使う)
     #[arg(long, value_parser = parse_genre, value_name = "GENRE")]
     pub genre: Option<Genre>,
-    /// 実験的なルールも有効として表示する
-    #[arg(long)]
-    pub experimental: bool,
     #[command(flatten)]
     pub config: ConfigArgs,
 }
@@ -345,15 +333,12 @@ pub struct FileHookArgs {
 /// フックに共通の引数。
 #[derive(Debug, Clone, Args)]
 pub struct HookArgs {
-    /// 1 ルールあたりに返す箇所の上限 (unlimited で全件)
+    /// 1 ルールあたりに返す箇所の上限 (unlimited で全件。弱い手掛かりの情報の指摘も省かない)
     #[arg(long, default_value_t = 3, value_parser = parse_limit, value_name = "N")]
     pub brief_limit: usize,
     /// 読みやすさの指摘も返す
     #[arg(long)]
     pub include_readability: bool,
-    /// 実験的な (未校正の) ルールと語句も動かす
-    #[arg(long)]
-    pub experimental: bool,
     /// 文書のジャンル: general / tech / business / essay (別名 blog / minutes)
     #[arg(long, value_parser = parse_genre, value_name = "GENRE")]
     pub genre: Option<Genre>,
@@ -809,7 +794,6 @@ pub(crate) fn config_engine_options(cfg: &ConfigLayers, env: &Environment) -> En
     let (user_rules, project_rules) = (rules(user), rules(project));
     EngineOptions {
         genre: cfg.pick(|f| f.genre).unwrap_or_default(),
-        experimental: cfg.pick(|f| f.experimental).unwrap_or(false),
         scope: Scope {
             lists: cfg.pick(|f| f.scope.lists).unwrap_or(false),
             tables: cfg.pick(|f| f.scope.tables).unwrap_or(false),
@@ -883,7 +867,6 @@ fn engine_options(args: &EngineArgs, cfg: &ConfigLayers, env: &Environment) -> E
     if let Some(genre) = args.genre {
         options.genre = genre;
     }
-    options.experimental |= args.experimental;
     for kind in &args.include {
         match kind {
             IncludeArg::Lists => options.scope.lists = true,
@@ -991,11 +974,11 @@ fn check(args: CheckArgs) -> u8 {
         show_suppressed: args.show_suppressed,
         quiet: args.quiet,
         genre: engine.options().genre,
-        experimental: engine.options().experimental,
         fail_on,
         brief_limit: args.brief_limit,
         brief_compact: false,
         catalog: RuleCatalog::from_engine(&engine),
+        ..Default::default()
     };
 
     let report = if args.git_diff {
@@ -1251,10 +1234,8 @@ fn calibrate(args: CalibrateArgs) -> u8 {
         ai: args.ai,
         engine,
         walk,
-        include_experimental: !args.no_experimental,
         target_fp: args.target_fp,
         holdout: args.holdout,
-        min_detection: args.min_detection,
     };
     let report = match crate::calibrate::calibrate(&options) {
         Ok(report) => report,
@@ -1277,34 +1258,32 @@ fn calibrate(args: CalibrateArgs) -> u8 {
 }
 
 /// `rules` / `explain` 用のエンジン (選択は設定ファイルとジャンルだけで決める)。
-fn listing_engine(
-    config_args: &ConfigArgs,
-    genre: Option<Genre>,
-    experimental: bool,
-) -> Result<Engine, ConfigError> {
+fn listing_engine(config_args: &ConfigArgs, genre: Option<Genre>) -> Result<Engine, ConfigError> {
     let env = Environment::from_process();
     let cfg = load_config(config_args, &env)?;
     let mut options = config_engine_options(&cfg, &env);
     if let Some(genre) = genre {
         options.genre = genre;
     }
-    options.experimental |= experimental;
     Engine::new(options)
 }
 
-fn status_label(status: RuleStatus) -> &'static str {
-    match status {
-        RuleStatus::Stable => "校正済み (既定で有効)",
-        RuleStatus::Experimental => "実験的 (--experimental か設定で有効にしたときだけ動く)",
+/// 手掛かりの強さの説明 (`noslop explain` と生成するルールの一覧で使う)。
+fn signal_label(signal: Signal) -> &'static str {
+    match signal {
+        Signal::Strong => "強い (人の文書にほとんど出ず、生成文書に偏って出る)",
+        Signal::Moderate => {
+            "中程度 (生成文書に多いが人の文書にも出る。件数が少なく測れていないものも含む)"
+        }
+        Signal::Weak => "弱い (人の文書にも同じくらいかそれ以上に出る)",
     }
 }
 
-/// 校正の基準 (人の文書での誤検知率を、どの重大度以上の指摘で数えたか)。
+/// 校正の基準 (人の文書での誤検知率を、どの重大度以上の指摘で数えるか)。
 ///
-/// 校正済みの組み込みルールだけに付ける (実験的なルールと独自ルールは校正していない)。
+/// 組み込みルールだけに付ける (独自ルールは noslop のコーパスで測っていない)。
 fn calibration_basis(entry: &RuleEntry) -> Option<Severity> {
-    (entry.builtin && entry.rule.meta().status == RuleStatus::Stable)
-        .then(|| entry.rule.calibration_basis())
+    entry.builtin.then(|| entry.rule.calibration_basis())
 }
 
 fn calibration_basis_label(basis: Severity) -> &'static str {
@@ -1325,7 +1304,7 @@ fn pad(s: &str, width: usize) -> String {
 }
 
 fn rules(args: RulesArgs) -> u8 {
-    let engine = match listing_engine(&args.config, args.genre, args.experimental) {
+    let engine = match listing_engine(&args.config, args.genre) {
         Ok(e) => e,
         Err(e) => return error(e),
     };
@@ -1350,7 +1329,7 @@ pub(crate) fn rules_text(engine: &Engine) -> String {
         pad("ID", 5),
         pad("名前", 26),
         pad("レーン", 12),
-        pad("状態", 13),
+        pad("強さ", 7),
         pad("重大度", 8),
         pad("有効", 5),
         "日本語名"
@@ -1363,7 +1342,7 @@ pub(crate) fn rules_text(engine: &Engine) -> String {
             pad(m.id, 5),
             pad(m.name, 26),
             pad(m.lane.as_str(), 12),
-            pad(m.status.as_str(), 13),
+            pad(m.signal.map_or("-", Signal::level_ja), 7),
             pad(e.severity.unwrap_or(m.default_severity).as_str(), 8),
             pad(if e.enabled { "有効" } else { "-" }, 5),
             m.title
@@ -1393,7 +1372,7 @@ pub(crate) fn rules_json(engine: &Engine) -> String {
                 "name": m.name,
                 "title": m.title,
                 "lane": m.lane,
-                "status": m.status,
+                "signal": m.signal,
                 "defaultSeverity": m.default_severity,
                 "severity": e.severity.unwrap_or(m.default_severity),
                 "enabled": e.enabled,
@@ -1421,18 +1400,18 @@ fn rules_markdown(engine: &Engine) -> String {
         "このファイルは `noslop rules --format markdown --no-config` で生成しています。\n\n",
     );
     s.push_str(&format!("ジャンル `{genre}` での既定の状態です。\n\n"));
-    s.push_str("| ID | 名前 | 日本語名 | レーン | 状態 | 既定の重大度 | 既定で有効 |\n");
+    s.push_str("| ID | 名前 | 日本語名 | レーン | 手掛かりの強さ | 既定の重大度 | 既定で有効 |\n");
     s.push_str("|---|---|---|---|---|---|---|\n");
     for e in engine.entries() {
         let m = e.rule.meta();
         s.push_str(&format!(
-            "| [{id}](#{anchor}) | `{name}` | {title} | {lane} | {status} | {sev} | {enabled} |\n",
+            "| [{id}](#{anchor}) | `{name}` | {title} | {lane} | {signal} | {sev} | {enabled} |\n",
             id = m.id,
             anchor = m.id.to_ascii_lowercase(),
             name = m.name,
             title = m.title,
             lane = m.lane.as_str(),
-            status = m.status.as_str(),
+            signal = m.signal.map_or("-", Signal::level_ja),
             sev = m.default_severity.as_str(),
             enabled = if e.enabled { "✓" } else { "" },
         ));
@@ -1442,7 +1421,9 @@ fn rules_markdown(engine: &Engine) -> String {
         s.push_str(&format!("\n## {}\n\n", m.id));
         s.push_str(&format!("**{}** — {}\n\n", m.name, m.title));
         s.push_str(&format!("- レーン: {}\n", m.lane.label_ja()));
-        s.push_str(&format!("- 状態: {}\n", status_label(m.status)));
+        if let Some(signal) = m.signal {
+            s.push_str(&format!("- 手掛かりの強さ: {}\n", signal_label(signal)));
+        }
         s.push_str(&format!("- 既定の重大度: {}\n", m.default_severity));
         if let Some(basis) = calibration_basis(e) {
             s.push_str(&format!(
@@ -1485,7 +1466,7 @@ fn demote_headings(text: &str) -> String {
 }
 
 fn explain(args: ExplainArgs) -> u8 {
-    let engine = match listing_engine(&args.config, args.genre, false) {
+    let engine = match listing_engine(&args.config, args.genre) {
         Ok(e) => e,
         Err(e) => return error(e),
     };
@@ -1509,12 +1490,12 @@ pub(crate) fn explain_text(engine: &Engine, entry: &RuleEntry) -> String {
     let genre = engine.options().genre;
     let mut s = format!("{} {} — {}\n\n", m.id, m.name, m.title);
     s.push_str(&format!("  レーン      : {}\n", m.lane.label_ja()));
-    let status = if entry.builtin {
-        status_label(m.status)
-    } else {
-        "設定ファイルで定義した独自ルール (既定で有効)"
-    };
-    s.push_str(&format!("  状態        : {status}\n"));
+    if !entry.builtin {
+        s.push_str("  定義        : 設定ファイルで定義した独自ルール (既定で有効)\n");
+    }
+    if let Some(signal) = m.signal {
+        s.push_str(&format!("  手掛かり    : {}\n", signal_label(signal)));
+    }
     s.push_str(&format!("  既定の重大度: {}\n", m.default_severity));
     if let Some(sev) = entry.severity {
         s.push_str(&format!("  設定の重大度: {sev}\n"));
@@ -2050,9 +2031,47 @@ mod tests {
         assert!(Cli::try_parse_from(["noslop", "check", "--config", "a", "--no-config"]).is_err());
     }
 
+    /// 試験的なルールの区分はなくしたので、`--experimental` などの切り替えと設定の `experimental` は
+    /// 受け付けない (黙って無視すると、利用者が指定の意味を誤解したまま使い続けるため)。
+    #[test]
+    fn the_removed_experimental_switches_are_rejected() {
+        for argv in [
+            vec!["noslop", "check", "--experimental"],
+            vec!["noslop", "diff", "--experimental", "a.md", "b.md"],
+            vec!["noslop", "rules", "--experimental"],
+            vec!["noslop", "hook", "claude-code", "--experimental"],
+            vec!["noslop", "hook", "file", "--experimental", "a.md"],
+            vec!["noslop", "hook", "git-diff", "--experimental"],
+            vec![
+                "noslop",
+                "calibrate",
+                "--human",
+                "h",
+                "--ai",
+                "a",
+                "--no-experimental",
+            ],
+            vec![
+                "noslop",
+                "calibrate",
+                "--human",
+                "h",
+                "--ai",
+                "a",
+                "--min-detection",
+                "0.2",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&argv).is_err(), "{argv:?}");
+        }
+        let err = config::ConfigFile::parse("experimental = true\n", Path::new("noslop.toml"))
+            .unwrap_err();
+        assert!(err.to_string().contains("experimental"), "{err}");
+    }
+
     #[test]
     fn cli_values_override_config() {
-        let cfg_text = "genre = \"tech\"\nexperimental = true\nline_breaks = \"sentence\"\n[scope]\ntables = true\n[rules]\ndisable = [\"X\"]\n";
+        let cfg_text = "genre = \"tech\"\nline_breaks = \"sentence\"\n[scope]\ntables = true\n[rules]\ndisable = [\"X\"]\n";
         let file = config::ConfigFile::parse(cfg_text, Path::new("noslop.toml")).unwrap();
         let loaded = LoadedConfig {
             path: PathBuf::from("noslop.toml"),
@@ -2073,10 +2092,6 @@ mod tests {
         };
         let o = engine_options(&args.engine, &project_only(loaded), &Environment::default());
         assert_eq!(o.genre, Genre::Business);
-        assert!(
-            o.experimental,
-            "設定の experimental は CLI で指定しなくても効く"
-        );
         assert_eq!(o.parse.line_breaks, LineBreakMode::Space);
         assert!(o.scope.tables);
         assert_eq!(o.selection.config_disable, vec!["X"]);
@@ -2107,7 +2122,7 @@ mod tests {
             "config.toml",
             r#"
 genre = "tech"
-experimental = true
+line_breaks = "sentence"
 fail_on = "error"
 [scope]
 lists = true
@@ -2155,7 +2170,11 @@ mode = "required"
             Genre::Essay,
             "プロジェクトに書いた項目はプロジェクト"
         );
-        assert!(o.experimental, "プロジェクトに書いていない項目はユーザー");
+        assert_eq!(
+            o.parse.line_breaks,
+            LineBreakMode::Sentence,
+            "プロジェクトに書いていない項目はユーザー"
+        );
         assert!(o.scope.lists && !o.scope.tables);
         assert_eq!(
             layers.pick(|f| f.fail_on),
@@ -2229,7 +2248,7 @@ mode = "required"
         std::fs::create_dir_all(user_path.parent().unwrap()).unwrap();
         std::fs::write(&user_path, "genre = \"tech\"\n").unwrap();
         std::fs::write(project.path().join("noslop.toml"), "genre = \"essay\"\n").unwrap();
-        std::fs::write(other.path().join("other.toml"), "experimental = true\n").unwrap();
+        std::fs::write(other.path().join("other.toml"), "fail_on = \"warning\"\n").unwrap();
 
         let layers = load(&args(None, false)).unwrap();
         assert_eq!(layers.user.as_ref().unwrap().path, user_path);
@@ -2241,7 +2260,10 @@ mode = "required"
             Some(Genre::Tech),
             "--config でもユーザーの設定は重ねる"
         );
-        assert_eq!(layers.pick(|f| f.experimental), Some(true));
+        assert_eq!(
+            layers.pick(|f| f.fail_on),
+            Some(FailOn::At(Severity::Warning))
+        );
 
         let layers = load(&args(None, true)).unwrap();
         assert!(layers.user.is_none() && layers.project.is_none());
@@ -2347,7 +2369,7 @@ mode = "required"
     }
 
     #[test]
-    fn calibrated_rules_show_their_calibration_basis() {
+    fn builtin_rules_show_their_calibration_basis_and_signal() {
         let engine = Engine::new(EngineOptions::default()).unwrap();
         let v: serde_json::Value = serde_json::from_str(&rules_json(&engine)).unwrap();
         let basis = |id: &str| {
@@ -2362,12 +2384,26 @@ mode = "required"
         assert_eq!(basis("P01"), "warning");
         assert_eq!(basis("R06"), "info", "既定の重大度が情報のルールは情報");
         assert_eq!(basis("R05"), "error", "重大の率で校正した");
-        assert!(basis("S01").is_null(), "実験的なルールは校正していない");
+        assert_eq!(basis("S01"), "info", "どの組み込みルールも校正の基準を持つ");
 
         let r05 = engine.find("R05").unwrap();
-        assert!(explain_text(&engine, r05).contains("校正の基準  : 重大の指摘で数えた誤検知率"));
-        let s01 = engine.find("S01").unwrap();
-        assert!(!explain_text(&engine, s01).contains("校正の基準"));
+        let text = explain_text(&engine, r05);
+        assert!(
+            text.contains("校正の基準  : 重大の指摘で数えた誤検知率"),
+            "{text}"
+        );
+        assert!(text.contains("手掛かり    : 強い ("), "{text}");
+        // 読みやすさのルールは手掛かりの強さを持たない
+        let r03 = engine.find("R03").unwrap();
+        assert!(!explain_text(&engine, r03).contains("手掛かり    :"));
+        let listing = rules_text(&engine);
+        let header = listing.lines().nth(2).unwrap();
+        assert!(
+            header.contains("強さ") && !header.contains("状態"),
+            "{header}"
+        );
+        let p03 = listing.lines().find(|l| l.starts_with("P03 ")).unwrap();
+        assert!(p03.contains(" 弱い ") && p03.contains("有効"), "{p03}");
     }
 
     #[test]

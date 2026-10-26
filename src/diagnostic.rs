@@ -86,24 +86,69 @@ impl Lane {
     }
 }
 
-/// ルール (または辞書の 1 項目) の校正状況。
+/// 手掛かりの強さ: AI 臭さのレーンの指摘が、生成文に特徴的な傾向の手掛かりとしてどれだけ強いか。
 ///
-/// `Stable` はコーパス校正で誤検知率を確かめた検出器・語句で、既定で有効。
-/// `Experimental` は未校正か、辞書なしの近似で校正条件から外れるもので、
-/// `--experimental` か設定で明示したときだけ動く。
+/// 指摘が正しい確率でも、文章が生成された確率でも、直す必要の大きさでもない (直す優先度は
+/// [`Severity`] が表す)。人の文書と生成文書のコーパスでの反応率から決め (基準は
+/// `noslop calibrate` の「測った強さ」と同じ)、測れないものは検出の仕組みから決める。
+/// 段階どうしを足して点数にはしない。読みやすさのレーンと独自ルールの指摘は持たない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RuleStatus {
-    Stable,
-    Experimental,
+pub enum Signal {
+    /// 人の文書にほとんど出ず、生成文書に偏って出る。
+    Strong,
+    /// 生成文書に多いが人の文書にも出る、または件数が少なく測れていない。
+    Moderate,
+    /// 人の文書にも同じくらいかそれ以上に出る。
+    Weak,
 }
 
-impl RuleStatus {
+impl Signal {
+    /// 弱い順に並べたときの順位 (大きいほど強い)。宣言の順に頼らずに比べるのに使う。
+    pub fn rank(self) -> u8 {
+        match self {
+            Signal::Weak => 0,
+            Signal::Moderate => 1,
+            Signal::Strong => 2,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
-            RuleStatus::Stable => "stable",
-            RuleStatus::Experimental => "experimental",
+            Signal::Strong => "strong",
+            Signal::Moderate => "moderate",
+            Signal::Weak => "weak",
         }
+    }
+
+    /// 出力での呼び名 (「強い手掛かり」など)。
+    pub fn label_ja(self) -> &'static str {
+        match self {
+            Signal::Strong => "強い手掛かり",
+            Signal::Moderate => "中程度の手掛かり",
+            Signal::Weak => "弱い手掛かり",
+        }
+    }
+
+    /// 表の欄に書く段階だけの呼び名 (「強い」「中程度」「弱い」)。
+    pub fn level_ja(self) -> &'static str {
+        match self {
+            Signal::Strong => "強い",
+            Signal::Moderate => "中程度",
+            Signal::Weak => "弱い",
+        }
+    }
+}
+
+impl PartialOrd for Signal {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Signal {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
     }
 }
 
@@ -190,7 +235,9 @@ pub struct Diagnostic {
     pub rule_name: String,
     pub severity: Severity,
     pub lane: Lane,
-    pub status: RuleStatus,
+    /// 手掛かりの強さ (AI 臭さのレーンの組み込みルールだけ)。検出したときの重大度で決め、
+    /// 設定で重大度を上書きしても変えない。
+    pub signal: Option<Signal>,
     /// 何が見つかったか (具体的に)。
     pub message: String,
     /// どう直すかの手掛かり。
@@ -215,7 +262,7 @@ impl Diagnostic {
         rule_name: impl Into<String>,
         severity: Severity,
         lane: Lane,
-        status: RuleStatus,
+        signal: Option<Signal>,
         span: Span,
         message: impl Into<String>,
     ) -> Self {
@@ -224,7 +271,7 @@ impl Diagnostic {
             rule_name: rule_name.into(),
             severity,
             lane,
-            status,
+            signal,
             message: message.into(),
             hint: None,
             span,

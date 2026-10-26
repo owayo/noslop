@@ -1,6 +1,6 @@
 //! R01 LOW_BURSTINESS: 地の文の文長がそろいすぎている。
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::Sentence;
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -12,7 +12,7 @@ static META: RuleMeta = RuleMeta {
     name: "LOW_BURSTINESS",
     title: "文長の単調さ",
     lane: Lane::Slop,
-    status: RuleStatus::Stable,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Warning,
     summary: "地の文の文の長さがそろいすぎていて、リズムが機械的に均されている疑いがある",
     explanation: EXPLANATION,
@@ -65,6 +65,9 @@ const EXPLANATION: &str = "\
 標本はほとんどが 20 文以上で、短い文書での誤検知率はまだ測れていません。10〜19 文を参考値に留め、\
 10 文未満を判定しないのはそのためです。文長をモーラで数えても判定力はほぼ変わらないことを確かめています。\
 隣り合う文の長さの相関 (短い文の後に短い文が続くか) は、校正で予想と逆の傾向が出たため使っていません。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、警告以上の指摘が出た文書は\
+人 6 本・生成 59 本でした。
 ";
 
 const HINT: &str = "いちばん伝えたい文を短く言い切り、背景を説明する文は長くつなげるなど、\

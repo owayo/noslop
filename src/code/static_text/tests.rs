@@ -601,11 +601,7 @@ fn independent_literals_never_form_a_document_or_a_sentence() {
     assert_eq!(d.blocks.len(), 3);
     assert_eq!(d.blocks[0].text, "前半");
     assert_eq!(d.blocks[1].text, "後半");
-    let engine = crate::engine::Engine::new(crate::engine::EngineOptions {
-        experimental: true,
-        ..Default::default()
-    })
-    .unwrap();
+    let engine = crate::engine::Engine::new(crate::engine::EngineOptions::default()).unwrap();
     let report = engine.lint(d);
     assert!(
         report

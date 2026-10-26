@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::text;
@@ -16,9 +16,9 @@ static META: RuleMeta = RuleMeta {
     name: "GUIDE_CLICHE_DENSITY",
     title: "解説の定型句の密集",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
-    summary: "安心させる言葉・重要性の強調・効果の説明などの定型句が、地の文に密集する文書を指摘する (実験的)",
+    summary: "安心させる言葉・重要性の強調・効果の説明などの定型句が、地の文に密集する文書を指摘する",
     explanation: r"### 何を見るか
 
 地の文が 1500 字以上 (min_chars) あり、解説の定型句が 1000 字あたり 2 件以上 (min_per_1000_chars) 現れる文書を指します。安心させる言葉、重要性の強調、効果の説明、解説の予告、個人への勧め、成功の比喩の 6 系統のうち、3 系統以上があることも条件です。
@@ -42,7 +42,9 @@ general と tech で有効です。最初の該当箇所に 1 件を出し、残
 
 ### 根拠
 
-実験的なルールです。探索用の一般記事で、人の 26 文書中 0 件、生成した 68 文書中 24 件を指摘しました。密度 2 は校正側の人 19 件・生成 40 件で選んだ暫定値です。取り分けた検証側では人 7 件中 0 件、生成 28 件中 12 件でしたが、人の誤検知率の片側 95% 上限は 27.9% です。話題と長さをそろえた独立の資料による検証も済んでいないため、既定では動かさず、情報レベルで扱います。",
+探索用の一般記事で、人の 26 文書中 0 件、生成した 68 文書中 24 件を指摘しました。密度 2 は校正側の人 19 件・生成 40 件で選んだ暫定値です。取り分けた検証側では人 7 件中 0 件、生成 28 件中 12 件でしたが、人の誤検知率の片側 95% 上限は 27.9% です。話題と長さをそろえた独立の資料による検証も済んでいないため、情報レベルで扱います。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 1 本・生成 29 本でした。",
 };
 
 // 1 系統だけの反復と、複数の定型的な働きかけが重なる文書とを分ける。

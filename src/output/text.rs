@@ -1,13 +1,14 @@
 //! 端末向けの出力。
 //!
 //! ファイルごとに、指摘をレーンの節 (AI 臭さ → 独自ルール → 読みやすさ) に分けて並べ、
-//! 各指摘の見出し行にもレーン名を付ける。末尾の要約も同じ呼び名でレーンごとに数えるので、
+//! 各指摘の見出し行にもレーン名を付ける。AI 臭さのレーンの指摘は、見出し行の末尾に手掛かりの
+//! 強さ (`[強い手掛かり]` など) を淡色で添える。末尾の要約も同じ呼び名でレーンごとに数えるので、
 //! 要約の件数が一覧のどの指摘に当たるかを見て取れる。
 //!
 //! ```text
 //! 📄 docs/plan.md
 //!   AI 臭さの指摘 1 件
-//!   5:26  警告  [AI 臭さ]  P01 AI_CONCLUSION
+//!   5:26  警告  [AI 臭さ]  P01 AI_CONCLUSION [強い手掛かり]
 //!     「と言えるだろう」は結論を定型句で押し付ける締めです
 //!     │ 会議を減らしたことは、チームにとって良い変化だったと言えるだろう。
 //!     │                                                   ^^^^^^^^^^^^^^
@@ -31,7 +32,7 @@ use anstyle::{AnsiColor, Style};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
 use crate::engine::{FileReport, RunReport};
 use crate::output::RenderOptions;
 
@@ -146,8 +147,8 @@ fn render_diagnostic(file: &FileReport, d: &Diagnostic, out: &mut dyn Write) -> 
         d.rule_id,
         d.rule_name
     )?;
-    if d.status == RuleStatus::Experimental {
-        write!(out, " {dm}[実験的]{dm:#}")?;
+    if let Some(signal) = d.signal {
+        write!(out, " {dm}[{}]{dm:#}", signal.label_ja())?;
     }
     writeln!(out)?;
     writeln!(out, "    {}", d.message)?;
@@ -431,7 +432,7 @@ mod tests {
             "TEAM_TERM",
             Severity::Warning,
             Lane::Custom,
-            RuleStatus::Stable,
+            None,
             span,
             "用語集と違う表記です",
         )
@@ -495,7 +496,10 @@ mod tests {
             s.starts_with("📄 <input>.md\n  AI 臭さの指摘 1 件\n"),
             "{s}"
         );
-        assert!(s.contains("1:4  警告  [AI 臭さ]  T01 STABLE_SLOP\n"), "{s}");
+        assert!(
+            s.contains("1:4  警告  [AI 臭さ]  T01 STABLE_SLOP [強い手掛かり]\n"),
+            "{s}"
+        );
         assert!(s.contains("\n  読みやすさの指摘 1 件\n"), "{s}");
         assert!(s.contains("  情報  [読みやすさ]  T03 READABILITY\n"), "{s}");
         assert!(s.contains("📄 <input>.md  指摘なし\n"), "{s}");
@@ -539,22 +543,28 @@ mod tests {
         assert!(s.contains("\n\n  読みやすさの指摘 2 件"), "{s}");
     }
 
+    /// AI 臭さのレーンの指摘は、見出し行の末尾に手掛かりの強さを添える。強さを持たない読みやすさと
+    /// 独自ルールの指摘には添えない。
     #[test]
-    fn experimental_findings_keep_their_tag() {
-        let e = Engine::with_rules(
-            crate::engine::tests::test_rules(),
-            EngineOptions {
-                experimental: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let report = report(vec![e.lint(Document::markdown("様々な案がある。\n"))]);
+    fn slop_findings_end_their_heading_with_the_signal() {
+        let e = engine();
+        let report = report(vec![
+            e.lint(Document::markdown(
+                "様々な案がある。まとめを書く。これは言えるでしょう。上限の設定の検討。\n",
+            )),
+            custom_file("ユーザー様に連絡する。\n", "ユーザー様"),
+        ]);
         let s = render_str(&report, &RenderOptions::default());
-        assert!(
-            s.contains("1:1  情報  [AI 臭さ]  T02 EXPERIMENTAL_SLOP [実験的]\n"),
-            "{s}"
-        );
+        for heading in [
+            "1:1  情報  [AI 臭さ]  T02 WEAK_SLOP [弱い手掛かり]\n",
+            "1:9  情報  [AI 臭さ]  T04 NOT_FOR_BUSINESS [中程度の手掛かり]\n",
+            "1:19  警告  [AI 臭さ]  T01 STABLE_SLOP [強い手掛かり]\n",
+            "1:29  情報  [読みやすさ]  T03 READABILITY\n",
+            "1:1  警告  [独自ルール]  X01 TEAM_TERM\n",
+        ] {
+            assert!(s.contains(heading), "{heading}: {s}");
+        }
+        assert!(!s.contains("実験的"), "{s}");
     }
 
     #[test]

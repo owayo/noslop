@@ -1,7 +1,7 @@
 //! R18: 名詞句を三つ以上並べる体言止めの反復。
 
 use super::{option_count, unknown_option};
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::genre::Genre;
 use crate::morph::MorphToken;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -14,9 +14,9 @@ static META: RuleMeta = RuleMeta {
     name: "REPEATED_NOMINAL_LIST",
     title: "名詞句を並べる体言止めの反復",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
-    summary: "名詞句を三つ以上並べて終える文が繰り返される箇所を指摘する (実験的)",
+    summary: "名詞句を三つ以上並べて終える文が繰り返される箇所を指摘する",
     explanation: r"### 何を見るか
 
 地の文で、読点「、」「，」によって三つ以上の名詞句を並べ、句点「。」で終える文が 2 文以上 (min_count。最小 2) あるときに指します。本文は文末記号を除いて 15 字以上、各項目は空白を除いて 3 字以上必要です。general と essay で有効です。
@@ -40,7 +40,9 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的なルールです。同梱の IPAdic を固定した探索用の随筆で、人の 27 文書中 0 件、生成した 65 文書中 8 件を指摘しました。取り分けた検証側は人 7 件中 0 件、生成 28 件中 4 件で、人の誤検知率の片側 95% 上限は 27.9% でした。一般記事では人 26 件・生成 68 件ともに指摘はありませんでした。辞書なしでは、同じ随筆 65 件を 1 件も拾えませんでした。辞書あり・なしで検出範囲が異なり、独立した資料での検証も済んでいないため、反復を情報レベルで示すに留めます。",
+同梱の IPAdic を固定した探索用の随筆で、人の 27 文書中 0 件、生成した 65 文書中 8 件を指摘しました。取り分けた検証側は人 7 件中 0 件、生成 28 件中 4 件で、人の誤検知率の片側 95% 上限は 27.9% でした。一般記事では人 26 件・生成 68 件ともに指摘はありませんでした。辞書なしでは、同じ随筆 65 件を 1 件も拾えませんでした。辞書あり・なしで検出範囲が異なり、独立した資料での検証も済んでいないため、反復を情報レベルで示すに留めます。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 0 本・生成 9 本でした。",
 };
 
 fn nominal_part(tokens: &[MorphToken], range: Range<usize>) -> bool {

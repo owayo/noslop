@@ -8,7 +8,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::{KEEP_NOTE, followup_command, review, truncate_lines};
+use super::{Followup, KEEP_NOTE, followup_command, review, truncate_lines};
 use crate::changed::{ChangeScope, git_changed_scope};
 use crate::cli::{self, FileHookArgs};
 use crate::document::Document;
@@ -55,7 +55,13 @@ fn review_file(
             git_changed_scope(&path)
         }
     };
-    let Some(review) = review(&path, cwd, &args.hook, env, changed)? else {
+    // 全件の確認コマンド (省いた指摘の件数と、長くて省いたときの注記に添える)
+    let location = cwd.unwrap_or(Path::new("."));
+    let location = std::path::absolute(location).unwrap_or_else(|_| location.to_path_buf());
+    // 作業ディレクトリへの移動でパスの表記が変わっても、同じ相対表示で再検査できるようにする。
+    let target = path.strip_prefix(&location).unwrap_or(&path);
+    let command = followup_command(&args.hook, &location, Followup::File(target));
+    let Some(review) = review(&path, cwd, &args.hook, env, &command, changed)? else {
         return Ok(None);
     };
     let mut text = review.brief;
@@ -66,17 +72,12 @@ fn review_file(
             review.name
         ));
     }
-    let cwd = cwd.unwrap_or(Path::new("."));
-    let cwd = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    // 作業ディレクトリへの移動でパスの表記が変わっても、同じ相対表示で再検査できるようにする。
-    let target = path.strip_prefix(&cwd).unwrap_or(&path);
-    let command = followup_command(&args.hook, &cwd, Some(target));
     Ok(Some(truncate_lines(&text, args.max_chars, Some(&command))))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::{DOC, parse, workspace};
+    use super::super::testing::{DOC, MIXED_DOC, WEAK_DOC, omitted_followup, parse, workspace};
     use super::*;
 
     fn file_args(extra: &[&str]) -> FileHookArgs {
@@ -161,5 +162,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run(&["clean.md"]), None);
+    }
+
+    /// 弱い手掛かりの情報の指摘は件数だけにし、同じフックを上限なしで実行し直すコマンドを添える (その
+    /// コマンドは省かずに返す)。それしかないファイルは、指摘がないときと同じに何も返さない。
+    #[test]
+    fn weak_info_findings_are_counted_with_the_same_hook_unlimited() {
+        let dir = workspace(MIXED_DOC);
+        std::fs::write(dir.path().join("weak.md"), WEAK_DOC).unwrap();
+        let run = |extra: &[&str]| {
+            review_file(
+                &file_args(extra),
+                Some(dir.path()),
+                &cli::Environment::default(),
+            )
+            .unwrap()
+        };
+        let text = run(&["guide.md"]).unwrap();
+        assert!(
+            text.starts_with("noslop が guide.md に 独自ルールの指摘を 1 件見つけました。"),
+            "{text}"
+        );
+        assert!(!text.contains("P05"), "{text}");
+        let command = omitted_followup(&text, 1);
+        assert!(
+            command.contains("noslop hook file --max-chars unlimited --brief-limit unlimited")
+                && command.contains(" -- 'guide.md'"),
+            "{command}"
+        );
+
+        let all = run(&[
+            "--max-chars",
+            "unlimited",
+            "--brief-limit",
+            "unlimited",
+            "guide.md",
+        ])
+        .unwrap();
+        assert!(all.contains("- P05 "), "{all}");
+        assert!(!all.contains("省きました"), "{all}");
+
+        assert_eq!(run(&["weak.md"]), None);
+        assert!(run(&["--brief-limit", "unlimited", "weak.md"]).is_some());
     }
 }

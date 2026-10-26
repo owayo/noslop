@@ -9,7 +9,7 @@
 //! 4. ユーザーの設定 (`~/.config/noslop/config.toml`) の明示があればそれに従う (プロジェクトの設定の
 //!    明示より弱い)。同じ層では無効が優先
 //! 5. どれもなければ既定: `--no-readability` なら読みやすさのレーンは止め、それ以外は
-//!    「校正済み (stable) か `--experimental`」かつ「そのジャンルで既定で動かすルール」なら動かす
+//!    そのジャンルで既定で動かすルール ([`Rule::allowed_in`]) なら動かす
 //!
 //! ルールの ID と名前の別名は層ごとに ID に直してから重ねる。`[rules.X]` の重大度と設定項目は、
 //! ユーザーの設定の上にプロジェクトの設定をキーごとに重ねる。
@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use rayon::prelude::*;
 
 use crate::config::{ConfigError, CustomRuleConfig, RuleTable};
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::document::{Document, DocumentKind, ParseOptions, SourceFormat};
 use crate::genre::Genre;
 use crate::morph::{
@@ -56,7 +56,6 @@ pub struct Selection {
 #[derive(Debug, Clone, Default)]
 pub struct EngineOptions {
     pub genre: Genre,
-    pub experimental: bool,
     pub scope: Scope,
     pub parse: ParseOptions,
     pub selection: Selection,
@@ -188,10 +187,7 @@ impl Engine {
                 match cli_state.or(config_state).or(user_state) {
                     Some(explicit) => explicit,
                     None if sel.no_readability && meta.lane == Lane::Readability => false,
-                    None => {
-                        (meta.status == RuleStatus::Stable || options.experimental)
-                            && rule.allowed_in(options.genre)
-                    }
+                    None => rule.allowed_in(options.genre),
                 }
             };
             entries.push(RuleEntry {
@@ -323,7 +319,6 @@ impl Engine {
                 doc: &doc,
                 genre: self.options.genre,
                 scope: self.options.scope,
-                experimental: self.options.experimental,
                 morph: morph.as_ref(),
             };
             // 断片の集まり (コードのコメント・セル) には、1 文ずつ判定するルールだけを当てる
@@ -563,7 +558,7 @@ pub fn fingerprint(doc: &Document, d: &Diagnostic) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::diagnostic::Span;
+    use crate::diagnostic::{Signal, Span};
     use crate::rules::RuleMeta;
 
     /// テスト用のルール: 文の中の `needle` を指す。
@@ -617,13 +612,13 @@ pub(crate) mod tests {
     }
 
     macro_rules! meta {
-        ($id:literal, $name:literal, $lane:expr, $status:expr, $sev:expr) => {{
+        ($id:literal, $name:literal, $lane:expr, $signal:expr, $sev:expr) => {{
             static META: RuleMeta = RuleMeta {
                 id: $id,
                 name: $name,
                 title: "テスト",
                 lane: $lane,
-                status: $status,
+                signal: $signal,
                 default_severity: $sev,
                 summary: "テスト用",
                 explanation: "テスト用",
@@ -632,7 +627,7 @@ pub(crate) mod tests {
         }};
     }
 
-    /// stable / experimental / readability / business で止まる、の 4 つのテスト用ルール。
+    /// 強い手掛かりの警告・弱い手掛かりの情報・読みやすさ・業務文書で止まる、の 4 つのテスト用ルール。
     pub(crate) fn test_rules() -> Vec<Box<dyn Rule>> {
         vec![
             Box::new(NeedleRule {
@@ -640,7 +635,7 @@ pub(crate) mod tests {
                     "T01",
                     "STABLE_SLOP",
                     Lane::Slop,
-                    RuleStatus::Stable,
+                    Some(Signal::Strong),
                     Severity::Warning
                 ),
                 needle: "言えるでしょう",
@@ -649,9 +644,9 @@ pub(crate) mod tests {
             Box::new(NeedleRule {
                 meta: meta!(
                     "T02",
-                    "EXPERIMENTAL_SLOP",
+                    "WEAK_SLOP",
                     Lane::Slop,
-                    RuleStatus::Experimental,
+                    Some(Signal::Weak),
                     Severity::Info
                 ),
                 needle: "様々な",
@@ -662,7 +657,7 @@ pub(crate) mod tests {
                     "T03",
                     "READABILITY",
                     Lane::Readability,
-                    RuleStatus::Stable,
+                    None,
                     Severity::Info
                 ),
                 needle: "の設定の",
@@ -673,7 +668,7 @@ pub(crate) mod tests {
                     "T04",
                     "NOT_FOR_BUSINESS",
                     Lane::Slop,
-                    RuleStatus::Stable,
+                    Some(Signal::Moderate),
                     Severity::Info
                 ),
                 needle: "まとめ",
@@ -697,18 +692,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn default_selection_uses_status_and_genre() {
-        assert_eq!(ids(EngineOptions::default()), vec!["T01", "T03", "T04"]);
-        let experimental = EngineOptions {
-            experimental: true,
-            ..Default::default()
-        };
-        assert_eq!(ids(experimental), vec!["T01", "T02", "T03", "T04"]);
+    fn default_selection_runs_every_rule_allowed_in_the_genre() {
+        assert_eq!(
+            ids(EngineOptions::default()),
+            vec!["T01", "T02", "T03", "T04"]
+        );
         let business = EngineOptions {
             genre: Genre::Business,
             ..Default::default()
         };
-        assert_eq!(ids(business), vec!["T01", "T03"]);
+        assert_eq!(ids(business), vec!["T01", "T02", "T03"]);
     }
 
     #[test]
@@ -722,7 +715,7 @@ pub(crate) mod tests {
             s.config_disable = vec!["T01".into()];
             s.cli_enable = vec!["STABLE_SLOP".into()];
         });
-        assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
+        assert_eq!(ids(o), vec!["T01", "T02", "T03", "T04"]);
         let o = sel(|s| {
             s.config_enable = vec!["T02".into()];
             s.cli_disable = vec!["T02".into()];
@@ -735,16 +728,15 @@ pub(crate) mod tests {
     fn the_user_layer_is_weaker_than_the_project_layer() {
         // ユーザーの設定だけでも効く
         let o = sel(|s| {
-            s.user_enable = vec!["EXPERIMENTAL_SLOP".into()];
-            s.user_disable = vec!["t01".into()];
+            s.user_disable = vec!["WEAK_SLOP".into(), "t01".into()];
         });
-        assert_eq!(ids(o), vec!["T02", "T03", "T04"]);
+        assert_eq!(ids(o), vec!["T03", "T04"]);
         // 同じルールを別名で書いても、プロジェクトの明示が勝つ (ユーザーの名前 / プロジェクトの ID)
         let o = sel(|s| {
             s.user_disable = vec!["STABLE_SLOP".into()];
             s.config_enable = vec!["t01".into()];
             s.user_enable = vec!["T02".into()];
-            s.config_disable = vec!["experimental_slop".into()];
+            s.config_disable = vec!["weak_slop".into()];
         });
         assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
         // ユーザーの層の中では無効が優先。CLI はどちらよりも強い
@@ -772,7 +764,7 @@ pub(crate) mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
+        assert_eq!(ids(o), vec!["T01", "T02", "T03", "T04"]);
     }
 
     /// `[rules.X]` の重大度と設定項目は、ユーザーの設定の上にプロジェクトの設定をキーごとに重ねる。
@@ -832,8 +824,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn explicit_enable_overrides_genre_and_status() {
-        let mut o = sel(|s| s.cli_enable = vec!["T02".into(), "T04".into()]);
+    fn explicit_enable_overrides_genre() {
+        let mut o = sel(|s| s.cli_enable = vec!["T04".into()]);
         o.genre = Genre::Business;
         assert_eq!(ids(o), vec!["T01", "T02", "T03", "T04"]);
     }
@@ -847,12 +839,12 @@ pub(crate) mod tests {
         });
         assert_eq!(ids(o), vec!["T02"]);
         let o = sel(|s| s.no_readability = true);
-        assert_eq!(ids(o), vec!["T01", "T04"]);
+        assert_eq!(ids(o), vec!["T01", "T02", "T04"]);
         let o = sel(|s| {
             s.no_readability = true;
             s.config_enable = vec!["T03".into()];
         });
-        assert_eq!(ids(o), vec!["T01", "T03", "T04"]);
+        assert_eq!(ids(o), vec!["T01", "T02", "T03", "T04"]);
     }
 
     #[test]

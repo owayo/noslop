@@ -39,8 +39,9 @@ use engine::PhraseRule;
 /// 生成文書の結論の定型句は文書の最後の段落に集まるので、結びに限って拾う。
 const P01_CLOSING_PARAGRAPHS: usize = 2;
 
-/// 語句パターン系の組み込みルール (ID 順)。
-pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
+/// 語句パターン系の組み込みルール (ID 順)。語句ルールはジャンルで変わらない (リズム・構造の
+/// ルールと同じ形で呼べるよう、ジャンルを受け取る)。
+pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(PhraseRule::new(&catalog::P01).only_in_closing(P01_CLOSING_PARAGRAPHS)),
         Box::new(PhraseRule::new(&catalog::P02)),
@@ -68,7 +69,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(PhraseRule::new(&effect::P24)),
         Box::new(stance::SourceStance),
         Box::new(jargon::ActionJargon::new()),
-        Box::new(closer::StockCloser::new(genre)),
+        Box::new(PhraseRule::new(&closer::P27)),
         Box::new(permission::PermissiveAction),
     ]
 }
@@ -76,7 +77,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{Lane, RuleStatus};
+    use crate::diagnostic::Lane;
 
     #[test]
     fn all_phrase_rules_are_registered_in_id_order() {
@@ -208,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn quoted_mentions_respect_scope_experiments_and_fragment_boundaries() {
+    fn quoted_mentions_respect_scope_and_fragment_boundaries() {
         use crate::document::{Document, ParseOptions, SourceFormat};
         use crate::rules::Scope;
         use crate::rules::testing::{Options, matched, run, run_doc, run_with};
@@ -217,7 +218,6 @@ mod tests {
         let get = |id: &str| rules.iter().find(|r| r.meta().id == id).unwrap().as_ref();
         let all = Options {
             scope: Scope::ALL,
-            experimental: true,
             ..Options::default()
         };
         for (id, phrase) in DICTIONARY_PHRASES {
@@ -275,6 +275,7 @@ mod tests {
 
     #[test]
     fn p01_looks_only_at_the_closing_paragraphs() {
+        use crate::diagnostic::{Severity, Signal};
         use crate::rules::testing::{Options, matched, run, run_with};
         use crate::rules::{RuleUnit, Scope};
         let rules = rules(Genre::General);
@@ -286,16 +287,18 @@ mod tests {
         // 本文の途中の問いかけは拾わず、最後の 2 段落の結びの定型句だけを拾う
         let md = "迷う人も多いのではないでしょうか。\n\n設定を見直した。\n\n手順は短くなった。\n\n見直す価値はあったと言えるでしょう。\n";
         assert_eq!(matched(md, &run(p01, md)), ["と言えるでしょう"]);
-        // 「いかがでしょうか」「いかがでしたか」は人の記事の結びにも同じくらい出るので、実験的な項目
+        // 「いかがでしょうか」「いかがでしたか」は人の記事の結びにも同じくらい出るので、
+        // 情報で拾い、警告で測ったルールの強さ (強い) は継がない
         let md = "本文です。\n\nぜひ試してみてはいかがでしょうか。いかがでしたか。\n";
-        assert!(run(p01, md).is_empty());
-        let experimental = Options {
-            experimental: true,
-            ..Options::default()
-        };
-        let d = run_with(p01, md, experimental);
+        let d = run(p01, md);
         assert_eq!(matched(md, &d), ["いかがでしょうか", "いかがでしたか"]);
-        assert!(d.iter().all(|d| d.status == RuleStatus::Experimental));
+        assert!(
+            d.iter()
+                .all(|d| d.severity == Severity::Info && d.signal == Some(Signal::Moderate))
+        );
+        // 本文の途中の「いかがでしょうか」は、ほかの語句と同じく拾わない
+        let md = "ぜひ試してみてはいかがでしょうか。\n\n設定を見直した。\n\n手順は短くなった。\n";
+        assert!(run(p01, md).is_empty());
         // 結びの後ろの見出し・箇条書きは数えず、その手前の段落を結びとみなす
         let md =
             "本文です。\n\n総じて、移行は順調と言えるでしょう。\n\n## まとめ\n\n- 移行は終わった\n";
@@ -312,33 +315,96 @@ mod tests {
         assert_eq!(p01.unit(), RuleUnit::Document);
     }
 
+    /// ルールごとの手掛かりの強さ (人の文書と生成文書のコーパスで測った値。測れないものは中程度)。
+    /// 読みやすさのレーンのルールは強さを持たない。
     #[test]
-    fn lanes_and_statuses_match_the_design() {
+    fn lanes_and_signals_match_the_design() {
+        use crate::diagnostic::Signal::{Moderate, Strong, Weak};
         let rules = rules(Genre::General);
         let get = |id: &str| {
             rules
                 .iter()
                 .find(|r| r.meta().id == id)
-                .map(|r| (r.meta().lane, r.meta().status))
+                .map(|r| (r.meta().lane, r.meta().signal))
                 .unwrap()
         };
-        for id in ["P01", "P06", "P07", "P08", "P09"] {
-            assert_eq!(get(id), (Lane::Slop, RuleStatus::Stable), "{id}");
+        for id in ["P01", "P06", "P08", "P18", "P20", "P22"] {
+            assert_eq!(get(id), (Lane::Slop, Some(Strong)), "{id}");
         }
-        // 人の文章にも同じくらいかそれ以上に出たので、ルールごと実験的にしたもの
-        for id in ["P02", "P03", "P13"] {
-            assert_eq!(get(id), (Lane::Slop, RuleStatus::Experimental), "{id}");
+        for id in ["P07", "P09", "P10", "P13", "P19", "P21", "P24", "P25"] {
+            assert_eq!(get(id), (Lane::Slop, Some(Moderate)), "{id}");
         }
-        assert_eq!(get("P04"), (Lane::Readability, RuleStatus::Experimental));
-        assert_eq!(get("P05"), (Lane::Slop, RuleStatus::Experimental));
-        assert_eq!(get("P10"), (Lane::Slop, RuleStatus::Experimental));
-        assert_eq!(get("P11"), (Lane::Slop, RuleStatus::Experimental));
-        assert_eq!(get("P14"), (Lane::Slop, RuleStatus::Experimental));
-        for id in ["P15", "P16", "P17"] {
-            assert_eq!(get(id), (Lane::Readability, RuleStatus::Stable), "{id}");
+        for id in ["P02", "P03", "P05", "P11", "P14", "P23", "P27"] {
+            assert_eq!(get(id), (Lane::Slop, Some(Weak)), "{id}");
         }
-        for id in ["P18", "P19", "P20", "P21", "P22", "P23", "P24"] {
-            assert_eq!(get(id), (Lane::Slop, RuleStatus::Experimental), "{id}");
+        for id in ["P04", "P12", "P15", "P16", "P17", "P26", "P28"] {
+            assert_eq!(get(id), (Lane::Readability, None), "{id}");
         }
+    }
+
+    /// 語句辞書で動くルールの定義 (P27 の closer、P22 の artifacts、P24 の effect を含む)。
+    fn phrase_specs() -> [&'static engine::PhraseSpec; 17] {
+        [
+            &catalog::P01,
+            &catalog::P02,
+            &catalog::P03,
+            &catalog::P04,
+            &catalog::P05,
+            &catalog::P06,
+            &catalog::P07,
+            &catalog::P08,
+            &catalog::P09,
+            &catalog::P10,
+            &catalog::P11,
+            &catalog::P12,
+            &catalog::P18,
+            &catalog::P19,
+            &artifacts::P22,
+            &effect::P24,
+            &closer::P27,
+        ]
+    }
+
+    #[test]
+    fn phrase_specs_are_the_registered_rules() {
+        let rules = rules(Genre::General);
+        for spec in phrase_specs() {
+            let rule = rules
+                .iter()
+                .find(|r| r.meta().id == spec.meta.id)
+                .unwrap_or_else(|| panic!("{} が登録されていない", spec.meta.id));
+            assert!(std::ptr::eq(rule.meta(), &spec.meta), "{}", spec.meta.id);
+        }
+    }
+
+    /// ルールの強さは、校正の基準の重大度 (既定の重大度が警告以上なら警告、情報なら情報) 以上の
+    /// 指摘で測ったもの。基準より軽い項目 (警告のルールにある情報の項目) はその測定に入らないので、
+    /// ルールの値を継がずに自分の強さを持つ。読みやすさのレーンの項目は強さを持たない。
+    #[test]
+    fn entries_lighter_than_the_calibration_basis_carry_their_own_signal() {
+        use crate::diagnostic::Severity;
+        let mut lighter = 0;
+        for spec in phrase_specs() {
+            let m = &spec.meta;
+            let basis = if m.default_severity >= Severity::Warning {
+                Severity::Warning
+            } else {
+                Severity::Info
+            };
+            for entry in spec.entries {
+                let item = entry.pattern.item();
+                if m.lane != Lane::Slop {
+                    assert!(entry.signal.is_none(), "{} {item}", m.id);
+                    continue;
+                }
+                if entry.severity < basis {
+                    lighter += 1;
+                    assert!(entry.signal.is_some(), "{} {item}", m.id);
+                }
+                assert!(entry.signal_in(m).is_some(), "{} {item}", m.id);
+            }
+        }
+        // 警告のルールにある情報の項目が、確かに検査されている
+        assert!(lighter > 0);
     }
 }

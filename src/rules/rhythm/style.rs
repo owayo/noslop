@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use hasami::CoarsePos;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
 use crate::morph::MorphToken;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::text;
@@ -16,9 +16,9 @@ static META: RuleMeta = RuleMeta {
     name: "MIXED_WRITING_STYLE",
     title: "敬体と常体の混在",
     lane: Lane::Readability,
-    status: RuleStatus::Experimental,
+    signal: None,
     default_severity: Severity::Info,
-    summary: "全文を検査するとき、地の文のです・ます調と言い切りが混ざっているかを見る (実験的)",
+    summary: "全文を検査するとき、地の文のです・ます調と言い切りが混ざっているかを見る",
     explanation: r"### 何を見るか
 
 全文がチェック対象の文書で、段落をまたいで敬体と常体を数えます。既定はそれぞれ2文以上あるときに1件出します。`min_each` で各文体の最小文数を変えられます。です・ますの活用形と、だ・であるなどの言い切りを見ます。辞書があれば、動詞・形容詞・助動詞で終わる文も常体に含めます。辞書がなければ、する・した・される・ある・いるなど、限られた語尾で近似します。
@@ -40,7 +40,7 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-各文体2文以上・同梱の辞書の条件で、人の文書176本中68本、生成文書390本中36本に反応しました。技術文書では人50本中38本、生成32本中5本です。人の文章にも多く見られる混在を、執筆方法の判別には使いません。この対照には書き分けの意図のラベルがないため、反応率を誤検知率とはみなしません。意図した混在と書き誤りを判別できず、語尾の近似と最小文数を既定で有効にするための校正も終えていないため、実験的な情報の指摘として、明示的に有効にしたときだけ動きます。",
+各文体2文以上・同梱の辞書の条件で、人の文書176本中68本、生成文書390本中36本に反応しました。技術文書では人50本中38本、生成32本中5本です。人の文章にも多く見られる混在を、執筆方法の判別には使いません。この対照には書き分けの意図のラベルがないため、反応率を誤検知率とはみなしません。意図した混在と書き誤りを判別できず、語尾の近似と最小文数の校正も終えていないため、情報の指摘に留めます。",
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

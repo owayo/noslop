@@ -32,7 +32,8 @@ fn cli_structure_checks_are_standard_information() {
         .collect();
     assert_eq!(findings.len(), 2);
     for finding in findings {
-        assert_eq!(finding["status"], "stable");
+        // 読みやすさのレーンは手掛かりの強さを持たない
+        assert!(finding["signal"].is_null() && finding.get("status").is_none());
         assert_eq!(finding["lane"], "readability");
         assert_eq!(finding["severity"], "info");
     }

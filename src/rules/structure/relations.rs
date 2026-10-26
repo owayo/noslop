@@ -3,7 +3,7 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::document::BlockKind;
 use crate::rules::{Rule, RuleContext, RuleMeta};
 use crate::structure::{NodeKind, Structure};
@@ -57,7 +57,7 @@ fn number(text: &str) -> Option<usize> {
 
 static COUNT_META: RuleMeta = RuleMeta {
     id: "S11", name: "ENUMERATION_COUNT_MISMATCH", title: "列挙の予告と項目数の不一致",
-    lane: Lane::Readability, status: RuleStatus::Stable, default_severity: Severity::Info,
+    lane: Lane::Readability, signal: None, default_severity: Severity::Info,
     summary: "直後のリストに対応する明示的な予告と、直接の項目数を照合する",
     explanation: "\
 ### 何を見るか
@@ -178,7 +178,7 @@ impl Rule for EnumerationCount {
 
 static EMPTY_META: RuleMeta = RuleMeta {
     id: "S12", name: "EMPTY_SECTION", title: "本文のない節",
-    lane: Lane::Readability, status: RuleStatus::Stable, default_severity: Severity::Info,
+    lane: Lane::Readability, signal: None, default_severity: Severity::Info,
     summary: "見出しの後に本文も子の節もない箇所を示す",
     explanation: "\
 ### 何を見るか
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn structure_rules_are_stable_and_require_the_right_coverage() {
+    fn structure_rules_run_by_default_and_require_the_right_coverage() {
         use crate::engine::{Coverage, Engine, EngineOptions, Selection};
         let doc = Document::markdown("次の3項目です。\n\n- 名前\n- 住所\n\n# 空の節\n");
         let default = Engine::new(EngineOptions::default())
@@ -323,10 +323,11 @@ mod tests {
             .filter(|d| matches!(d.rule_id.as_str(), "S11" | "S12"))
             .collect();
         assert_eq!(structure.len(), 2);
+        // 読みやすさのレーンなので、手掛かりの強さは持たない
         assert!(
             structure
                 .iter()
-                .all(|d| { d.status == RuleStatus::Stable && d.severity == Severity::Info })
+                .all(|d| d.signal.is_none() && d.severity == Severity::Info)
         );
         let engine = Engine::new(EngineOptions {
             selection: Selection {

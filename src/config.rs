@@ -289,7 +289,6 @@ impl CustomRuleConfig {
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     pub genre: Option<Genre>,
-    pub experimental: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_fail_on")]
     pub fail_on: Option<FailOn>,
     pub line_breaks: Option<LineBreakMode>,
@@ -411,9 +410,6 @@ const TEMPLATE: &str = r#"# noslop の設定ファイル
 # ジャンルごとに閾値が変わり、慣習と衝突するルールは既定で止まります。
 # genre = "general"
 
-# 実験的な (未校正の) ルールと語句も動かすか
-# experimental = false
-
 # この重大度以上の指摘があれば終了コード 1 にする: never / info / warning / error
 # 検出は「疑いの提示」なので、既定の never では終了コードを変えません。
 # fail_on = "never"
@@ -456,8 +452,8 @@ const TEMPLATE: &str = r#"# noslop の設定ファイル
 # dictionary = "auto"
 
 [rules]
-# 有効にするルール (実験的なルールも個別に有効にできる)
-# enable = ["P04"]
+# 有効にするルール (ジャンルの慣習と衝突するため、そのジャンルでは既定で止まるルールを動かすとき)
+# enable = ["S03"]
 # 無効にするルール
 # disable = ["R03"]
 
@@ -487,9 +483,6 @@ const USER_TEMPLATE: &str = r#"# noslop のユーザーの設定 (~/.config/nosl
 
 # 文書のジャンル: general / tech / business / essay (別名 blog / minutes)
 # genre = "general"
-
-# 実験的な (未校正の) ルールと語句も動かすか
-# experimental = false
 
 [morphology]
 # 形態素解析の辞書 (P15・P16 を品詞で判定する)
@@ -588,7 +581,6 @@ mod tests {
         let cfg = parse(
             r#"
 genre = "blog"
-experimental = true
 fail_on = "warning"
 line_breaks = "sentence"
 
@@ -615,7 +607,6 @@ message = "表記を統一します"
         )
         .unwrap();
         assert_eq!(cfg.genre, Some(Genre::Essay));
-        assert_eq!(cfg.experimental, Some(true));
         assert_eq!(cfg.fail_on, Some(FailOn::At(Severity::Warning)));
         assert_eq!(cfg.line_breaks, Some(LineBreakMode::Sentence));
         assert_eq!(
@@ -666,7 +657,7 @@ message = "表記を統一します"
             assert!(!template.contains('@'), "埋め残し: {template}");
             let cfg = parse(&template).unwrap();
             assert!(cfg.genre.is_none());
-            assert!(cfg.experimental.is_none());
+            assert!(cfg.fail_on.is_none());
             assert!(cfg.custom.is_empty());
             assert!(cfg.rules.enable.is_empty() && cfg.rules.disable.is_empty());
             assert!(cfg.morphology.dictionary.is_none());

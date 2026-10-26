@@ -3,7 +3,7 @@
 //! - R07 UNIFORM_PARAGRAPHS: どの段落もほぼ同じ文数でできている
 //! - R09 PARAGRAPH_LEAD_CONJUNCTION: 段落の先頭が接続詞で始まる段落が多い
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::Block;
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -43,7 +43,7 @@ static UNIFORM_META: RuleMeta = RuleMeta {
     name: "UNIFORM_PARAGRAPHS",
     title: "段落の均質さ",
     lane: Lane::Slop,
-    status: RuleStatus::Stable,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
     summary: "どの段落もほぼ同じ文数でできていて、段落の厚みに濃淡がない",
     explanation: UNIFORM_EXPLANATION,
@@ -79,12 +79,15 @@ const UNIFORM_EXPLANATION: &str = "\
 
 ### 根拠
 
-既定で動かす検出器ですが、人の文書との差を示す数値はまだ十分ではないため、情報に留めています。\
-段落あたりの平均の文数の下限 1.5 は、1 文の段落と 2 文の段落の中間に置いた値です。変動係数が 0.15 \
+人の文書との差を示す数値はまだ十分ではないため、情報に留めています。段落あたりの平均の文数の\
+下限 1.5 は、1 文の段落と 2 文の段落の中間に置いた値です。変動係数が 0.15 \
 未満の文書は、段落あたりの平均が 1.03 文以下か 1.9 文以上に分かれ、noslop のコーパスでは下限を \
 1.03〜1.9 のどこに置いても指摘は変わりませんでした。このコーパス (人の文書 176 本、生成文書 1,729 本) \
 で指摘のある文書は、人の文書で 0 本、生成文書で 106 本です。段落の文数がそろっていても下限に届かずに\
 対象から外れる文書は、人の文書で 9 本 (どれも段落あたりの平均が 1.03 文以下)、生成文書で 3 本でした。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 1 本・\
+生成 12 本でした。
 ";
 
 /// R07 UNIFORM_PARAGRAPHS。
@@ -219,7 +222,7 @@ static CONJ_META: RuleMeta = RuleMeta {
     name: "PARAGRAPH_LEAD_CONJUNCTION",
     title: "段落頭の接続詞",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
     summary: "段落の頭が「しかし」「また」などの接続詞で始まる段落が 3 割以上ある",
     explanation: CONJ_EXPLANATION,
@@ -249,8 +252,11 @@ const CONJ_EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。段落頭の接続詞の比率は、人の文書の誤検知 3.6% に対して生成文書の検出が 6% と、ほとんど\
-差が出ませんでした。そのため既定では動かしません。
+段落頭の接続詞の比率は、以前の測定では人の文書の誤検知 3.6% に対して生成文書の検出が 6% と、\
+ほとんど差が出ませんでした。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 1 本・\
+生成 15 本でした。
 ";
 
 /// 段落頭で数える接続詞 (長いものから照合する)。

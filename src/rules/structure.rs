@@ -1,9 +1,9 @@
 //! 構造系ルール (`S` で始まる ID)。
 //!
 //! 地の文ではなく Markdown の体裁 (太字・箇条書き・見出し・段階表現・絵文字) に現れる、
-//! 教科書的な構成の癖を拾う。どれも定量的な校正の前なので実験的 (既定で無効) で、
-//! ビジネス文書で正当に使われる体裁 (S01〜S04・S07・S09・S10) はジャンル business では
-//! 既定で動かさない。
+//! 教科書的な構成の癖を拾う。ビジネス文書で正当に使われる体裁 (S01〜S04・S07・S09・S10) は、
+//! ジャンル business では既定で動かさない。S11・S12 は読みやすさのレーンで、明示された予告と
+//! 項目数、見出しと節の境界を照合する (`relations.rs`)。
 
 use std::sync::LazyLock;
 
@@ -11,22 +11,23 @@ mod relations;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::{Block, BlockKind, MarkKind};
 use crate::genre::Genre;
 use crate::heading::HeadingShape;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, option_f64, option_usize, quote};
 use crate::text;
 
-/// 構造系の組み込みルール。
-pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
+/// 構造系の組み込みルール。構造のルールはジャンルで閾値を変えない (ジャンルの慣習との衝突は
+/// [`Rule::allowed_in`] で扱う。リズムのルールと同じ形で呼べるよう、ジャンルを受け取る)。
+pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(BoldDensity::new()),
         Box::new(BulletRatio::new()),
         Box::new(BoilerplateHeading),
         Box::new(NumberedPhases::new()),
         Box::new(EmojiDensity::new()),
-        Box::new(BoldLabelList::new(genre)),
+        Box::new(BoldLabelList::new()),
         Box::new(HeadingTemplate::new()),
         Box::new(HeadingEmphasis),
         Box::new(StructureDensity::new()),
@@ -128,7 +129,7 @@ static BOLD_META: RuleMeta = RuleMeta {
     name: "BOLD_DENSITY",
     title: "太字の多用",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
     summary: "太字が原文 1000 字あたり 3 箇所以上あり、強調が散らばって効かなくなっている",
     explanation: "\
@@ -155,8 +156,11 @@ static BOLD_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。生成文書の精読で繰り返し見つかった癖ですが、コーパスでの定量的な校正はしていません。\
-ビジネス文書では太字の強調が正当な慣習なので、ジャンル business では既定で動かしません。
+生成文書の精読で繰り返し見つかった癖ですが、閾値の定量的な校正はしていません。ビジネス文書では\
+太字の強調が正当な慣習なので、ジャンル business では既定で動かしません。
+
+手掛かりの強さは「中程度」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 43 本・\
+生成 106 本でした。
 ",
 };
 
@@ -251,7 +255,7 @@ static BULLET_META: RuleMeta = RuleMeta {
     name: "BULLET_RATIO",
     title: "箇条書きへの偏り",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
     summary: "本文の 35% 以上が箇条書きで、文章で説明すべき因果まで刻まれている疑いがある",
     explanation: "\
@@ -278,8 +282,11 @@ static BULLET_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。定量的な校正はしていません。議事録や報告書では箇条書きが正当に多いため、ジャンル \
-business では既定で動かしません。
+閾値の定量的な校正はしていません。議事録や報告書では箇条書きが正当に多いため、ジャンル business \
+では既定で動かしません。
+
+手掛かりの強さは「中程度」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 52 本・\
+生成 79 本でした。
 ",
 };
 
@@ -381,7 +388,7 @@ static HEADING_META: RuleMeta = RuleMeta {
     name: "BOILERPLATE_HEADING",
     title: "定型見出しでの締め",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "「まとめ」「おわりに」など、中身ではなく構成の型を示す見出しで締めている",
     explanation: "\
@@ -407,8 +414,10 @@ static HEADING_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。定量的な校正はしていません。ビジネス文書では定型の見出しが正当な慣習なので、ジャンル \
-business では既定で動かしません。
+ビジネス文書では定型の見出しが正当な慣習なので、ジャンル business では既定で動かしません。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 113 本・\
+生成 102 本で、人の文書にも同じくらい出ました。
 ",
 };
 
@@ -469,7 +478,7 @@ static PHASE_META: RuleMeta = RuleMeta {
     name: "NUMBERED_PHASES",
     title: "番号付きの段階",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
     summary: "「フェーズ1」「ステップ2」のような番号付きの段階表現が 3 回以上ある",
     explanation: "\
@@ -494,8 +503,11 @@ static PHASE_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。定量的な校正はしていません。ビジネス文書では工程の段階表現が正当に使われるため、\
+3 回という閾値は校正していません。ビジネス文書では工程の段階表現が正当に使われるため、\
 ジャンル business では既定で動かしません。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 2 本・\
+生成 12 本でした。
 ",
 };
 
@@ -587,7 +599,7 @@ static EMOJI_META: RuleMeta = RuleMeta {
     name: "EMOJI_DENSITY",
     title: "絵文字・装飾記号の多用",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "絵文字や装飾記号が原文 1000 字あたり 2 個以上あり、チャットの体裁が持ち込まれている",
     explanation: "\
@@ -614,7 +626,10 @@ static EMOJI_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。定量的な校正はしていません。
+閾値の定量的な校正はしていません。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 5 本・\
+生成 1 本で、人の文書のほうが多く出ました。
 ",
 };
 
@@ -722,14 +737,13 @@ impl Rule for EmojiDensity {
 // S06 BOLD_LABEL_LIST
 // ---------------------------------------------------------------------------
 
-/// S06 の説明 (既定で動くジャンルとほかのジャンルで共有する)。
+/// S06 の説明。
 const LABEL_EXPLANATION: &str = "\
 ### 何を見るか
 
 箇条書きの項目が「**ラベル**: 説明」の形 (項目の先頭が太字で、直後にコロンやダッシュが続く) で \
 3 つ以上並んでいる箇条書きを指します。間に段落や見出しを挟まずに続く項目を 1 つの箇条書きとして数え、\
-箇条書き 1 つに 1 件出します。技術文書 (ジャンル tech) と一般向けの文書 (ジャンル general。ジャンルを\
-指定しないときの既定) では既定で動き、業務文書・随筆では実験的です。
+箇条書き 1 つに 1 件出します。
 
 ### なぜ問題か
 
@@ -753,30 +767,23 @@ const LABEL_EXPLANATION: &str = "\
 2025 年頃のモデルの技術文書 44 本では 19 本に反応しました。書式を保った人の一般向けの記事 108 本 \
 (2022 年 11 月より前の版) では 0 本 (片側 95% の上限 2.4%) で、2026 年のモデルの一般向けの文書 340 本では \
 68 本 (20.0%)、2025 年頃のモデルの一般向けの文書 201 本では 30 本 (14.9%) に反応しました。HTML から取った\
-人の文書は太字が失われているので、書式を保った人の対照のない業務文書と随筆は実験的にしています。\
-業務文書では「**日時**: 〜」のような項目の並びが正当な慣習なので、校正の対象にしていません。ジャンルを\
-指定せずに業務文書を検査すると、この型の項目の並びにも情報として出ます。
+人の文書は太字が失われているので、書式を保った人の対照で確かめたのは技術記事と一般向けの記事だけです。\
+業務文書では「**日時**: 〜」のような項目の並びが正当な慣習なので、校正の対象にしていません。業務文書を\
+検査すると、この型の項目の並びにも情報として出ます。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 1 本・\
+生成 72 本でした。
 ";
 
-/// S06 (業務文書・随筆)。書式を保った人の対照で確かめるまで実験的。
-static LABEL_META: RuleMeta = LABEL_META_BASE;
-
-const LABEL_META_BASE: RuleMeta = RuleMeta {
+static LABEL_META: RuleMeta = RuleMeta {
     id: "S06",
     name: "BOLD_LABEL_LIST",
     title: "「**項目**: 説明」の定型",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
-    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech・general 以外では実験的)",
+    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる",
     explanation: LABEL_EXPLANATION,
-};
-
-/// S06 (技術文書と一般向けの文書)。書式を保った人の記事で誤検知率を確かめたので既定で動かす。
-static LABEL_META_STABLE: RuleMeta = RuleMeta {
-    status: RuleStatus::Stable,
-    summary: "箇条書きが「**ラベル**: 説明」の型で 3 項目以上並んでいる (tech・general では既定)",
-    ..LABEL_META_BASE
 };
 
 /// ラベルの直後に続く区切り。
@@ -821,32 +828,32 @@ fn bold_label_runs(ctx: &RuleContext<'_>) -> Vec<Vec<(Span, String)>> {
     runs
 }
 
-/// S06 BOLD_LABEL_LIST。技術文書と一般向けの文書では既定で動き、業務文書・随筆では実験的。
+/// S06 BOLD_LABEL_LIST。
 pub struct BoldLabelList {
-    meta: &'static RuleMeta,
     min_count: usize,
 }
 
 impl BoldLabelList {
-    pub fn new(genre: Genre) -> Self {
-        let meta = if matches!(genre, Genre::Tech | Genre::General) {
-            &LABEL_META_STABLE
-        } else {
-            &LABEL_META
-        };
-        Self { meta, min_count: 3 }
+    pub fn new() -> Self {
+        Self { min_count: 3 }
+    }
+}
+
+impl Default for BoldLabelList {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Rule for BoldLabelList {
     fn meta(&self) -> &'static RuleMeta {
-        self.meta
+        &LABEL_META
     }
 
     fn configure(&mut self, key: &str, value: &toml::Value) -> Result<(), String> {
         match key {
             "min_count" => self.min_count = option_count(key, value)?,
-            _ => return Err(unknown_option(self.meta, key)),
+            _ => return Err(unknown_option(&LABEL_META, key)),
         }
         Ok(())
     }
@@ -870,7 +877,7 @@ impl Rule for BoldLabelList {
             }
             let (span, label) = &labels[0];
             out.push(
-                self.meta
+                LABEL_META
                     .diagnostic(
                         *span,
                         format!("箇条書きの {n} 項目が「**{label}**: 説明」の型で並んでいます"),
@@ -892,7 +899,7 @@ static TEMPLATE_META: RuleMeta = RuleMeta {
     name: "HEADING_TEMPLATE",
     title: "見出しの型の反復",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
     summary: "見出しの 8 割以上が「X: Y」・問い・番号のどれか同じ型で、型に流し込んだ構成になっている",
     explanation: "\
@@ -925,8 +932,11 @@ static TEMPLATE_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。見出しの型の比率と閾値 0.8 は noslop のコーパスで校正していません。ビジネス文書では見出しの型を\
-そろえるのが正当な慣習なので、ジャンル business では既定で動かしません。
+同じ型の見出しが占める比率の閾値 0.8 は校正していません。ビジネス文書では見出しの型をそろえるのが\
+正当な慣習なので、ジャンル business では既定で動かしません。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 11 本・\
+生成 51 本でした。
 ",
 };
 
@@ -1065,7 +1075,7 @@ static HEADING_EMPHASIS_META: RuleMeta = RuleMeta {
     name: "HEADING_EMPHASIS",
     title: "見出し内の太字・絵文字",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "見出しの中に太字や絵文字があり、もともと目立つ見出しをさらに飾っている",
     explanation: "\
@@ -1091,7 +1101,10 @@ static HEADING_EMPHASIS_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。noslop のコーパスでは校正していません。
+閾値を持たず、太字や絵文字のある見出しをすべて指します。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 14 本・\
+生成 8 本で、人の文書のほうが多く出ました。
 ",
 };
 
@@ -1145,7 +1158,7 @@ static DENSITY_META: RuleMeta = RuleMeta {
     name: "STRUCTURE_DENSITY",
     title: "見出しと箇条書きの密度",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "見出しか箇条書きの項目が原文 1000 字あたりの暫定の目安より多く、文章が細切れになっている",
     explanation: "\
@@ -1172,9 +1185,11 @@ static DENSITY_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。既定の閾値 (見出し 4 個、項目 10 個) は校正前の暫定値で、noslop のコーパスでは\
-校正していません。ビジネス文書では見出しと箇条書きで区切るのが正当な\
-慣習なので、ジャンル business では既定で動かしません。
+既定の閾値 (見出し 4 個、項目 10 個) は暫定値で、校正していません。ビジネス文書では見出しと箇条書きで\
+区切るのが正当な慣習なので、ジャンル business では既定で動かしません。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 69 本・\
+生成 73 本で、人の文書にも同じくらい出ました。
 ",
 };
 
@@ -1334,7 +1349,7 @@ static LABEL_STYLE_META: RuleMeta = RuleMeta {
     name: "LABEL_STYLE",
     title: "絵文字やラベルで始める書き方",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "段落や項目を絵文字か「ラベル：」で書き出す箇所が 3 か所以上あり、文ではなく札を並べた体裁になっている",
     explanation: "\
@@ -1367,9 +1382,12 @@ static LABEL_STYLE_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。noslop のコーパスでは校正していません。対談の書き起こしや Q&A の「話者名：発言」は\
-正当な書き方なので、抑制コメントで理由を添えて外してください。ビジネス文書ではラベルで項目を立てる\
-のが正当な慣習なので、ジャンル business では既定で動かしません。
+3 か所という閾値は校正していません。対談の書き起こしや Q&A の「話者名：発言」は正当な書き方なので、\
+抑制コメントで理由を添えて外してください。ビジネス文書ではラベルで項目を立てるのが正当な慣習なので、\
+ジャンル business では既定で動かしません。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 23 本・\
+生成 11 本で、人の文書のほうが多く出ました。
 ",
 };
 
@@ -1620,7 +1638,7 @@ mod tests {
 
         for rule in [
             Box::new(NumberedPhases::new()) as Box<dyn Rule>,
-            Box::new(BoldLabelList::new(Genre::General)),
+            Box::new(BoldLabelList::new()),
             Box::new(LabelStyle::new()),
         ] {
             assert!(
@@ -1634,45 +1652,43 @@ mod tests {
     }
 
     #[test]
-    fn ids_and_business_genre() {
+    fn ids_lanes_signals_and_business_genre() {
         let rules = rules(Genre::General);
         let ids: Vec<_> = rules.iter().map(|r| r.meta().id).collect();
         let expected: Vec<String> = (1..=12).map(|n| format!("S{n:02}")).collect();
         assert_eq!(ids, expected);
         for r in &rules {
-            assert_eq!(
-                r.meta().status,
-                if matches!(r.meta().id, "S06" | "S11" | "S12") {
-                    RuleStatus::Stable
-                } else {
-                    RuleStatus::Experimental
-                },
-                "{}",
-                r.meta().id
-            );
+            let id = r.meta().id;
             assert_eq!(
                 r.meta().lane,
-                if matches!(r.meta().id, "S11" | "S12") {
+                if matches!(id, "S11" | "S12") {
                     Lane::Readability
                 } else {
                     Lane::Slop
-                }
+                },
+                "{id}"
             );
-            let blocked = matches!(
-                r.meta().id,
-                "S01" | "S02" | "S03" | "S04" | "S07" | "S09" | "S10"
-            );
-            assert_eq!(r.allowed_in(Genre::Business), !blocked, "{}", r.meta().id);
+            // 手掛かりの強さは、人の文書 440 本と生成文書 390 本で測った反応率から決めた値。
+            // 読みやすさのレーンのルール (S11・S12) は持たない
+            let signal = match id {
+                "S04" | "S06" | "S07" => Some(Signal::Strong),
+                "S01" | "S02" => Some(Signal::Moderate),
+                "S03" | "S05" | "S08" | "S09" | "S10" => Some(Signal::Weak),
+                _ => None,
+            };
+            assert_eq!(r.meta().signal, signal, "{id}");
+            let blocked = matches!(id, "S01" | "S02" | "S03" | "S04" | "S07" | "S09" | "S10");
+            assert_eq!(r.allowed_in(Genre::Business), !blocked, "{id}");
             assert!(r.allowed_in(Genre::Tech));
         }
-        // S06 は書式を保った人の対照で確かめた技術文書と一般向けの文書でだけ既定で動く
-        for (genre, status) in [
-            (Genre::General, RuleStatus::Stable),
-            (Genre::Tech, RuleStatus::Stable),
-            (Genre::Business, RuleStatus::Experimental),
-            (Genre::Essay, RuleStatus::Experimental),
-        ] {
-            assert_eq!(BoldLabelList::new(genre).meta().status, status, "{genre}");
+        // S06 はジャンルで定義を変えず、どのジャンルでも強い手掛かりとして既定で動く
+        for genre in Genre::ALL {
+            let s06 = super::rules(genre)
+                .into_iter()
+                .find(|r| r.meta().id == "S06")
+                .unwrap();
+            assert_eq!(s06.meta().signal, Some(Signal::Strong), "{genre}");
+            assert!(s06.allowed_in(genre), "{genre}");
         }
     }
 
@@ -1696,6 +1712,18 @@ mod tests {
             assert!(m.explanation.contains("- 直す前: "), "{}", m.id);
             assert!(m.explanation.contains("- 直した後: "), "{}", m.id);
             assert!(!m.summary.contains('\n'), "{}", m.id);
+            // 実行の区分 (試験的) は書かない。AI 臭さのレーンのルールだけが根拠に手掛かりの強さを書く
+            for text in [m.summary, m.explanation] {
+                assert!(!text.contains("実験的"), "{}: {text}", m.id);
+            }
+            let basis = m.explanation.split("### 根拠").nth(1).unwrap_or_default();
+            match m.signal {
+                Some(signal) => {
+                    assert!(basis.contains("手掛かりの強さ"), "{}", m.id);
+                    assert!(basis.contains(signal.level_ja()), "{}", m.id);
+                }
+                None => assert!(!m.explanation.contains("手掛かりの強さ"), "{}", m.id),
+            }
         }
     }
 
@@ -1969,24 +1997,24 @@ mod tests {
     #[test]
     fn s06_flags_bold_label_lists() {
         let md = "- **速度**: 起動が速い\n- **安全性**: 権限を絞れる\n- **拡張性:** プラグインを足せる\n";
-        let d = run(&BoldLabelList::new(Genre::General), md);
+        let d = run(&BoldLabelList::new(), md);
         assert_eq!(d.len(), 1, "1 つの箇条書きに 1 件");
         assert!(d[0].message.contains("3 項目が「**速度**: 説明」"));
         assert_eq!(d[0].related.len(), 3);
         assert_eq!(matched(md, &d), vec!["**速度**"]);
         let plain = "- 速度: 起動が速い\n- **安全性**は高い\n- 拡張性\n";
-        assert!(run(&BoldLabelList::new(Genre::General), plain).is_empty());
+        assert!(run(&BoldLabelList::new(), plain).is_empty());
     }
 
     #[test]
     fn s06_counts_each_list_separately() {
         // 段落を挟んだ 2 つの箇条書きに 2 項目ずつなら、どちらも 3 項目に届かない
         let md = "- **速度**: 起動が速い\n- **安全性**: 権限を絞れる\n\n比べた結果を書く。\n\n- **費用**: 安い\n- **保守**: 楽になる\n";
-        assert!(run(&BoldLabelList::new(Genre::General), md).is_empty());
+        assert!(run(&BoldLabelList::new(), md).is_empty());
         // 型でない項目を挟んでも、同じ箇条書きの中なら数える
         let md =
             "- **速度**: 起動が速い\n- 補足の項目\n- **安全性**: 権限を絞れる\n- **費用**: 安い\n";
-        assert_eq!(run(&BoldLabelList::new(Genre::General), md).len(), 1);
+        assert_eq!(run(&BoldLabelList::new(), md).len(), 1);
     }
 
     #[test]

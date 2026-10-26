@@ -61,12 +61,17 @@ pub struct RenderOptions {
     pub quiet: bool,
     /// JSON の `settings` に載せる値。
     pub genre: Genre,
-    pub experimental: bool,
     pub fail_on: FailOn,
     /// brief で 1 ルールあたりに並べる箇所の上限 (`None` なら既定の 5)。
     pub brief_limit: Option<usize>,
     /// brief を短くする (フックから AI に返すとき)。
     pub brief_compact: bool,
+    /// brief の短縮版で、重大度が情報で手掛かりが弱い指摘を詳しく書かず、件数だけにする
+    /// (フックから返すとき。省く指摘は [`brief::is_weak_info`] で決める)。省いた後に指摘が
+    /// 残らないファイルは、指摘のないファイルと同じに扱う。
+    pub brief_omit_weak_info: bool,
+    /// brief の短縮版で、省いた件数に添える全件の確認コマンド (なければ件数だけを書く)。
+    pub brief_followup: Option<String>,
     /// brief がルールの日本語名・説明を引くための目録。
     pub catalog: RuleCatalog,
 }

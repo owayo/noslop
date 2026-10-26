@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleContext, RuleMeta};
 use crate::text;
@@ -16,7 +16,7 @@ static META: RuleMeta = RuleMeta {
     name: "SELF_ANSWER",
     title: "問いと自答",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "問いの文のすぐ後に「それは」「答えは」で始まる文が続き、自分で立てた問いに自分で答えている",
     explanation: EXPLANATION,
@@ -48,8 +48,10 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。生成された文章の精読で繰り返し見つかった型ですが、人の文章と生成された文章を見分ける\
-力はコーパスで測っていません。
+生成された文章の精読で繰り返し見つかった型です。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 13 本・\
+生成 4 本で、人の文書のほうが多く出ました。
 ";
 
 /// 次の文: 問いへの答えを切り出す書き出し。
@@ -123,7 +125,7 @@ mod tests {
         let d = run(&rule(), md);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].rule_id, "R11");
-        assert_eq!(d[0].status, RuleStatus::Experimental);
+        assert_eq!(d[0].signal, Some(Signal::Weak));
         assert_eq!(d[0].severity, Severity::Info);
         assert_eq!(matched(md, &d), vec!["なぜ締め日が月末なのでしょうか？"]);
         assert!(d[0].message.contains("「それは」"));

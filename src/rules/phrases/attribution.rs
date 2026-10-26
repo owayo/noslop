@@ -4,20 +4,18 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::{Block, Document, MarkKind, Sentence};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
-
-use super::engine::WEAK_SIGNAL_NOTE;
 
 static META: RuleMeta = RuleMeta {
     id: "P21",
     name: "VAGUE_ATTRIBUTION",
     title: "出典をぼかした権威付け",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
-    summary: "誰の研究・主張かを示さずに権威を借りる文頭の型を、出典の確認候補として指摘する (実験的)",
+    summary: "誰の研究・主張かを示さずに権威を借りる文頭の型を、出典の確認候補として指摘する",
     explanation: r"### 何を見るか
 
 文頭の「専門家は〜と指摘しています」「研究者によると」「研究によって明らかになっています」「調査では〜が示されています」などを探します。「一部の」「多くの」「複数の」「最近の」を冠する形も含みます。主語から述語までの間は 40 字以内で、引用符をまたぎません。単なる「研究では」や「と言われています」は拾いません。
@@ -39,7 +37,9 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-未校正の実験的なルールです。検出の条件の誤検知率は測っていません。人も使う表現のため、弱い手掛かりとして情報で扱います。",
+検出の条件は校正していません。人も使う表現のため、情報で扱います。
+
+人の文書 440 本と生成文書 390 本では反応がなく (人 0 本・生成 0 本) 強さを測れないため、手掛かりの強さは中程度としています。",
 };
 
 static ATTRIBUTION: LazyLock<Regex> = LazyLock::new(|| {
@@ -117,11 +117,16 @@ impl Rule for VagueAttribution {
                 let span = block.to_source(
                     sentence.range.start + hit.start()..sentence.range.start + hit.end(),
                 );
-                out.push(META.diagnostic(span, format!("「{}」の出典を確認してください", quote(hit.as_str())))
-                    .with_hint(format!("誰の研究・発言か、本文から出典をたどれるか確認してください。{WEAK_SIGNAL_NOTE}"))
+                out.push(
+                    META.diagnostic(
+                        span,
+                        format!("「{}」の出典を確認してください", quote(hit.as_str())),
+                    )
+                    .with_hint("誰の研究・発言か、本文から出典をたどれるか確認してください")
                     .with_context(sentence.span)
                     .with_metric("item", "匿名の研究・専門家への帰属")
-                    .with_metric("matched", hit.as_str()));
+                    .with_metric("matched", hit.as_str()),
+                );
             }
         }
     }

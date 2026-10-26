@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
 use crate::document::{Block, Document, MarkKind};
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::text;
@@ -14,9 +14,9 @@ static META: RuleMeta = RuleMeta {
     name: "DUPLICATE_PASSAGE",
     title: "文・段落の重複",
     lane: Lane::Readability,
-    status: RuleStatus::Experimental,
+    signal: None,
     default_severity: Severity::Info,
-    summary: "同じ文または段落が再登場する箇所を、初出の位置とともに指摘する (実験的)",
+    summary: "同じ文または段落が再登場する箇所を、初出の位置とともに指摘する",
     explanation: r"### 何を見るか
 
 地の文で、30 字以上 (空白と末尾の文末記号を除く。min_chars で変更可能) の同じ文・段落が再登場した箇所を指します。連続する空白だけを半角空白 1 字にそろえ、語句・数字・否定・句読点は変えずに比べます。段落の重複を指した場合、その中の文は重ねて指しません。初出は関連箇所とメッセージの行・列で示します。
@@ -38,7 +38,7 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-未校正の実験的なルールです。一致の条件と 30 字は暫定の値で、校正していません。人の文書にも再掲はあるため、既定では有効にしません。",
+一致の条件と 30 字は暫定の値で、校正していません。人の文書にも意図した再掲があるため、情報として示します。",
 };
 
 #[derive(Clone, Copy)]

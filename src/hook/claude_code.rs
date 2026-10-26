@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::{CONTEXT_BUDGET_CHARS, KEEP_NOTE, read_input, review, truncate_lines};
+use super::{
+    CONTEXT_BUDGET_CHARS, Followup, KEEP_NOTE, followup_command, read_input, review, truncate_lines,
+};
 use crate::changed::{ChangeScope, ChangedLines};
 use crate::cli::{self, HookArgs};
 use crate::document::Document;
@@ -108,15 +110,19 @@ fn post_tool_use(
             change_scope(tool, event, doc)
         }
     };
-    let Some(review) = review(&path, cwd.as_deref(), args, env, changed)? else {
+    // ファイル全体の確認コマンド (省いた指摘の件数と、変わった行に絞ったときの注記に添える)
+    let location = cwd.as_deref().unwrap_or(Path::new("."));
+    let location = std::path::absolute(location).unwrap_or_else(|_| location.to_path_buf());
+    let target = path.strip_prefix(&location).unwrap_or(&path);
+    let whole = followup_command(args, &location, Followup::WholeFile(target));
+    let Some(review) = review(&path, cwd.as_deref(), args, env, &whole, changed)? else {
         return Ok(None);
     };
     let mut context = review.brief;
     context.push_str(KEEP_NOTE);
     if review.limited {
         context.push_str(&format!(
-            "今回変わった行に重なる指摘だけを返しています。ファイル全体は `noslop check --format brief {}` で確認できます。\n",
-            review.name
+            "今回変わった行に重なる指摘だけを返しています。ファイル全体は `{whole}` で確認できます。\n"
         ));
     }
     let context = truncate_lines(&context, CONTEXT_BUDGET_CHARS, None);
@@ -216,7 +222,9 @@ fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::{CONFIG, DOC, parse, workspace};
+    use super::super::testing::{
+        CONFIG, DOC, MIXED_DOC, WEAK_DOC, omitted_followup, parse, workspace,
+    };
     use super::*;
 
     fn args(extra: &[&str]) -> HookArgs {
@@ -400,6 +408,58 @@ mod tests {
         let dir = workspace("# メモ\n\n今日は晴れた。散歩に出かけた。\n");
         let input = event(dir.path(), "Write", "guide.md", json!({}), json!({}));
         assert_eq!(run(&input, &[]), None);
+    }
+
+    /// 弱い手掛かりの情報の指摘は件数だけにし、ファイル全体を check で見るコマンドを添える。変わった行に
+    /// 絞ったときの注記も同じコマンドを案内する。それしかないファイルは何も返さない。
+    #[test]
+    fn weak_info_findings_are_counted_with_a_whole_file_command() {
+        let dir = workspace(MIXED_DOC);
+        let write = event(
+            dir.path(),
+            "Write",
+            "guide.md",
+            json!({ "content": MIXED_DOC }),
+            json!({ "type": "create", "structuredPatch": [] }),
+        );
+        let ctx = run(&write, &[]).unwrap();
+        assert!(
+            ctx.starts_with("noslop が guide.md に 独自ルールの指摘を 1 件見つけました。"),
+            "{ctx}"
+        );
+        assert!(!ctx.contains("P05"), "{ctx}");
+        let command = omitted_followup(&ctx, 1).to_string();
+        assert!(
+            command.contains(
+                "noslop check --report brief --brief-limit unlimited --no-readability -- 'guide.md'"
+            ),
+            "{command}"
+        );
+        let all = run(&write, &["--brief-limit", "unlimited"]).unwrap();
+        assert!(all.contains("- P05 "), "{all}");
+        assert!(!all.contains("省きました"), "{all}");
+
+        // 5 行目だけを書き換えた: 3 行目の弱い指摘は範囲の外なので、件数も書かない
+        let patch = json!({ "structuredPatch": [{
+            "oldStart": 5, "oldLines": 1, "newStart": 5, "newLines": 1,
+            "lines": ["-古い段落です。", "+ユーザー様に届けます。"]
+        }] });
+        let edit = event(
+            dir.path(),
+            "Edit",
+            "guide.md",
+            json!({ "old_string": "古い段落です。", "new_string": "ユーザー様に届けます。" }),
+            patch,
+        );
+        let ctx = run(&edit, &[]).unwrap();
+        assert!(
+            ctx.contains(&format!("ファイル全体は `{command}` で確認できます。")),
+            "{ctx}"
+        );
+        assert!(!ctx.contains("省きました"), "{ctx}");
+
+        std::fs::write(dir.path().join("guide.md"), WEAK_DOC).unwrap();
+        assert_eq!(run(&write, &[]), None);
     }
 
     #[test]

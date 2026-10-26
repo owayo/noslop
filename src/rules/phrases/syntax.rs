@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::BlockKind;
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
@@ -26,9 +26,9 @@ static P13_META: RuleMeta = RuleMeta {
     name: "INANIMATE_SUBJECT",
     title: "無生物主語＋他動詞",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
-    summary: "「この事実は〜を示している」のような、無生物を主語にして他動詞で結ぶ直訳調の構文を指摘する (実験的)",
+    summary: "「この事実は〜を示している」のような、無生物を主語にして他動詞で結ぶ直訳調の構文を指摘する",
     explanation: r"### 何を見るか
 
 「これは」「それが」「この事実は」「そのことは」「〜ことが」のような抽象的な主語のあと、40 字以内に「もたらす」「示す」「意味する」「証明する」「生み出す」「反映する」「示唆する」「物語る」「浮き彫りにする」「後押しする」「暗示する」が来る文を探します。主語のあとで開いた括弧の中の述語 (「これは「〜と証明した」ものではない」) は、主語の述語ではないので数えません。主語が括弧の中にあり、述語より前でその括弧が閉じる文 (「「〜ことが大切」との見解を示した」の「ことが」) も、主語が括弧の中の節に属するので数えません。
@@ -50,9 +50,11 @@ static P13_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。受け身と括弧の中の主語を除いても、人の文書 176 本 (一般・技術・業務・随筆・スライド) のうち 11 本 (6.3%) に反応し、生成文書 (2025 年頃のモデルなどの 390 本で 22 本・5.6%、2026 年のモデルの 1,339 本で 29 本・2.2%) と同じかそれ以上でした。人の白書・随筆・技術記事は「これは〜を意味する」「〜を示す」をよく使います (「示す」は人 3 本・生成 15 本、「意味する」は人 3 本・生成 6 本)。生成文書に偏るのは「もたらす」(人 2 本・生成 20 本) くらいで、構文全体では人と生成を見分けられないため、既定では動かしません。辞書を使わず、述語は活用の語幹 (「示し」「もたらさ」など) で照合します。未然形の「もたらさ」「示さ」「生み出さ」は、否定 (「何も生み出さない」) のときだけ拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は人の随筆にも出る語です。
+受け身と括弧の中の主語を除いても、人の文書 176 本 (一般・技術・業務・随筆・スライド) のうち 11 本 (6.3%) に反応し、生成文書 (2025 年頃のモデルなどの 390 本で 22 本・5.6%、2026 年のモデルの 1,339 本で 29 本・2.2%) と同じかそれ以上でした。人の白書・随筆・技術記事は「これは〜を意味する」「〜を示す」をよく使います (「示す」は人 3 本・生成 15 本、「意味する」は人 3 本・生成 6 本)。生成文書に偏るのは「もたらす」(人 2 本・生成 20 本) くらいで、構文全体では人と生成を見分けられません。辞書を使わず、述語は活用の語幹 (「示し」「もたらさ」など) で照合します。未然形の「もたらさ」「示さ」「生み出さ」は、否定 (「何も生み出さない」) のときだけ拾います。「指示」「表示」のように前に漢字が付く「示」は動詞とみなしません。「暗示する」は人の随筆にも出る語です。
 
-受け身と、括弧の中の主語を除くと、人の文書 176 本の指摘は 27 件から 15 件に、生成文書 1,729 本の指摘は 61 件から 57 件になりました。外れたのは、白書や報告書に多い「〜ことが示された」の形 (人の文書 10 件・生成文書 4 件) と、発言を引いた括弧の中の「ことが」(人の文書 2 件) です。",
+受け身と、括弧の中の主語を除くと、人の文書 176 本の指摘は 27 件から 15 件に、生成文書 1,729 本の指摘は 61 件から 57 件になりました。外れたのは、白書や報告書に多い「〜ことが示された」の形 (人の文書 10 件・生成文書 4 件) と、発言を引いた括弧の中の「ことが」(人の文書 2 件) です。
+
+手掛かりの強さは中程度です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 14 本・生成 22 本でした。述語では、「示す」(人 3 本・生成 8 本) は強い手掛かりで、「もたらす」(人 3 本・生成 7 本) と「反映する」(人 4 本・生成 4 本) は中程度でした。",
 };
 
 /// 抽象的な主語と主題・主格の助詞。長い候補を先に置く。
@@ -92,9 +94,6 @@ const P13_VERB_ITEMS: [(&str, &str); 11] = [
     ("後押し", "後押しする"),
 ];
 
-/// 実験的な述語 (終止形)。未校正なので `--experimental` か設定で有効にしたときだけ数える。
-const P13_EXPERIMENTAL_VERBS: [&str; 1] = ["暗示する"];
-
 /// 一致した他動詞 (活用形) の終止形。一覧にない形なら一致した形のまま返す。
 fn p13_verb_item(verb: &str) -> String {
     P13_VERB_ITEMS
@@ -103,17 +102,23 @@ fn p13_verb_item(verb: &str) -> String {
         .map_or_else(|| verb.to_string(), |(_, item)| (*item).to_string())
 }
 
-/// 実験的な述語か。
-fn p13_experimental_verb(verb: &str) -> bool {
-    P13_EXPERIMENTAL_VERBS.contains(&p13_verb_item(verb).as_str())
+/// P13 の項目 (述語の終止形) のうち、測った手掛かりの強さがルール (中程度) と違うもの。
+const P13_ITEM_SIGNALS: &[(&str, Signal)] = &[("示す", Signal::Strong)];
+
+/// 項目の手掛かりの強さ。`overrides` にある項目はその値、ほかはルールの値。
+fn item_signal(meta: &RuleMeta, overrides: &[(&str, Signal)], item: &str) -> Option<Signal> {
+    overrides
+        .iter()
+        .find(|(name, _)| *name == item)
+        .map(|(_, signal)| *signal)
+        .or(meta.signal)
 }
 
 pub(super) struct InanimateSubject;
 
 impl InanimateSubject {
     /// 文のテキストから (主語の開始〜述語の終わり, 主語, 述語) を探す。
-    /// `experimental` が偽なら、実験的な述語は述語とみなさない。
-    fn find(text: &str, experimental: bool) -> Vec<(Range<usize>, String, String)> {
+    fn find(text: &str) -> Vec<(Range<usize>, String, String)> {
         let mut out: Vec<(Range<usize>, String, String)> = Vec::new();
         for subject in SUBJECT_RE.find_iter(text) {
             // この事実は → 事実は のように同じ主語を二重に数えない
@@ -137,7 +142,6 @@ impl InanimateSubject {
                 !compound
                     && !is_passive(m.as_str(), &text[end..])
                     && !crosses_bracket(&text[..subject.start()], &text[subject.end()..start])
-                    && (experimental || !p13_experimental_verb(m.as_str()))
             });
             if let Some(verb) = verb {
                 let end = subject.end() + verb.end();
@@ -206,15 +210,8 @@ impl Rule for InanimateSubject {
         for (idx, block) in ctx.scoped_blocks() {
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
-                // ルール自体が実験的なら、有効にされた時点で全述語を使う
-                let all = ctx.experimental || P13_META.status == RuleStatus::Experimental;
-                for (range, subject, verb) in Self::find(text, all) {
+                for (range, subject, verb) in Self::find(text) {
                     let matched = &text[range.clone()];
-                    let status = if p13_experimental_verb(&verb) {
-                        RuleStatus::Experimental
-                    } else {
-                        P13_META.status
-                    };
                     let abs =
                         (sentence.range.start + range.start)..(sentence.range.start + range.end);
                     let message = format!(
@@ -223,6 +220,7 @@ impl Rule for InanimateSubject {
                         subject.trim_end_matches(['は', 'が']),
                         verb
                     );
+                    let item = p13_verb_item(&verb);
                     out.push(
                         diagnostic(
                             &P13_META,
@@ -232,9 +230,9 @@ impl Rule for InanimateSubject {
                             message,
                             "人や状況を主語に戻すか、「〜から分かる」「〜になっている」のような述べ方に変えてください",
                             P13_META.default_severity,
-                            status,
+                            item_signal(&P13_META, P13_ITEM_SIGNALS, &item),
                         )
-                        .with_metric("item", p13_verb_item(&verb)),
+                        .with_metric("item", item),
                     );
                 }
             }
@@ -251,9 +249,9 @@ static P14_META: RuleMeta = RuleMeta {
     name: "EM_DASH",
     title: "ダッシュの挿入句",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
-    summary: "「〜——つまり〜——〜」のような、ダッシュで挟んだ挿入句を指摘する (実験的)",
+    summary: "「〜——つまり〜——〜」のような、ダッシュで挟んだ挿入句を指摘する",
     explanation: r"### 何を見るか
 
 日本語の文の中で、ダッシュ (「——」「―」「—」) を対にして補足を挟む挿入句と、日本語どうしの間に置かれた二倍ダッシュ「——」を探します。同じブロック内で対応する「」・『』・“”・二重引用符の内側に完全に収まる一致と、開き引用符の直後の一致は、語句への言及として除きます。意味による判定ではないため、書名の副題 (『〜——〜』) や、引用された発言で実際に使われたダッシュも指摘しません。
@@ -273,7 +271,9 @@ static P14_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-翻訳調の手癖として知られている書き方ですが、コーパスでの誤検知率は測っていません。「東京—大阪」のような区間の表記と区別するため、単独のダッシュの対は、挟まれた部分にひらがなを含むときだけ挿入句とみなします。実験的なルールとして `--experimental` か設定で有効にしたときだけ動きます。引用符の内側の一致は、人の文書 176 本で 4 件 (書名の副題と、引いた発言・独白の中のダッシュ)、生成文書 1,729 本で 0 件でした。",
+翻訳調の手癖として知られている書き方です。「東京—大阪」のような区間の表記と区別するため、単独のダッシュの対は、挟まれた部分にひらがなを含むときだけ挿入句とみなします。引用符の内側の一致は、人の文書 176 本で 4 件 (書名の副題と、引いた発言・独白の中のダッシュ)、生成文書 1,729 本で 0 件でした。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 14 本・生成 12 本でした。ダッシュの対で挟んだ挿入句は、項目だけで数えると件数が少なく (人 3 本・生成 1 本)、強さを測れません。",
 };
 
 fn is_dash(c: char) -> bool {
@@ -386,7 +386,7 @@ impl Rule for EmDash {
                             format!("「{}」はダッシュで挟んだ挿入句です", quote(matched)),
                             "補足は括弧に入れるか、文を分けてください",
                             P14_META.default_severity,
-                            P14_META.status,
+                            P14_META.signal,
                         )
                         .with_metric("item", item),
                     );
@@ -405,9 +405,9 @@ static P20_META: RuleMeta = RuleMeta {
     name: "COLON_CONTINUATION",
     title: "述語とコロンでの列挙の導入",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Info,
-    summary: "「手順は以下の通りです：」のように、述語のあとにコロンを置いて箇条書きへつなぐ英語的な形を指摘する (実験的)",
+    summary: "「手順は以下の通りです：」のように、述語のあとにコロンを置いて箇条書きへつなぐ英語的な形を指摘する",
     explanation: r"### 何を見るか
 
 段落が「以下の通りです：」「次の手順で設定します:」のように、述語 (です・ます・ください・通り など) にコロンを付けて終わり、直後に箇条書きが続く箇所を探します。「使い方：」のような名詞とコロンの見出し語は拾いません。
@@ -427,7 +427,9 @@ static P20_META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-実験的です。辞書を使わず、述語は段落の末尾のひらがなの語形 (です・ます・ください・通り・する など) で見分けており、コーパスでの誤検知率は測っていません。",
+辞書を使わず、述語は段落の末尾のひらがなの語形 (です・ます・ください・通り・する など) で見分けています。
+
+手掛かりの強さは「強い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 0 本・生成 22 本でした (「ます：」で 15 本、「です：」で 6 本)。",
 };
 
 /// 述語とみなす段落末の語形 (コロンの直前)。長いものを先に置く。
@@ -502,7 +504,7 @@ impl Rule for ColonContinuation {
                     ),
                     "コロンを外して句点で文を閉じるか、「手順：」のような名詞のラベルに縮めてください",
                     P20_META.default_severity,
-                    P20_META.status,
+                    P20_META.signal,
                 )
                 .with_metric("item", format!("{ending}＋コロン")),
             );
@@ -561,9 +563,9 @@ mod tests {
     }
 
     #[test]
-    fn p13_is_experimental_and_uses_every_verb_once_enabled() {
-        // ルールごと実験的なので、有効にされれば「暗示する」も数え、指摘はすべて実験的
-        assert_eq!(P13_META.status, RuleStatus::Experimental);
+    fn p13_counts_every_verb_and_signals_by_item() {
+        // 「暗示する」も数え、ルールの強さ (中程度) を継ぐ。「示す」だけは強い手掛かり
+        assert_eq!(P13_META.signal, Some(Signal::Moderate));
         let md = "この事実は、需要が戻らないことを暗示している。\n";
         let d = run(&InanimateSubject, md);
         assert_eq!(
@@ -571,11 +573,16 @@ mod tests {
             vec!["この事実は、需要が戻らないことを暗示し"]
         );
         assert_eq!(item(&d[0]), "暗示する");
-        assert_eq!(d[0].status, RuleStatus::Experimental);
-        let md = "これは需要の減少を示している。\n";
+        assert_eq!(d[0].signal, Some(Signal::Moderate));
+        let md = "これは需要の減少を示している。それは変化をもたらした。\n";
         let d = run(&InanimateSubject, md);
-        assert_eq!(item(&d[0]), "示す");
-        assert_eq!(d[0].status, RuleStatus::Experimental);
+        let items: Vec<&str> = d.iter().map(item).collect();
+        assert_eq!(items, ["示す", "もたらす"]);
+        let signals: Vec<_> = d.iter().map(|d| d.signal).collect();
+        assert_eq!(signals, [Some(Signal::Strong), Some(Signal::Moderate)]);
+        // 活用が違っても項目は「示す」なので、同じ強さになる
+        let md = "このことは何も示さない。\n";
+        assert_eq!(run(&InanimateSubject, md)[0].signal, Some(Signal::Strong));
     }
 
     #[test]
@@ -747,7 +754,7 @@ mod tests {
         let md = "申請に必要な書類は以下の通りです：\n\n- 申請書\n- 領収書\n";
         let d = run(&ColonContinuation, md);
         assert_eq!(matched(md, &d), vec!["です："]);
-        assert_eq!(d[0].status, RuleStatus::Experimental);
+        assert_eq!(d[0].signal, Some(Signal::Strong));
         let ctx = d[0].context.expect("context");
         assert_eq!(&md[ctx.range()], "申請に必要な書類は以下の通りです：");
 
@@ -794,11 +801,14 @@ mod tests {
         let items: Vec<&str> = d.iter().map(item).collect();
         assert_eq!(items, vec!["示す", "示唆する"]);
 
-        // P14 は挿入句の対と、対になっていない二倍ダッシュを分ける
+        // P14 は挿入句の対と、対になっていない二倍ダッシュを分ける。二倍ダッシュは測った強さが
+        // ルールと同じで、対の挿入句は件数が少なく測れないので、どちらもルールの強さ (弱い) を継ぐ
         let md = "作業は明日——予定どおりに進めば——終わる。準備は万全——だと思う。\n";
         let d = run(&EmDash, md);
         let items: Vec<&str> = d.iter().map(item).collect();
         assert_eq!(items, vec![P14_PAIR_ITEM, P14_DOUBLE_ITEM]);
+        let signals: Vec<_> = d.iter().map(|d| d.signal).collect();
+        assert_eq!(signals, [Some(Signal::Weak), Some(Signal::Weak)]);
 
         // P20 は述語の語形
         let md = "申請に必要な書類は以下の通りです：\n\n- 申請書\n";

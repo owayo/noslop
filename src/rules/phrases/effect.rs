@@ -1,6 +1,6 @@
 //! P24: 効果の説明を感覚的な言い回しで済ませている箇所。
 
-use crate::diagnostic::{Lane, RuleStatus, Severity};
+use crate::diagnostic::{Lane, Severity, Signal};
 use crate::rules::RuleMeta;
 
 use super::engine::{Entry, PhraseSpec};
@@ -11,9 +11,9 @@ pub(super) static P24: PhraseSpec = PhraseSpec {
         name: "VAGUE_EFFECT",
         title: "効果をぼかす言い回し",
         lane: Lane::Slop,
-        status: RuleStatus::Experimental,
+        signal: Some(Signal::Moderate),
         default_severity: Severity::Info,
-        summary: "「地味に効く」のように、何への効果かを言わずに効き目を評する言い回しを見直す (実験的)",
+        summary: "「地味に効く」のように、何への効果かを言わずに効き目を評する言い回しを見直す",
         explanation: r"### 何を見るか
 
 「地味に効く」「地味に効きます」「地味に効いた」「地味に効いてきます」などを探します。「効率」「効用」「効能」といった語は対象にしません。「効く」単独や「よく効く」「じわじわ効く」も対象にしません。既定は段落だけを見て、リスト・表・引用は語句ルールのスコープ設定に従います。同じブロック内で対応する「」・『』・“”・二重引用符の内側に完全に収まる一致と、開き引用符の直後の一致は、語句への言及として除きます。意味による判定ではないため、引用された発言で実際に使われた言い回しも指摘しません。
@@ -33,9 +33,11 @@ pub(super) static P24: PhraseSpec = PhraseSpec {
 
 ### 根拠
 
-人の文書 171 本・生成文書 390 本の地の文で下調べすると、「地味に効く」の活用形は人の文書で 0 本、生成文書で 2 本・2 件でした。件数が少なく、ジャンルをそろえた保留のデータで確かめていないため、未校正の実験的なルールとして情報で扱います。効果が具体的かどうかを機械的に判定するものではありません。",
+人の文書 171 本・生成文書 390 本の地の文で下調べすると、「地味に効く」の活用形は人の文書で 0 本、生成文書で 2 本・2 件でした。件数が少なく、ジャンルをそろえた保留のデータで確かめていないため、情報で扱います。効果が具体的かどうかを機械的に判定するものではありません。
+
+人の文書 440 本と生成文書 390 本でも反応が少なく (人 0 本・生成 2 本) 強さを測れないため、手掛かりの強さは中程度としています。",
     },
-    entries: &[Entry::exp_re(
+    entries: &[Entry::re(
         r"(?P<m>地味に効(?:いて(?:き(?:ました|ます|た)|くる|い(?:ます|る|た))?|いた|き(?:ました|ます)?|く))(?:$|[^\p{Han}])",
         Severity::Info,
     )],
@@ -68,7 +70,7 @@ mod tests {
             let findings = run(&PhraseRule::new(&P24), &md);
             assert_eq!(matched(&md, &findings), [phrase]);
             assert_eq!(findings[0].severity, Severity::Info);
-            assert_eq!(findings[0].status, RuleStatus::Experimental);
+            assert_eq!(findings[0].signal, Some(Signal::Moderate));
         }
         // 活用の境界にある「、」を範囲に含めない。
         let md = "記入例が地味に効き、問い合わせが減った。";
@@ -117,17 +119,14 @@ mod tests {
     }
 
     #[test]
-    fn experimental_or_explicit_selection_is_required() {
+    fn runs_by_default_on_prose_and_fragments_unless_disabled() {
         let source = "記入例が地味に効きます。";
-        for (experimental, explicit, expected) in
-            [(false, false, 0), (true, false, 1), (false, true, 1)]
-        {
+        for (disabled, expected) in [(false, 1), (true, 0)] {
             let engine = Engine::with_rules(
                 vec![Box::new(PhraseRule::new(&P24))],
                 EngineOptions {
-                    experimental,
                     selection: Selection {
-                        cli_enable: if explicit { vec!["P24".into()] } else { vec![] },
+                        cli_disable: if disabled { vec!["P24".into()] } else { vec![] },
                         ..Selection::default()
                     },
                     ..EngineOptions::default()

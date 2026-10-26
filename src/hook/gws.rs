@@ -19,8 +19,10 @@
 //!   (実行時に決まる語が、フラグの値の位置の外にある。`--text` や `--dry-run` が加わるかもしれない) は、
 //!   止めずに改稿指示を知らせる (Claude Code では書き込みの後に届く)。セッションの ID やキャッシュの
 //!   置き場所がなく、記録を残せないときも止めずに知らせる
-//! - 指摘がない・gws の書き込みでないときは何も出力しない。gws を含まない Bash は、解析も設定の読み込みも
-//!   せずに返す
+//! - 改稿指示では、重大度が情報で手掛かりが弱い指摘を詳しく書かず、件数だけを添える (書き込む値は
+//!   ファイルにないので、全件の確認コマンドは添えない)。止めるかどうかは省く前の指摘で決める
+//! - 指摘がない (省いた後に残らないときも)・gws の書き込みでないときは何も出力しない。gws を含まない
+//!   Bash は、解析も設定の読み込みもせずに返す
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -189,17 +191,21 @@ pub(super) fn review_writes(
 
     let reviewer = Reviewer::new(args, request.cwd, env)?;
     let checked: Vec<Checked> = writes.iter().map(|w| check(&reviewer, w)).collect();
+    // 止めるかどうかは、改稿指示で省く指摘 (弱い手掛かりの情報) も含めて決める (省くのは情報だけなので、
+    // 本文に警告以上があるかは変わらない)
     let blocks = may_deny && checked.iter().any(Checked::blocks);
+    // 頭と注記は、改稿指示に詳しく載せる指摘で決める
     let dry_run_only = checked
         .iter()
-        .filter(|c| c.has_prose_findings() || c.has_fragment_findings())
+        .filter(|c| c.has_prose_findings(&reviewer) || c.has_fragment_findings(&reviewer))
         .all(|c| c.write.dry_run);
-    let notes = notes(&checked);
+    let notes = notes(&checked, &reviewer);
     let reports: Vec<FileReport> = checked
         .into_iter()
         .flat_map(Checked::into_reports)
         .collect();
-    let Some(brief) = reviewer.brief(reports)? else {
+    // 書き込む値はファイルにないので、同じ指摘を再現する確認コマンドは添えない
+    let Some(brief) = reviewer.brief(reports, None)? else {
         return Ok(None);
     };
 
@@ -240,14 +246,15 @@ pub(super) fn review_writes(
     Ok(Some(Verdict::Report(compose(style, head, &brief, &notes))))
 }
 
-/// 改稿指示の後ろに添える注記 (行番号の読み方と、短い値の検査の注意)。
-fn notes(checked: &[Checked]) -> Vec<String> {
+/// 改稿指示の後ろに添える注記 (行番号の読み方と、短い値の検査の注意)。改稿指示に詳しく載せる指摘の
+/// ある書き込みのぶんだけ書く。
+fn notes(checked: &[Checked], reviewer: &Reviewer) -> Vec<String> {
     let mut notes = Vec::new();
-    if checked.iter().any(Checked::has_prose_findings) {
+    if checked.iter().any(|c| c.has_prose_findings(reviewer)) {
         notes.push(PROSE_NOTE.to_string());
     }
-    notes.extend(checked.iter().filter_map(Checked::legend));
-    if checked.iter().any(Checked::has_fragment_findings) {
+    notes.extend(checked.iter().filter_map(|c| c.legend(reviewer)));
+    if checked.iter().any(|c| c.has_fragment_findings(reviewer)) {
         notes.push(FRAGMENT_NOTE.to_string());
     }
     notes
@@ -293,24 +300,27 @@ impl Checked<'_> {
                 .any(|r| r.visible().any(|d| d.severity >= Severity::Warning))
     }
 
-    /// 本文に見せる指摘があるか。
-    fn has_prose_findings(&self) -> bool {
-        self.prose.iter().any(|r| r.visible().next().is_some())
+    /// 本文に、改稿指示に詳しく載せる指摘があるか。
+    fn has_prose_findings(&self, reviewer: &Reviewer) -> bool {
+        self.prose
+            .iter()
+            .any(|r| r.diagnostics.iter().any(|d| reviewer.shows(d)))
     }
 
-    /// 短い値に見せる指摘があるか。
-    fn has_fragment_findings(&self) -> bool {
+    /// 短い値に、改稿指示に詳しく載せる指摘があるか。
+    fn has_fragment_findings(&self, reviewer: &Reviewer) -> bool {
         self.fragments
             .as_ref()
-            .is_some_and(|f| f.report.visible().next().is_some())
+            .is_some_and(|f| f.report.diagnostics.iter().any(|d| reviewer.shows(d)))
     }
 
-    /// 短い値の文書で、指摘のある行と値の場所の対応 (改稿指示の行番号から値を探せるように)。
-    fn legend(&self) -> Option<String> {
+    /// 短い値の文書で、改稿指示に詳しく載せる指摘のある行と値の場所の対応 (改稿指示の行番号から値を
+    /// 探せるように)。
+    fn legend(&self, reviewer: &Reviewer) -> Option<String> {
         let f = self.fragments.as_ref()?;
         let doc = &f.report.doc;
         let mut lines: BTreeMap<usize, &str> = BTreeMap::new();
-        for d in f.report.visible() {
+        for d in f.report.diagnostics.iter().filter(|d| reviewer.shows(d)) {
             let at = d.span.start;
             if let Some((_, label)) = f
                 .places
@@ -1093,6 +1103,63 @@ severity = "info"
             "{reason}"
         );
         assert!(reason.contains("L2:"), "値の中の行番号: {reason}");
+    }
+
+    /// 弱い手掛かりの情報の指摘 (P05「様々な」) は件数だけにする。書き込む値はファイルにないので、確認
+    /// コマンドは添えない。それしかない書き込みは何も返さず、止めもしない。止めるかどうかは本文の警告で
+    /// 決め、行と値の対応も詳しく載せる指摘の行だけを示す。
+    #[test]
+    fn weak_info_findings_are_only_counted() {
+        let ws = Workspace::new();
+        let weak = ws.event("gws docs +write --document D1 --text '様々な案を集めました。'");
+        assert!(ws.run(&weak).is_none());
+        assert!(ws.records().is_empty(), "止めないので記録も残さない");
+
+        let reason = ws
+            .run(
+                &ws.event(
+                    "gws docs +write --document D1 --text '様々な案をユーザー様に届けます。'",
+                ),
+            )
+            .unwrap()
+            .deny();
+        assert!(reason.contains("X01"), "{reason}");
+        assert!(!reason.contains("P05"), "{reason}");
+        assert!(
+            reason.contains("\n弱い手掛かりの情報の指摘 1 件は省きました。\n"),
+            "{reason}"
+        );
+        assert!(!reason.contains("全件は"), "{reason}");
+
+        let cells = "gws sheets +append --spreadsheet S --values '様々な区分,ユーザー様の区分'";
+        let context = ws.run(&ws.event(cells)).unwrap().context();
+        assert!(!context.contains("P05"), "{context}");
+        assert!(context.contains("の行と値の対応: L2 = "), "{context}");
+        assert!(!context.contains("L1 = "), "{context}");
+        assert!(
+            context.contains("弱い手掛かりの情報の指摘 1 件は省きました。"),
+            "{context}"
+        );
+
+        let cells = "gws sheets +append --spreadsheet S --values '様々な区分'";
+        assert!(ws.run(&ws.event(cells)).is_none());
+    }
+
+    /// 値に残った強調の記法 (P23) は、平文では情報の指摘でも中程度の手掛かりなので、件数だけにせず
+    /// 箇所まで知らせる (止めはしない)。
+    #[test]
+    fn markup_residue_in_values_is_reported_in_detail() {
+        let ws = Workspace::new();
+        let context = ws
+            .run(&ws.event("gws docs +write --document D1 --text '**新機能**の案内を書きました。'"))
+            .unwrap()
+            .context();
+        assert!(
+            context.contains("- P23 ") && context.contains("情報 1 件・中程度の手掛かり"),
+            "{context}"
+        );
+        assert!(!context.contains("省きました"), "{context}");
+        assert!(ws.records().is_empty());
     }
 
     #[test]

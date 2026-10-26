@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::{Document, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -16,7 +16,7 @@ static META: RuleMeta = RuleMeta {
     name: "REPEATED_SENTENCE_LEAD",
     title: "文頭の型の反復",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "同じ書き出しの文が何度も繰り返されている",
     explanation: EXPLANATION,
@@ -49,10 +49,13 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。形態素 2 つ分の書き出しを数える方式でも、人の文書の方がむしろ反復が多く (エッセイで\
-人の 92% に対し生成文書の 35%)、意図した反復と区別できないため、閾値を引き上げて参考情報に留めて\
-いました。辞書を使わないこの近似 (先頭の文字列の比較) はまだ校正していません。製品名や技術用語で\
+形態素 2 つ分の書き出しを数える方式でも、人の文書の方がむしろ反復が多く (エッセイで人の 92% に\
+対し生成文書の 35%)、意図した反復と区別できないため、閾値を引き上げて参考情報に留めていました。\
+辞書を使わないこの近似 (先頭の文字列の比較) の閾値はまだ校正していません。製品名や技術用語で\
 始まる文の反復は、技術文書では自然なことが多い点にも注意してください。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 103 本・\
+生成 24 本で、人の文書のほうが多く出ました。
 ";
 
 /// 読点で終わる書き出しとして扱う最大の字数 (読点を含む)。

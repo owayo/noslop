@@ -9,12 +9,17 @@
 //! 読む)・TOON (同じデータを少ないトークンで AI に渡す) に描き分ける。データには metrics・
 //! fingerprint・抑制した指摘を入れない。指摘の追跡や照合には完全なレポート (`--format json`)
 //! を使う。
+//!
+//! フックから返す短い改稿指示では、重大度が情報で手掛かりが弱い指摘 ([`is_weak_info`]) を
+//! 詳しく書かず、件数と全件の確認コマンドだけを添えることができる
+//! ([`RenderOptions::brief_omit_weak_info`])。編集のたびに返すので、人の文書にもよく出る軽い
+//! 指摘まで直させないため。警告以上の指摘は、手掛かりが弱くても詳しく書く。
 
 use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::engine::{FileReport, RunReport};
 use crate::genre::Genre;
 use crate::morph::Method;
@@ -24,7 +29,7 @@ use crate::output::{RenderOptions, toon};
 use crate::rules::RuleMeta;
 
 /// 改稿指示のデータ (JSON / TOON) のスキーマの版。互換性のない変更をしたら上げる。
-pub const BRIEF_SCHEMA_VERSION: u32 = 1;
+pub const BRIEF_SCHEMA_VERSION: u32 = 2;
 
 /// 1 ルールあたりに並べる箇所の既定の上限。
 pub const DEFAULT_LIMIT: usize = 5;
@@ -82,7 +87,6 @@ pub struct Brief<'a> {
 #[derive(Serialize)]
 struct Settings<'a> {
     genre: &'static str,
-    experimental: bool,
     /// 判定の方式 (`dictionary`: 形態素解析の辞書の品詞で判定した、`surface`: 辞書なしの近似)。
     method: Method,
     /// 使った辞書の名前 (辞書なしなら `null`)。手元のパスは渡さない。
@@ -99,11 +103,15 @@ struct Settings<'a> {
 struct BriefFile<'a> {
     path: &'a str,
     counts: Counts,
-    /// 指摘のあったルール。優先して見る順 (AI 臭さ → 独自ルール → 読みやすさ、校正済み →
-    /// 実験的、重大度の高い順、件数の多い順) に並ぶ。
+    /// 指摘のあったルール。優先して見る順 (AI 臭さ → 独自ルール → 読みやすさ、重大度の高い順、
+    /// 手掛かりの強い順、件数の多い順) に並ぶ。
     rules: Vec<RuleSummary<'a>>,
     /// 該当箇所。`rules` の順に、ルールの中では文書の順に並ぶ。
     occurrences: Vec<Occurrence<'a>>,
+    /// 詳しく書かずに件数だけにした指摘 (重大度が情報で手掛かりが弱いもの) の件数。省くのは
+    /// フックの短縮版だけで、データ (JSON・TOON) では省かないので出さない。
+    #[serde(skip)]
+    omitted_weak_info: usize,
 }
 
 /// 指摘のあったルール 1 つ。
@@ -116,8 +124,9 @@ struct RuleSummary<'a> {
     title: Option<&'static str>,
     lane: Lane,
     max_severity: Severity,
-    /// 実験的な指摘だけでできているか。
-    experimental_only: bool,
+    /// 手掛かりの強さ。最も重い指摘のうち最も強いもの (AI 臭さのレーンだけ。ほかは `null`)。
+    /// 重大度と強さを別々の指摘から取らない。
+    signal: Option<Signal>,
     /// 抑制していない指摘の件数 (`occurrences` に載せなかったものも含む)。
     count: usize,
     /// `occurrences` に載せなかった件数 (1 ルールあたり `--brief-limit` 件まで載せる)。
@@ -138,6 +147,8 @@ struct Occurrence<'a> {
     rule_id: &'a str,
     line: usize,
     column: usize,
+    /// この指摘の手掛かりの強さ (語句ルールでは、語句ごとにルールの値と違うことがある)。
+    signal: Option<Signal>,
     message: &'a str,
     /// 指摘を含む文の抜粋。文書全体の集計に基づく指摘など、文を持たないものは `null`。
     excerpt: Option<String>,
@@ -152,14 +163,26 @@ struct WarningEntry<'a> {
 impl<'a> Brief<'a> {
     /// 実行結果から改稿指示を組み立てる。`limit` は 1 ルールあたりに並べる箇所の上限。
     pub fn build(report: &'a RunReport, opts: &RenderOptions, limit: usize) -> Self {
+        Self::assemble(report, opts, limit, false)
+    }
+
+    /// [`Brief::build`] の本体。`omit_weak_info` なら、重大度が情報で手掛かりが弱い指摘を
+    /// ルール・該当箇所・件数から外し、ファイルごとに外した件数を数える。外した後に指摘の残らない
+    /// ファイルは、指摘のないファイルにする。
+    fn assemble(
+        report: &'a RunReport,
+        opts: &RenderOptions,
+        limit: usize,
+        omit_weak_info: bool,
+    ) -> Self {
         let limit = limit.max(1);
         let (with_findings, clean): (Vec<&FileReport>, Vec<&FileReport>) = report
             .files
             .iter()
-            .partition(|f| f.visible().next().is_some());
+            .partition(|f| shown(f, omit_weak_info).next().is_some());
         let files: Vec<BriefFile> = with_findings
             .into_iter()
-            .map(|f| BriefFile::of(f, opts, limit))
+            .map(|f| BriefFile::of(f, opts, limit, omit_weak_info))
             .collect();
         Brief {
             schema_version: BRIEF_SCHEMA_VERSION,
@@ -168,7 +191,6 @@ impl<'a> Brief<'a> {
             column_unit: COLUMN_UNIT,
             settings: Settings {
                 genre: opts.genre.as_str(),
-                experimental: opts.experimental,
                 method: report.morphology.method,
                 dictionary: report
                     .morphology
@@ -210,18 +232,24 @@ impl<'a> Brief<'a> {
 }
 
 impl<'a> BriefFile<'a> {
-    fn of(file: &'a FileReport, opts: &RenderOptions, limit: usize) -> Self {
+    fn of(file: &'a FileReport, opts: &RenderOptions, limit: usize, omit_weak_info: bool) -> Self {
         let mut rules = Vec::new();
         let mut occurrences = Vec::new();
-        for g in group(file) {
+        for g in group(shown(file, omit_weak_info)) {
             occurrences.extend(g.diags.iter().take(limit).map(|d| Occurrence::of(file, d)));
             rules.push(RuleSummary::of(&g, opts, limit));
         }
+        let omitted_weak_info = if omit_weak_info {
+            file.visible().filter(|d| is_weak_info(d)).count()
+        } else {
+            0
+        };
         BriefFile {
             path: file.path(),
-            counts: Counts::of(file),
+            counts: Counts::of(shown(file, omit_weak_info)),
             rules,
             occurrences,
+            omitted_weak_info,
         }
     }
 
@@ -247,7 +275,7 @@ impl<'a> RuleSummary<'a> {
             title: meta.map(|m| m.title),
             lane: g.lane,
             max_severity: g.max_severity,
-            experimental_only: g.experimental_only,
+            signal: g.signal,
             count: g.diags.len(),
             omitted_count: g.diags.len().saturating_sub(limit),
             why,
@@ -256,8 +284,8 @@ impl<'a> RuleSummary<'a> {
         }
     }
 
-    /// ルールの見出しに添える件数 (`AI 臭さ・警告 2 件`、実験的な指摘だけなら `・実験的` を
-    /// 足す)。どのレーンの指摘かを、ほかの出力と同じ呼び名で先頭に置く。
+    /// ルールの見出しに添える件数 (`AI 臭さ・警告 2 件・強い手掛かり`。強さは AI 臭さのレーンだけ)。
+    /// どのレーンの指摘かを、ほかの出力と同じ呼び名で先頭に置く。
     fn count_label(&self) -> String {
         let mut s = format!(
             "{}・{} {} 件",
@@ -265,8 +293,9 @@ impl<'a> RuleSummary<'a> {
             self.max_severity.label_ja(),
             self.count
         );
-        if self.experimental_only {
-            s.push_str("・実験的");
+        if let Some(signal) = self.signal {
+            s.push('・');
+            s.push_str(signal.label_ja());
         }
         s
     }
@@ -279,6 +308,7 @@ impl<'a> Occurrence<'a> {
             rule_id: &d.rule_id,
             line,
             column,
+            signal: d.signal,
             message: &d.message,
             excerpt: d
                 .context
@@ -382,9 +412,8 @@ fn render_file(brief: &Brief, file: &BriefFile, out: &mut dyn Write) -> io::Resu
     let c = &file.counts;
     writeln!(
         out,
-        "- 指摘: {slop} (校正済み) {} 件 / {slop} (実験的) {} 件 / {custom} {} 件 / {readability} {} 件",
-        c.stable_slop,
-        c.experimental_slop,
+        "- 指摘: {slop} {} 件 / {custom} {} 件 / {readability} {} 件",
+        c.slop,
         c.custom,
         c.readability,
         slop = Lane::Slop.label_ja(),
@@ -503,8 +532,15 @@ const COMPACT_FOOTER: &str = "材料 (固有名詞・数字・実例) が足り�
 ///
 /// 見出し・改稿のルール・結びは 1 度だけ書く (Stop のフックのように複数のファイルをまとめて返すとき、
 /// ファイルごとに繰り返すと、呼び出し側の文字数の上限にファイルが入らなくなるため)。
+/// [`RenderOptions::brief_omit_weak_info`] なら、重大度が情報で手掛かりが弱い指摘を件数だけにし、
+/// 指摘の後ろに省いた件数と全件の確認コマンドを 1 行で書く。
 fn render_compact(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> io::Result<()> {
-    let brief = Brief::build(report, opts, opts.brief_limit.unwrap_or(COMPACT_LIMIT));
+    let brief = Brief::assemble(
+        report,
+        opts,
+        opts.brief_limit.unwrap_or(COMPACT_LIMIT),
+        opts.brief_omit_weak_info,
+    );
     match brief.files.as_slice() {
         [] => return Ok(()),
         [file] => writeln!(
@@ -533,6 +569,19 @@ fn render_compact(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write)
             writeln!(out, "{}: {}", file.path, file.counts.found(" ").join("、"))?;
         }
         render_compact_file(&brief, file, out)?;
+    }
+    let omitted: usize = brief.files.iter().map(|f| f.omitted_weak_info).sum();
+    if omitted > 0 {
+        write!(
+            out,
+            "{}の{}の指摘 {omitted} 件は省きました。",
+            Signal::Weak.label_ja(),
+            Severity::Info.label_ja()
+        )?;
+        if let Some(command) = &opts.brief_followup {
+            write!(out, "全件は `{command}` で確認できます。")?;
+        }
+        writeln!(out)?;
     }
     writeln!(out, "{COMPACT_FOOTER}")
 }
@@ -665,8 +714,8 @@ struct Group<'a> {
     name: &'a str,
     lane: Lane,
     max_severity: Severity,
-    /// 実験的な指摘だけでできているか。
-    experimental_only: bool,
+    /// 最も重い指摘のうち最も強い手掛かり。
+    signal: Option<Signal>,
     diags: Vec<&'a Diagnostic>,
 }
 
@@ -688,15 +737,34 @@ impl Group<'_> {
     }
 }
 
-/// 抑制していない指摘をルールごとにまとめ、重大度の高い順・件数の多い順に並べる。
-/// 実験的な指摘だけのルールは、校正済みの指摘を含むルールの後ろに置く。
-fn group(file: &FileReport) -> Vec<Group<'_>> {
+/// フックの短い改稿指示で、詳しく書かずに件数だけにする指摘か (重大度が情報で、手掛かりが弱い)。
+///
+/// 重大度は設定で上書きした後の値で見る (警告から情報に下げた弱い指摘も省く)。警告以上の指摘は、
+/// 手掛かりが弱くても省かない。強さを持たない指摘 (読みやすさ・独自ルール) も省かない。
+pub fn is_weak_info(d: &Diagnostic) -> bool {
+    d.severity == Severity::Info && d.signal == Some(Signal::Weak)
+}
+
+/// 改稿指示に載せる指摘 (抑制していないもの。`omit_weak_info` なら [`is_weak_info`] の指摘も除く)。
+fn shown(file: &FileReport, omit_weak_info: bool) -> impl Iterator<Item = &Diagnostic> {
+    file.visible()
+        .filter(move |d| !(omit_weak_info && is_weak_info(d)))
+}
+
+/// 指摘をルールごとにまとめ、重大度の高い順・手掛かりの強い順・件数の多い順に並べる。
+/// 手掛かりの強さは、ルールの中で最も重い指摘のうち最も強いもので比べる (警告の弱い指摘と
+/// 情報の強い指摘を持つルールを、警告の強いルールのように並べない)。
+fn group<'a>(diags: impl Iterator<Item = &'a Diagnostic>) -> Vec<Group<'a>> {
     let mut groups: Vec<Group> = Vec::new();
-    for d in file.visible() {
+    for d in diags {
         match groups.iter_mut().find(|g| g.id == d.rule_id) {
             Some(g) => {
-                g.max_severity = g.max_severity.max(d.severity);
-                g.experimental_only &= d.status == RuleStatus::Experimental;
+                if d.severity > g.max_severity {
+                    g.max_severity = d.severity;
+                    g.signal = d.signal;
+                } else if d.severity == g.max_severity {
+                    g.signal = g.signal.max(d.signal);
+                }
                 g.diags.push(d);
             }
             None => groups.push(Group {
@@ -704,7 +772,7 @@ fn group(file: &FileReport) -> Vec<Group<'_>> {
                 name: &d.rule_name,
                 lane: d.lane,
                 max_severity: d.severity,
-                experimental_only: d.status == RuleStatus::Experimental,
+                signal: d.signal,
                 diags: vec![d],
             }),
         }
@@ -717,15 +785,15 @@ fn group(file: &FileReport) -> Vec<Group<'_>> {
     groups.sort_by(|a, b| {
         (
             lane_order(a.lane),
-            a.experimental_only,
             std::cmp::Reverse(a.max_severity),
+            std::cmp::Reverse(a.signal),
             std::cmp::Reverse(a.diags.len()),
             a.id,
         )
             .cmp(&(
                 lane_order(b.lane),
-                b.experimental_only,
                 std::cmp::Reverse(b.max_severity),
+                std::cmp::Reverse(b.signal),
                 std::cmp::Reverse(b.diags.len()),
                 b.id,
             ))
@@ -733,14 +801,12 @@ fn group(file: &FileReport) -> Vec<Group<'_>> {
     groups
 }
 
-/// 1 ファイルの未抑制の指摘の件数。
+/// 1 ファイルの、改稿指示に載せる指摘 (抑制していないもの) の件数。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Counts {
-    /// AI 臭さのレーンの校正済みの指摘。
-    stable_slop: usize,
-    /// AI 臭さのレーンの実験的な指摘。
-    experimental_slop: usize,
+    /// AI 臭さのレーンの指摘。
+    slop: usize,
     /// 独自ルールの指摘。
     custom: usize,
     /// 読みやすさのレーンの指摘。
@@ -752,11 +818,7 @@ impl Counts {
     /// レーンごとに分けて数える (独自ルールを AI 臭さに混ぜると、各行の件数と合わなくなる)。
     fn found(&self, sep: &str) -> Vec<String> {
         [
-            (
-                Lane::Slop,
-                "疑い",
-                self.stable_slop + self.experimental_slop,
-            ),
+            (Lane::Slop, "疑い", self.slop),
             (Lane::Custom, "指摘", self.custom),
             (Lane::Readability, "指摘", self.readability),
         ]
@@ -767,20 +829,18 @@ impl Counts {
     }
 
     fn add(&mut self, other: &Counts) {
-        self.stable_slop += other.stable_slop;
-        self.experimental_slop += other.experimental_slop;
+        self.slop += other.slop;
         self.custom += other.custom;
         self.readability += other.readability;
     }
 
-    fn of(file: &FileReport) -> Self {
+    fn of<'a>(diags: impl Iterator<Item = &'a Diagnostic>) -> Self {
         let mut c = Counts::default();
-        for d in file.visible() {
-            match (d.lane, d.status) {
-                (Lane::Readability, _) => c.readability += 1,
-                (Lane::Custom, _) => c.custom += 1,
-                (Lane::Slop, RuleStatus::Stable) => c.stable_slop += 1,
-                (Lane::Slop, RuleStatus::Experimental) => c.experimental_slop += 1,
+        for d in diags {
+            match d.lane {
+                Lane::Readability => c.readability += 1,
+                Lane::Custom => c.custom += 1,
+                Lane::Slop => c.slop += 1,
             }
         }
         c
@@ -790,19 +850,38 @@ impl Counts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RuleTable;
+    use crate::diagnostic::Span;
     use crate::document::Document;
     use crate::engine::{Engine, EngineOptions, FileError};
     use crate::output::RuleCatalog;
 
-    fn engine(experimental: bool) -> Engine {
-        Engine::with_rules(
-            crate::engine::tests::test_rules(),
-            EngineOptions {
-                experimental,
-                ..Default::default()
-            },
-        )
-        .unwrap()
+    /// テスト用のルール (T01: 強い手掛かりの警告、T02: 弱い手掛かりの情報、T03: 読みやすさの情報、
+    /// T04: 中程度の手掛かりの情報) で動くエンジン。
+    fn engine() -> Engine {
+        engine_with(EngineOptions::default())
+    }
+
+    fn engine_with(options: EngineOptions) -> Engine {
+        Engine::with_rules(crate::engine::tests::test_rules(), options).unwrap()
+    }
+
+    fn report_of(e: &Engine, files: &[(&str, &str)]) -> RunReport {
+        RunReport {
+            files: files
+                .iter()
+                .map(|(name, text)| {
+                    e.lint(Document::parse(
+                        *name,
+                        *text,
+                        crate::document::SourceFormat::Markdown,
+                        &Default::default(),
+                    ))
+                })
+                .collect(),
+            errors: Vec::new(),
+            morphology: Default::default(),
+        }
     }
 
     fn render_str(report: &RunReport, opts: &RenderOptions) -> String {
@@ -820,7 +899,7 @@ mod tests {
 
     #[test]
     fn full_brief_has_rules_groups_readability_and_questions() {
-        let e = engine(true);
+        let e = engine();
         let report = RunReport {
             files: vec![e.lint(Document::markdown(
                 "これは言えるでしょう。様々な案がある。上限の設定の検討をする。\n\nやはり言えるでしょう。\n",
@@ -843,16 +922,19 @@ mod tests {
         // ファイルの節は、見出しのすぐ後にレーンごとの件数を置く
         assert!(
             s.contains(
-                "## <input>.md\n\n- 指摘: AI 臭さ (校正済み) 2 件 / AI 臭さ (実験的) 1 件 / 独自ルール 0 件 / 読みやすさ 1 件\n"
+                "## <input>.md\n\n- 指摘: AI 臭さ 3 件 / 独自ルール 0 件 / 読みやすさ 1 件\n"
             ),
             "{s}"
         );
-        // 校正済みのルールが先、実験的なルールが後
-        let stable = s.find("#### 1. T01 STABLE_SLOP").expect("T01");
-        let experimental = s.find("#### 2. T02 EXPERIMENTAL_SLOP").expect("T02");
-        assert!(stable < experimental, "{s}");
-        assert!(s.contains("(AI 臭さ・警告 2 件)"), "{s}");
-        assert!(s.contains("(AI 臭さ・情報 1 件・実験的)"), "{s}");
+        // 重大度の高いルールが先。見出しの件数の後ろに、AI 臭さのレーンは手掛かりの強さを添える
+        let warning = s
+            .find("#### 1. T01 STABLE_SLOP — テスト (AI 臭さ・警告 2 件・強い手掛かり)")
+            .expect("T01");
+        let info = s
+            .find("#### 2. T02 WEAK_SLOP — テスト (AI 臭さ・情報 1 件・弱い手掛かり)")
+            .expect("T02");
+        assert!(warning < info, "{s}");
+        assert!(!s.contains("実験的"), "{s}");
         assert!(s.contains("  - L1: 「言えるでしょう」があります"), "{s}");
         assert!(s.contains("    - 原文: これは言えるでしょう。"), "{s}");
         assert!(
@@ -876,7 +958,7 @@ mod tests {
 
     #[test]
     fn limit_folds_extra_occurrences() {
-        let e = engine(false);
+        let e = engine();
         let text = "言えるでしょう。".repeat(8);
         let report = RunReport {
             files: vec![e.lint(Document::markdown(format!("{text}\n")))],
@@ -894,7 +976,7 @@ mod tests {
 
     #[test]
     fn no_findings_says_nothing_needs_fixing() {
-        let e = engine(false);
+        let e = engine();
         let report = RunReport {
             files: vec![e.lint(Document::markdown("問題のない文。\n"))],
             errors: Vec::new(),
@@ -911,7 +993,7 @@ mod tests {
 
     #[test]
     fn suppressed_findings_are_left_out_and_clean_files_are_listed() {
-        let e = engine(false);
+        let e = engine();
         let report = RunReport {
             files: vec![
                 e.lint(Document::parse(
@@ -931,7 +1013,7 @@ mod tests {
             morphology: Default::default(),
         };
         let s = render_str(&report, &opts(&e));
-        assert!(s.contains("(AI 臭さ・警告 1 件)"), "{s}");
+        assert!(s.contains("(AI 臭さ・警告 1 件・強い手掛かり)"), "{s}");
         assert!(!s.contains("L2: "), "抑制した指摘は出さない: {s}");
         assert!(s.contains("## 指摘のないファイル\n\n- b.md"), "{s}");
 
@@ -944,7 +1026,7 @@ mod tests {
 
     #[test]
     fn broken_suppression_comments_are_pointed_out() {
-        let e = engine(false);
+        let e = engine();
         let parse = |name: &str, src: &str| {
             e.lint(Document::parse(
                 name,
@@ -980,7 +1062,7 @@ mod tests {
 
     #[test]
     fn compact_brief_is_short_and_allows_leaving_findings() {
-        let e = engine(false);
+        let e = engine();
         let report = RunReport {
             files: vec![e.lint(Document::markdown(
                 "これは言えるでしょう。また言えるでしょう。\n",
@@ -997,16 +1079,23 @@ mod tests {
         assert!(s.contains("AI 臭さの疑いを 2 件見つけました"), "{s}");
         assert!(s.contains("直さない判断もできます"), "{s}");
         assert!(s.contains("再実行は 1 回だけ"), "{s}");
-        assert!(s.contains("- T01 テスト (AI 臭さ・警告 2 件)"), "{s}");
+        assert!(
+            s.contains("- T01 テスト (AI 臭さ・警告 2 件・強い手掛かり)"),
+            "{s}"
+        );
         assert!(s.contains("  - ほか 1 件"), "{s}");
         assert!(!s.contains("## "), "短縮版には見出しを付けない: {s}");
+        assert!(
+            !s.contains("省きました"),
+            "省いた指摘がなければ書かない: {s}"
+        );
     }
 
     /// 複数のファイルをまとめた短縮版では、見出し・改稿のルール・結びを 1 度だけ書き、ファイルごとには
     /// 件数の 1 行と指摘だけを書く。
     #[test]
     fn compact_brief_writes_the_rules_once_for_several_files() {
-        let e = engine(false);
+        let e = engine();
         let doc = |name: &str, text: &str| {
             crate::document::Document::parse(
                 name,
@@ -1079,8 +1168,14 @@ mod tests {
             ),
             "独自ルールを AI 臭さに混ぜて数えない: {s}"
         );
-        assert!(s.contains("- T01 テスト (AI 臭さ・警告 2 件)"), "{s}");
-        assert!(s.contains("- X01 TEAM_TERM (独自ルール・警告 1 件)"), "{s}");
+        assert!(
+            s.contains("- T01 テスト (AI 臭さ・警告 2 件・強い手掛かり)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("- X01 TEAM_TERM (独自ルール・警告 1 件)\n"),
+            "独自ルールは手掛かりの強さを持たない: {s}"
+        );
         assert!(
             s.contains("- T03 テスト (読みやすさ・情報 1 件)\n"),
             "レーン名は括弧の中だけに出す: {s}"
@@ -1115,7 +1210,7 @@ mod tests {
 
     #[test]
     fn json_has_the_same_content_as_the_markdown_brief() {
-        let e = engine(false);
+        let e = engine();
         let report = data_report(&e);
         let o = RenderOptions {
             brief_limit: Some(2),
@@ -1131,15 +1226,25 @@ mod tests {
         assert_eq!(v["editorialQuestions"].as_array().unwrap().len(), 4);
         assert!(v["note"].is_null(), "指摘があるので断り書きはない");
 
+        assert!(v["settings"].get("experimental").is_none());
+
         let file = &v["files"][0];
         assert_eq!(file["path"], "draft.md");
-        assert_eq!(file["counts"]["stableSlop"], 3);
+        assert_eq!(
+            file["counts"],
+            serde_json::json!({ "slop": 3, "custom": 0, "readability": 0 })
+        );
+        assert!(
+            file.get("omittedWeakInfo").is_none(),
+            "省いた件数はフックの短縮版だけのもので、データには出さない"
+        );
         let rule = &file["rules"][0];
         assert_eq!(rule["ruleId"], "T01");
         assert_eq!(rule["title"], "テスト");
         assert_eq!(rule["lane"], "slop");
         assert_eq!(rule["maxSeverity"], "warning");
-        assert_eq!(rule["experimentalOnly"], false);
+        assert_eq!(rule["signal"], "strong");
+        assert!(rule.get("experimentalOnly").is_none());
         assert_eq!(rule["count"], 3);
         assert_eq!(rule["omittedCount"], 1);
         assert!(rule["hint"].is_null(), "直し方を持たないルール");
@@ -1152,6 +1257,7 @@ mod tests {
         assert_eq!(occurrences[0]["ruleId"], "T01", "ルール ID で参照する");
         assert_eq!(occurrences[0]["line"], 1);
         assert_eq!(occurrences[0]["column"], 4, "「これは」の後の 4 字目");
+        assert_eq!(occurrences[0]["signal"], "strong");
         assert_eq!(occurrences[0]["message"], "「言えるでしょう」があります");
         assert_eq!(
             occurrences[1]["message"], occurrences[0]["message"],
@@ -1167,7 +1273,7 @@ mod tests {
 
     #[test]
     fn json_without_findings_carries_the_note() {
-        let e = engine(false);
+        let e = engine();
         let report = RunReport {
             files: vec![e.lint(Document::markdown("問題のない文。\n"))],
             errors: Vec::new(),
@@ -1182,24 +1288,24 @@ mod tests {
 
     #[test]
     fn toon_lays_occurrences_out_as_a_table() {
-        let e = engine(false);
+        let e = engine();
         let report = data_report(&e);
         let mut buf = Vec::new();
         render_toon(&report, &opts(&e), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.starts_with("schemaVersion: 1\nkind: brief\n"), "{s}");
+        assert!(s.starts_with("schemaVersion: 2\nkind: brief\n"), "{s}");
         assert!(
             s.contains(
-                "rules[1]{ruleId,ruleName,title,lane,maxSeverity,experimentalOnly,count,omittedCount,why,hint}:"
+                "rules[1]{ruleId,ruleName,title,lane,maxSeverity,signal,count,omittedCount,why,hint}:"
             ),
             "ルールは 1 行 1 ルールの表にする: {s}"
         );
         assert!(
-            s.contains("occurrences[3]{ruleId,line,column,message,excerpt}:"),
+            s.contains("occurrences[3]{ruleId,line,column,signal,message,excerpt}:"),
             "該当箇所は 1 行 1 箇所の表にする: {s}"
         );
         assert!(
-            s.contains("T01,1,4,「言えるでしょう」があります,これは言えるでしょう。"),
+            s.contains("T01,1,4,strong,「言えるでしょう」があります,これは言えるでしょう。"),
             "{s}"
         );
         assert!(s.contains("cleanFiles[1]: clean.md"), "{s}");
@@ -1244,5 +1350,269 @@ mod tests {
                 .any(|q| q.contains("期日"))
         );
         assert_eq!(questions(Genre::General).len(), 4);
+    }
+
+    /// 重大度が同じなら、手掛かりの強いルールを先に並べる (件数の多さより先に比べる)。
+    #[test]
+    fn rules_of_the_same_severity_put_stronger_signals_first() {
+        let e = engine();
+        let report = report_of(
+            &e,
+            &[("draft.md", "様々な案と様々な道がある。まとめを書く。\n")],
+        );
+        let s = render_str(&report, &opts(&e));
+        let moderate = s
+            .find("#### 1. T04 NOT_FOR_BUSINESS — テスト (AI 臭さ・情報 1 件・中程度の手掛かり)")
+            .expect("T04");
+        let weak = s
+            .find("#### 2. T02 WEAK_SLOP — テスト (AI 臭さ・情報 2 件・弱い手掛かり)")
+            .expect("T02");
+        assert!(moderate < weak, "{s}");
+    }
+
+    /// ルールの手掛かりの強さは、最も重い指摘のうち最も強いものから取る。警告の弱い指摘と情報の強い
+    /// 指摘を持つルールを「警告・強い」として、警告の中程度のルールより先に並べない。
+    #[test]
+    fn a_rule_takes_its_signal_from_its_most_severe_findings() {
+        let source = "一つ目の文。二つ目の文。三つ目の文。\n";
+        let at = |needle: &str| {
+            let start = source.find(needle).unwrap();
+            Span::new(start, start + needle.len())
+        };
+        let finding = |id: &str, name: &str, severity, signal, needle: &str| {
+            Diagnostic::new(
+                id,
+                name,
+                severity,
+                Lane::Slop,
+                Some(signal),
+                at(needle),
+                format!("{needle}の指摘"),
+            )
+        };
+        let file = FileReport {
+            doc: Document::markdown(source),
+            diagnostics: vec![
+                finding("P99", "MIXED", Severity::Warning, Signal::Weak, "一つ目"),
+                finding("P99", "MIXED", Severity::Info, Signal::Strong, "二つ目"),
+                finding(
+                    "P98",
+                    "STEADY",
+                    Severity::Warning,
+                    Signal::Moderate,
+                    "三つ目",
+                ),
+            ],
+            warnings: Vec::new(),
+        };
+        let order: Vec<(&str, Severity, Option<Signal>)> = group(file.visible())
+            .iter()
+            .map(|g| (g.id, g.max_severity, g.signal))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("P98", Severity::Warning, Some(Signal::Moderate)),
+                ("P99", Severity::Warning, Some(Signal::Weak)),
+            ]
+        );
+        // 見出しの件数も、同じ指摘から重大度と強さを取る
+        let report = RunReport {
+            files: vec![file],
+            errors: Vec::new(),
+            morphology: Default::default(),
+        };
+        let s = render_str(&report, &RenderOptions::default());
+        assert!(
+            s.contains("#### 1. P98 STEADY (AI 臭さ・警告 1 件・中程度の手掛かり)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("#### 2. P99 MIXED (AI 臭さ・警告 2 件・弱い手掛かり)"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn only_weak_info_findings_are_omitted() {
+        let d = |severity, lane, signal| {
+            Diagnostic::new("X", "X", severity, lane, signal, Span::new(0, 0), "指摘")
+        };
+        assert!(is_weak_info(&d(
+            Severity::Info,
+            Lane::Slop,
+            Some(Signal::Weak)
+        )));
+        for (severity, lane, signal) in [
+            (Severity::Warning, Lane::Slop, Some(Signal::Weak)),
+            (Severity::Error, Lane::Slop, Some(Signal::Weak)),
+            (Severity::Info, Lane::Slop, Some(Signal::Moderate)),
+            (Severity::Info, Lane::Slop, Some(Signal::Strong)),
+            (Severity::Info, Lane::Readability, None),
+            (Severity::Info, Lane::Custom, None),
+        ] {
+            assert!(
+                !is_weak_info(&d(severity, lane, signal)),
+                "{severity:?} {lane:?} {signal:?}"
+            );
+        }
+    }
+
+    /// フックの短縮版の設定 (弱い手掛かりの情報の指摘を件数だけにする)。
+    fn hook_opts(e: &Engine, followup: Option<&str>) -> RenderOptions {
+        RenderOptions {
+            brief_compact: true,
+            brief_omit_weak_info: true,
+            brief_followup: followup.map(str::to_string),
+            ..opts(e)
+        }
+    }
+
+    /// 情報の弱い手掛かりの指摘は詳しく書かず、件数と確認コマンドだけを結びの前に添える。
+    #[test]
+    fn compact_brief_counts_weak_info_findings_without_details() {
+        let e = engine();
+        let report = report_of(
+            &e,
+            &[(
+                "draft.md",
+                "これは言えるでしょう。様々な案と様々な道がある。\n",
+            )],
+        );
+        let s = render_str(
+            &report,
+            &hook_opts(&e, Some("noslop check --report brief draft.md")),
+        );
+        assert!(
+            s.starts_with("noslop が draft.md に AI 臭さの疑いを 1 件見つけました。"),
+            "省いた指摘は数えない: {s}"
+        );
+        assert!(
+            s.contains("- T01 テスト (AI 臭さ・警告 1 件・強い手掛かり)"),
+            "{s}"
+        );
+        assert!(!s.contains("T02") && !s.contains("様々な"), "{s}");
+        assert!(
+            s.contains(
+                "\n弱い手掛かりの情報の指摘 2 件は省きました。全件は `noslop check --report brief draft.md` で確認できます。\n"
+            ),
+            "{s}"
+        );
+        assert!(s.find("省きました") < s.find("材料 (固有名詞"), "{s}");
+
+        // 確認コマンドがなければ件数だけを書く
+        let s = render_str(&report, &hook_opts(&e, None));
+        assert!(
+            s.contains("\n弱い手掛かりの情報の指摘 2 件は省きました。\n"),
+            "{s}"
+        );
+        assert!(!s.contains("全件は"), "{s}");
+
+        // 省かないとき (CLI の check、`--brief-limit unlimited` のフック) は、ほかの指摘と同じに書く
+        let all = RenderOptions {
+            brief_omit_weak_info: false,
+            ..hook_opts(&e, None)
+        };
+        let s = render_str(&report, &all);
+        assert!(
+            s.contains("- T02 テスト (AI 臭さ・情報 2 件・弱い手掛かり)"),
+            "{s}"
+        );
+        assert!(!s.contains("省きました"), "{s}");
+    }
+
+    /// 省いた後に指摘が残らないファイルは、指摘のないファイルと同じに扱う。すべてのファイルがそうなら
+    /// 何も書かない。
+    #[test]
+    fn files_with_only_weak_info_findings_count_as_clean() {
+        let e = engine();
+        let weak_only = report_of(&e, &[("draft.md", "様々な案と様々な道がある。\n")]);
+        assert_eq!(
+            render_str(&weak_only, &hook_opts(&e, Some("noslop check"))),
+            ""
+        );
+
+        let report = report_of(
+            &e,
+            &[
+                ("a.md", "様々な案がある。\n"),
+                ("b.md", "これは言えるでしょう。様々な道がある。\n"),
+            ],
+        );
+        let s = render_str(&report, &hook_opts(&e, None));
+        assert!(
+            s.starts_with("noslop が b.md に AI 臭さの疑いを 1 件見つけました。"),
+            "{s}"
+        );
+        assert!(!s.contains("a.md"), "{s}");
+        assert!(
+            s.contains("弱い手掛かりの情報の指摘 1 件は省きました。"),
+            "見せたファイルの分だけ数える: {s}"
+        );
+    }
+
+    /// 警告以上の指摘は、手掛かりが弱くても詳しく書く (重大度は設定で上書きした後の値で見る)。情報でも、
+    /// 手掛かりが強い・中程度の指摘と、強さを持たない読みやすさの指摘は省かない。
+    #[test]
+    fn weak_warnings_and_other_info_findings_are_not_omitted() {
+        let severity = |id: &str, severity: Severity| {
+            let mut options = EngineOptions::default();
+            options.rule_tables.insert(
+                id.into(),
+                RuleTable {
+                    severity: Some(severity),
+                    ..Default::default()
+                },
+            );
+            engine_with(options)
+        };
+        let e = severity("T02", Severity::Warning);
+        let report = report_of(
+            &e,
+            &[(
+                "draft.md",
+                "様々な案がある。上限の設定の検討をする。まとめを書く。\n",
+            )],
+        );
+        let s = render_str(&report, &hook_opts(&e, None));
+        assert!(
+            s.contains("- T02 テスト (AI 臭さ・警告 1 件・弱い手掛かり)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("- T04 テスト (AI 臭さ・情報 1 件・中程度の手掛かり)"),
+            "{s}"
+        );
+        assert!(s.contains("- T03 テスト (読みやすさ・情報 1 件)"), "{s}");
+        assert!(!s.contains("省きました"), "{s}");
+
+        let e = severity("T01", Severity::Info);
+        let report = report_of(&e, &[("draft.md", "これは言えるでしょう。\n")]);
+        let s = render_str(&report, &hook_opts(&e, None));
+        assert!(
+            s.contains("- T01 テスト (AI 臭さ・情報 1 件・強い手掛かり)"),
+            "{s}"
+        );
+    }
+
+    /// 省くのは短縮版だけ。完全版の Markdown とデータ (JSON・TOON) は、設定があっても省かない。
+    #[test]
+    fn only_the_compact_brief_omits_weak_info_findings() {
+        let e = engine();
+        let report = report_of(
+            &e,
+            &[("draft.md", "これは言えるでしょう。様々な案がある。\n")],
+        );
+        let o = RenderOptions {
+            brief_omit_weak_info: true,
+            ..opts(&e)
+        };
+        let s = render_str(&report, &o);
+        assert!(s.contains("T02 WEAK_SLOP"), "{s}");
+        assert!(!s.contains("省きました"), "{s}");
+        let mut buf = Vec::new();
+        render_json(&report, &o, &mut buf).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(v["files"][0]["counts"]["slop"], 2);
     }
 }

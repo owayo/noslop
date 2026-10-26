@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::genre::Genre;
 use crate::rules::{Rule, RuleContext, RuleMeta};
 
@@ -15,7 +15,7 @@ static META: RuleMeta = RuleMeta {
     name: "CLEFT_BECAUSE",
     title: "「それは〜。なぜなら〜」構文",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Warning,
     summary: "「それは〜である。なぜなら〜」と、英語の強調構文を直訳した 2 文になっている",
     explanation: EXPLANATION,
@@ -44,8 +44,11 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。構文の形ははっきりしていますが、出現そのものがまれで、人の文書と生成文書を見分ける力を\
-コーパスで測れていません。
+構文の形ははっきりしていますが、出現そのものがまれで、人の文書と生成文書を見分ける力をコーパスで\
+測れていません。
+
+人の文書 440 本と生成文書 390 本では警告以上の指摘がなく (人 0 本・生成 0 本) 強さを測れないため、\
+手掛かりの強さは中程度としています。
 ";
 
 /// 前の文: 「(それ|これ|この)は〜(である|だ)」で終わる。

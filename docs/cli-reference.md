@@ -11,8 +11,8 @@
 | `noslop check [PATH]...` | ファイルやディレクトリを検査する（別名 `lint`）。省略時はカレントディレクトリ |
 | `noslop diff <BEFORE> <AFTER>` | 改稿の前後を比べる（新しく出た指摘・消えた事実・改稿の偏り） |
 | `noslop review <PATH>` | 全文の意味を18観点で読む依頼の出力と、判定結果の原文照合（[文章レビュー](review.md)） |
-| `noslop rules` | ルールの一覧を表示する |
-| `noslop explain <RULE>` | ルールの説明（何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
+| `noslop rules` | ルールの一覧（レーン・手掛かりの強さ・重大度・有効か）を表示する |
+| `noslop explain <RULE>` | ルールの説明（手掛かりの強さ・何を見るか・なぜ問題か・直し方・例・根拠）を表示する |
 | `noslop init` | プロジェクトの設定ファイル `noslop.toml` のひな形を作る。`--user` ならユーザーの設定 `~/.config/noslop/config.toml` のひな形を作る |
 | `noslop mcp` | MCP サーバーとして標準入出力で待ち受ける（AI エージェントから検査を呼ぶ） |
 | `noslop hook claude-code` | Claude Code のフックとして、書き換えたファイル（PostToolUse）・gws で書き込む値（PreToolUse）・コミットしていない変更（Stop）の指摘を返す |
@@ -22,7 +22,7 @@
 | `noslop skill-install <claude\|codex>` | Claude Code・Codex CLI に noslop のスキルを入れる |
 | `noslop dict download [NAME]` | hasami の配布辞書（既定は `ipadic-neologd-sudachi`）を share ディレクトリに取得する。既定では圧縮版を取って展開し、大きさと SHA-256 を確かめてから置く。取得した辞書は、辞書を指定しないとき（`auto`）に使われる |
 | `noslop dict list` | 配布辞書と取得済みかを表示し、辞書を指定しないときに使う辞書を示す（通信しない） |
-| `noslop calibrate --human <PATH> --ai <PATH>` | 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率と閾値を測る |
+| `noslop calibrate --human <PATH> --ai <PATH>` | 人の文書と生成文書のコーパスで、ルールの誤検知率・検出率・手掛かりの強さと閾値を測る |
 
 ```bash
 # 1 ファイルを検査する
@@ -41,8 +41,8 @@ noslop check draft.md --format brief | pbcopy
 noslop check draft.md --report brief --format json
 noslop check draft.md --report brief --format toon
 
-# 技術文書の閾値で検査し、実験的ルールも有効にする
-noslop check docs --genre tech --experimental
+# 技術文書の閾値で検査し、tech では既定で止まる R18 も動かす
+noslop check docs --genre tech --enable-rules R18
 
 # 特定のルールを無視する
 noslop check draft.md --ignore-rules P01,R03
@@ -73,7 +73,7 @@ noslop check --git-diff docs/ guide.md --format brief
 
 パスを省くと、サブディレクトリから実行しても作業ツリー全体の変更を見ます。明示的な `.` はカレントディレクトリ以下の変更だけです。指定したパスは同じ作業ツリーの中に限り、標準入力とは組み合わせられません。git の外での実行もエラーになります。設定・表示名・ユーザーの除外の基準は実行したディレクトリです。
 
-対象の拡張子・設定の除外・`.noslopignore` は Stop フックと同じ条件で、ファイルを直接指定しても除外を適用します。シンボリックリンク・サブモジュールは見ません。通常の `check` と同じ出力形式・ルール選択・終了コードを使えます。フックは既定で読みやすさの指摘を返さないので、その結果に合わせるときは `--no-readability` を付けます。
+対象の拡張子・設定の除外・`.noslopignore` は Stop フックと同じ条件で、ファイルを直接指定しても除外を適用します。シンボリックリンク・サブモジュールは見ません。通常の `check` と同じ出力形式・ルール選択・終了コードを使えます。フックは既定で読みやすさの指摘を返さないので、その結果に合わせるときは `--no-readability` を付けます。フックが件数だけにした指摘（重大度が情報で、手掛かりが弱いもの）も、`check` では 1 件ずつ出ます。
 
 ### `check` のオプション
 
@@ -84,9 +84,8 @@ noslop check --git-diff docs/ guide.md --format brief
 | `--format <FORMAT>` | `-f` | 出力形式。全指摘のレポートは `text`（既定）/ `json` / `toon` / `github`（別名 `github-actions`）、改稿指示は `markdown`（既定）/ `json` / `toon`。`brief` は `--report brief --format markdown` の省略形 |
 | `--genre <GENRE>` | | ジャンル。`general`（既定）/ `tech` / `business` / `essay`。別名 `blog`→essay、`minutes`→business |
 | `--ignore-rules <IDS>` | | 無視するルール（カンマ区切り、ID か名前） |
-| `--enable-rules <IDS>` | | 追加で有効にするルール（実験的ルールを個別に有効にする用途） |
+| `--enable-rules <IDS>` | | 有効にするルール（カンマ区切り、ID か名前）。設定で止めたルールや、ジャンルの既定で止まるルールを動かす |
 | `--only-rules <IDS>` | | 指定したルールだけを動かす |
-| `--experimental` | | 実験的なルールと語句をすべて有効にする |
 | `--config <PATH>` | | プロジェクトの設定ファイルを指定する（ユーザーの設定は重ねて読む） |
 | `--no-config` | | 設定ファイルを読まない（ユーザーの設定もプロジェクトの設定も） |
 | `--fail-on <LEVEL>` | | この重大度以上の指摘があれば終了コード 1 にする。`never`（既定）/ `info` / `warning` / `error` |
@@ -103,9 +102,11 @@ noslop check --git-diff docs/ guide.md --format brief
 | `--help` | `-h` | ヘルプを表示する |
 | `--version` | `-V` | バージョンを表示する |
 
+すべてのルールが既定で動きます。以前の版にあった `--experimental`（`check`・`diff`・`rules`・`hook`）と、`calibrate` の `--no-experimental`・`--min-detection` は廃止したので、渡すと引数の誤りになります。コマンドやフックの設定から、その指定を消してください。
+
 ### `diff` のオプション
 
-`noslop diff <BEFORE> <AFTER>` は、`check` のルールの選び方と文書の読み方のオプション（`--genre`・`--ignore-rules`・`--enable-rules`・`--only-rules`・`--experimental`・`--no-readability`・`--include`・`--line-breaks`・`--dict`・`--no-dict`・`--config`・`--no-config`）をそのまま受け付けます。どちらか一方は `-` で標準入力から読めます。
+`noslop diff <BEFORE> <AFTER>` は、`check` のルールの選び方と文書の読み方のオプション（`--genre`・`--ignore-rules`・`--enable-rules`・`--only-rules`・`--no-readability`・`--include`・`--line-breaks`・`--dict`・`--no-dict`・`--config`・`--no-config`）をそのまま受け付けます。どちらか一方は `-` で標準入力から読めます。
 
 | オプション | 短縮形 | 説明 |
 |-----------|-------|------|
@@ -118,19 +119,21 @@ noslop check --git-diff docs/ guide.md --format brief
 | コマンド | オプション | 説明 |
 |---------|-----------|------|
 | `noslop rules` | `-f, --format <text\|json\|markdown>` | 一覧の形式。`markdown` は各ルールの説明文も含む（`docs/rules.md` の生成用） |
-| | `--genre <GENRE>` / `--experimental` | そのジャンル・設定で既定で有効かの判定に使う |
+| | `--genre <GENRE>` | そのジャンルで既定で有効かの判定に使う |
 | | `--config <PATH>` / `--no-config` | 有効・無効の列に設定ファイルを反映するか |
 | `noslop explain <RULE>` | | ID か名前で、メタ情報・設定できる閾値の現在値・説明文を表示する |
 | `noslop init` | `--user` / `--force` | `noslop.toml` のひな形をカレントディレクトリに作る。`--user` ならユーザーの設定のひな形を `~/.config/noslop/config.toml` に作る（ディレクトリがなければ作る）。既にあれば `--force` で上書き |
 | `noslop mcp` | `--config <PATH>` / `--no-config` | 設定ファイルの指定。ツールと登録の仕方は [docs/integrations.md](../docs/integrations.md) |
-| `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--experimental` / `--genre <GENRE>` / `--whole-file` | 返す箇所の上限（既定 3）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。詳細は [docs/integrations.md](../docs/integrations.md) |
+| `noslop hook claude-code` | `--brief-limit <N>` / `--include-readability` / `--genre <GENRE>` / `--whole-file` | 1 ルールあたりに返す箇所の上限（既定 3。`unlimited` で全件。弱い手掛かりの情報の指摘も省かない）、読みやすさの指摘を含めるか、変わった行に限らずファイル全体を見るか。`unlimited` でなければ、重大度が情報で手掛かりが弱い指摘は件数だけを返す。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop hook command` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。`unlimited` で上限なし。超える分は行の単位で省く）。claw-hooks の出力の上限（既定 1000 文字）に合わせるなら 900。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop hook file <PATH>` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。`unlimited` で上限なし。超える分は行の単位で省く）。変わった行は git の HEAD との差分から求める。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop hook git-diff` | `hook claude-code` と同じもの / `--max-chars <N>` | 出力の文字数の上限（既定 9000。`unlimited` で上限なし）。指摘があれば終了コード 1。詳細は [docs/integrations.md](../docs/integrations.md) |
 | `noslop skill-install <claude\|codex>` | `--dir <DIR>` | スキルの置き場（既定は `~/.claude/skills` か `~/.codex/skills`。プロジェクトに置くなら `.claude/skills` など）。`noslop/SKILL.md` を書き、すでにあれば上書きする |
 | `noslop dict download [NAME]` | `--dir <DIR>` / `--source <URL>` / `--uncompressed` | NAME は `ipadic` / `ipadic-neologd` / `ipadic-neologd-sudachi`（既定）。保存先（既定は hasami の share ディレクトリ）、取得元の URL（ミラー用）、圧縮版を使わずに非圧縮版を取るかを指定する。既存の辞書は毎回取得し直し、検証に成功してから置き換える。詳細は[別の辞書を使う](dictionaries.md#別の辞書を使う) |
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
-| `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`--min-detection`、`--no-experimental`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](../docs/calibration.md) |
+| `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](../docs/calibration.md) |
+
+`noslop rules` の「強さ」の列（JSON は `signal`）は、AI 臭さのルールが持つ手掛かりの強さです。読みやすさのルールと独自ルールは強さを持たず、`-`（JSON は `null`）になります。`noslop explain` は、強さとその意味を「手掛かり」の行に示します。
 
 ### 終了コード
 

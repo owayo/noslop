@@ -48,6 +48,6 @@ pub mod text;
 #[cfg(feature = "cli")]
 pub mod walk;
 
-pub use diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+pub use diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 pub use document::{Document, ParseError, ParseOptions, SourceFormat};
 pub use genre::Genre;

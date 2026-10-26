@@ -450,6 +450,23 @@ mod tests {
         assert_eq!(ws.records(), 0);
     }
 
+    /// 弱い手掛かりの情報の指摘 (P05「様々な」) だけの書き込みは、止めず、知らせもしない。
+    #[test]
+    fn weak_info_findings_alone_are_not_reported() {
+        let ws = Workspace::new();
+        assert_eq!(
+            ws.judge(&ws.input(docs_write("D1", "様々な案を集めました。"))),
+            None
+        );
+        let all = ws.input(docs_write("D1", "様々な案を集めました。"));
+        let text = report(
+            ws.judge_with(&all, &["--brief-limit", "unlimited"], t0())
+                .unwrap(),
+        );
+        assert!(text.contains("P05"), "{text}");
+        assert_eq!(ws.records(), 0);
+    }
+
     #[test]
     fn the_config_is_found_from_the_input_cwd_or_the_process_cwd() {
         let ws = Workspace::new();

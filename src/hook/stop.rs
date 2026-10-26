@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde_json::{Value, json};
 
-use super::{CONTEXT_BUDGET_CHARS, Reviewer, display_name, followup_command, truncate_lines};
+use super::{
+    CONTEXT_BUDGET_CHARS, Followup, Reviewer, display_name, followup_command, truncate_lines,
+};
 use crate::changed::{ChangeScope, ChangedFile, WorkTree, is_regular_file};
 use crate::cli::{self, GitDiffHookArgs, HookArgs};
 use crate::engine::FileReport;
@@ -127,7 +129,9 @@ fn review_repository(
         .par_iter()
         .filter_map(|file| lint(&reviewer, file, &start, args.whole_file))
         .collect();
-    let Some(brief) = reviewer.brief(reports)? else {
+    // 全件の確認コマンド (省いた指摘の件数と、長くて省いたときの注記に添える)
+    let command = followup_command(args, &start, Followup::WorkTree);
+    let Some(brief) = reviewer.brief(reports, Some(&command))? else {
         return Ok(None);
     };
     let mut notes = String::from(KEEP_NOTE);
@@ -136,7 +140,6 @@ fn review_repository(
     } else {
         LIMITED_NOTE
     });
-    let command = followup_command(args, &start, None);
     Ok(Some(fit(&brief, &notes, budget, Some(&command))))
 }
 
@@ -182,7 +185,7 @@ mod tests {
     use std::fs;
     use std::process::{Command, Stdio};
 
-    use super::super::testing::{CONFIG, DOC, parse};
+    use super::super::testing::{CONFIG, DOC, WEAK_DOC, omitted_followup, parse};
     use super::*;
 
     fn git_diff_args(extra: &[&str]) -> GitDiffHookArgs {
@@ -639,6 +642,45 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("noslop.toml"), "{err}");
+    }
+
+    /// 弱い手掛かりの情報の指摘だけの変更は、指摘がないときと同じに何も返さない (`hook git-diff` は 0 で
+    /// 終わる)。ほかの指摘があれば件数だけを添え、確認コマンドは全件を返す `check --git-diff` にする。
+    #[test]
+    fn weak_info_changes_alone_return_nothing() {
+        let Some(dir) = repository() else { return };
+        write(dir.path(), "notes/weak.md", WEAK_DOC);
+        assert_eq!(run(dir.path(), &[]), None);
+        assert!(run(dir.path(), &["--brief-limit", "unlimited"]).is_some());
+
+        write(
+            dir.path(),
+            "guide.md",
+            &DOC.replace("新しい段落です。", "様々な段落です。"),
+        );
+        let text = run(dir.path(), &[]).unwrap();
+        assert!(
+            text.starts_with("noslop が guide.md に 独自ルールの指摘を 1 件見つけました。"),
+            "弱い指摘だけのファイルは並べない: {text}"
+        );
+        assert!(
+            !text.contains("notes/weak.md") && !text.contains("P05"),
+            "{text}"
+        );
+        let command = omitted_followup(&text, 1);
+        assert!(
+            command.contains("noslop check --git-diff --report brief --brief-limit unlimited"),
+            "{command}"
+        );
+
+        // --whole-file なら、同じフックを上限なしで実行し直す
+        let whole = run(dir.path(), &["--whole-file"]).unwrap();
+        let command = omitted_followup(&whole, 1);
+        assert!(
+            command.contains("noslop hook git-diff --max-chars unlimited --brief-limit unlimited")
+                && command.contains("--whole-file"),
+            "{command}"
+        );
     }
 
     #[test]

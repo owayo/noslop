@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::rules::{Rule, RuleContext, RuleMeta};
 
 use super::{final_prose_sentence, has_embedded_content};
@@ -14,9 +14,9 @@ static META: RuleMeta = RuleMeta {
     name: "FORMULAIC_FUTURE_CLOSER",
     title: "課題から期待へ流す結び",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
-    summary: "文書の結びで「課題は残る」から「今後の発展が期待される」へ流す型を指摘する (実験的)",
+    summary: "文書の結びで「課題は残る」から「今後の発展が期待される」へ流す型を指摘する",
     explanation: r"### 何を見るか
 
 文書の最後の地の文で、「課題は残ります」「課題がある」などの文の直後に、「今後」「将来」「これから」を含み、「発展」「進展」「成長」「改善」「活用」「普及」への期待で終わる文が続く型を探します。同じ文の中で読点を挟んで続く型も拾います。別段落の場合は最後の 2 段落が空白だけを挟んで隣接している必要があります。見出し・箇条書き・コード・引用を挟んでつなぎません。
@@ -38,7 +38,9 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-未校正の実験的なルールです。型と除外条件の誤検知率は測っていません。情報として確認を促します。",
+型と除外条件は校正していません。情報として確認を促します。
+
+人の文書 440 本と生成文書 390 本では反応がなく (人 0 本・生成 0 本) 強さを測れないため、手掛かりの強さは中程度としています。",
 };
 
 static CHALLENGE: LazyLock<Regex> = LazyLock::new(|| {

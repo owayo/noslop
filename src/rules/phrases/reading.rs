@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use hasami::CoarsePos;
 use regex::{Regex, RegexSet};
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::document::MarkKind;
 use crate::morph::MorphToken;
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, option_usize, quote};
@@ -27,7 +27,7 @@ static P15_META: RuleMeta = RuleMeta {
     name: "KANJI_RUN",
     title: "連続漢字",
     lane: Lane::Readability,
-    status: RuleStatus::Stable,
+    signal: None,
     default_severity: Severity::Info,
     summary: "漢字が 7 字以上続き、語の切れ目が読み取りにくい箇所を指す",
     explanation: r"### 何を見るか
@@ -213,7 +213,7 @@ impl Rule for KanjiRun {
                         format!("漢字が {n} 字続いています (「{}」)", quote(matched)),
                         "語の切れ目が読み取れるか確かめ、助詞や動詞を補って開いてください",
                         P15_META.default_severity,
-                        P15_META.status,
+                        P15_META.signal,
                     )
                     .with_metric("length", n);
                     out.push(d);
@@ -239,7 +239,7 @@ static P16_META: RuleMeta = RuleMeta {
     name: "NO_CHAIN",
     title: "「の」の連鎖",
     lane: Lane::Readability,
-    status: RuleStatus::Stable,
+    signal: None,
     default_severity: Severity::Info,
     summary: "「AのBのCのD」のように「の」が 3 回以上続き、係り受けが潰れる箇所を指す",
     explanation: r"### 何を見るか
@@ -635,7 +635,7 @@ impl Rule for NoChain {
                         format!("「の」が {count} 回続いています (「{}」)", quote(matched)),
                         "どこか 1 か所を動詞や「〜を〜する」の形に開いてください",
                         P16_META.default_severity,
-                        P16_META.status,
+                        P16_META.signal,
                     )
                     .with_metric("chain", count);
                     out.push(d);
@@ -654,7 +654,7 @@ static P17_META: RuleMeta = RuleMeta {
     name: "DOUBLE_NEGATIVE",
     title: "二重否定",
     lane: Lane::Readability,
-    status: RuleStatus::Stable,
+    signal: None,
     default_severity: Severity::Info,
     summary: "「〜ないわけではない」「〜ないとは言えない」のように否定を重ね、真偽の計算を強いる箇所を指す",
     explanation: r"### 何を見るか
@@ -881,7 +881,7 @@ impl Rule for DoubleNegative {
                         format!("「{}」は否定を二重に重ねた言い回しです", quote(matched)),
                         "肯定に言い換えられるなら、意味が反転していないか確かめたうえで言い換えてください。控えめな肯定が狙いなら残してかまいません",
                         P17_META.default_severity,
-                        P17_META.status,
+                        P17_META.signal,
                     ));
                 }
             }

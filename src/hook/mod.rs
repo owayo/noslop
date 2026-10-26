@@ -14,6 +14,13 @@
 //! ファイルと差分のフックは、変わった行に重なる指摘だけを短い改稿指示 (brief) で返す (編集のたびに同じ
 //! 指摘を繰り返し渡して、残すと決めた箇所まで直させないため)。指摘がないとき・対象外のときは何も
 //! 出力しない。
+//!
+//! どのフックも、重大度が情報で手掛かりが弱い指摘 ([`output::brief::is_weak_info`]) は詳しく返さず、
+//! 件数と全件の確認コマンドだけを添える (人の文書にもよく出る軽い指摘まで、編集のたびに直させない
+//! ため)。省いた後に返す指摘がなければ、指摘がないときと同じに何も出力しない。`--brief-limit unlimited`
+//! (全件) のときは省かない。確認コマンドはどれも `--brief-limit unlimited` を付けるので、省いた指摘も
+//! 返す。gws の書き込みを止めるかどうかは、省く前の指摘で決める (止めるのは本文に警告以上があるときで、
+//! 省く指摘は情報だけ)。
 
 mod claude_code;
 mod command;
@@ -32,6 +39,7 @@ use std::path::Path;
 
 use crate::changed::ChangeScope;
 use crate::cli::{self, HookArgs};
+use crate::diagnostic::Diagnostic;
 use crate::document::{Document, ParseOptions, SourceFormat};
 use crate::engine::{Engine, FileReport, RunReport};
 use crate::output::{self, RenderOptions, RuleCatalog};
@@ -56,6 +64,9 @@ struct Reviewer {
     walk: WalkOptions,
     engine: Engine,
     brief_limit: usize,
+    /// 重大度が情報で手掛かりが弱い指摘を、詳しく返さずに件数だけにするか (`--brief-limit unlimited`
+    /// でなければ省く)。
+    omits_weak_info: bool,
 }
 
 impl Reviewer {
@@ -68,14 +79,21 @@ impl Reviewer {
         if let Some(genre) = args.genre {
             options.genre = genre;
         }
-        options.experimental |= args.experimental;
         options.selection.no_readability = !args.include_readability;
         let engine = Engine::new(options).map_err(|e| e.to_string())?;
         Ok(Self {
             walk,
             engine,
             brief_limit: args.brief_limit,
+            // 全件 (unlimited) を求められたら、弱い手掛かりの情報の指摘も省かない。全件の確認コマンドは
+            // この値を渡して、省いた指摘を返す
+            omits_weak_info: args.brief_limit != usize::MAX,
         })
+    }
+
+    /// 改稿指示に詳しく載せる指摘か (抑制していない指摘のうち、省く指摘でないもの)。
+    fn shows(&self, d: &Diagnostic) -> bool {
+        !d.is_suppressed() && !(self.omits_weak_info && output::brief::is_weak_info(d))
     }
 
     /// `root` を起点に検査するとき、`path` を検査するか (文書・コードの拡張子、設定の除外、
@@ -107,20 +125,27 @@ impl Reviewer {
         &self.engine.options().parse
     }
 
-    /// 検査の結果を短い改稿指示にする。見せる指摘が 1 件もなければ `None`。
-    fn brief(&self, files: Vec<FileReport>) -> Result<Option<String>, String> {
+    /// 検査の結果を短い改稿指示にする。詳しく載せる指摘が 1 件もなければ `None` (弱い手掛かりの情報の
+    /// 指摘だけのファイルは、指摘のないファイルと同じに扱う)。`followup` は、省いた件数に添える全件の
+    /// 確認コマンド。
+    fn brief(
+        &self,
+        files: Vec<FileReport>,
+        followup: Option<&str>,
+    ) -> Result<Option<String>, String> {
         let files: Vec<FileReport> = files
             .into_iter()
-            .filter(|f| f.visible().next().is_some())
+            .filter(|f| f.diagnostics.iter().any(|d| self.shows(d)))
             .collect();
         if files.is_empty() {
             return Ok(None);
         }
         let opts = RenderOptions {
             genre: self.engine.options().genre,
-            experimental: self.engine.options().experimental,
             brief_limit: Some(self.brief_limit),
             brief_compact: true,
+            brief_omit_weak_info: self.omits_weak_info,
+            brief_followup: followup.map(str::to_string),
             catalog: RuleCatalog::from_engine(&self.engine),
             ..Default::default()
         };
@@ -147,11 +172,13 @@ struct Review {
 
 /// 編集したファイルを検査し、変更範囲 (`changed` が求める) に重なる指摘の
 /// 改稿指示を作る。対象外のファイル (拡張子・除外・なくなった・大きすぎる) と、指摘がないときは `None`。
+/// `followup` は、省いた指摘の件数に添える全件の確認コマンド。
 fn review(
     path: &Path,
     cwd: Option<&Path>,
     args: &HookArgs,
     env: &cli::Environment,
+    followup: &str,
     changed: impl FnOnce(&Document) -> ChangeScope,
 ) -> Result<Option<Review>, String> {
     let reviewer = Reviewer::new(args, cwd, env)?;
@@ -168,7 +195,7 @@ fn review(
     let scope = changed(&doc);
     let limited = scope.is_limited();
     let file = scope.lint(&reviewer.engine, doc);
-    let Some(brief) = reviewer.brief(vec![file])? else {
+    let Some(brief) = reviewer.brief(vec![file], Some(followup))? else {
         return Ok(None);
     };
     Ok(Some(Review {
@@ -283,22 +310,48 @@ fn quote_for_shell(value: &str, powershell: bool) -> String {
     format!("'{escaped}'")
 }
 
-/// フックのルール選択・設定・実行場所を保った、全件の確認コマンド。
-fn followup_command(args: &HookArgs, cwd: &Path, file: Option<&Path>) -> String {
-    let check = file.is_none() && !args.whole_file;
-    let mut command = if check {
-        "noslop check --git-diff --report brief --brief-limit unlimited".to_string()
-    } else {
-        let kind = if file.is_some() { "file" } else { "git-diff" };
-        format!("noslop hook {kind} --max-chars unlimited --brief-limit unlimited")
+/// 全件の確認コマンドで検査し直す対象。
+#[derive(Debug, Clone, Copy)]
+enum Followup<'a> {
+    /// `hook file` で検査したファイル。同じフックを上限なしで実行し直す (変わった行の求め方も同じ)。
+    File(&'a Path),
+    /// Stop と `hook git-diff` の作業ツリー。変わった行を見たなら `check --git-diff`、`--whole-file` なら
+    /// 同じフックを上限なしで実行し直す。
+    WorkTree,
+    /// PostToolUse で書き換えたファイル。ツール呼び出しの差分は再現できないので、`check` でファイルの
+    /// 全体を検査する (変わった行に絞った指摘も、その中に含まれる)。
+    WholeFile(&'a Path),
+}
+
+/// フックのルール選択・設定・実行場所を保った、全件の確認コマンド。どれも `--brief-limit unlimited` を
+/// 付けるので、フックが件数だけにした弱い手掛かりの情報の指摘も返す。
+fn followup_command(args: &HookArgs, cwd: &Path, target: Followup) -> String {
+    let (mut command, check, file) = match target {
+        Followup::File(path) => (
+            "noslop hook file --max-chars unlimited --brief-limit unlimited".to_string(),
+            false,
+            Some(path),
+        ),
+        Followup::WorkTree if args.whole_file => (
+            "noslop hook git-diff --max-chars unlimited --brief-limit unlimited".to_string(),
+            false,
+            None,
+        ),
+        Followup::WorkTree => (
+            "noslop check --git-diff --report brief --brief-limit unlimited".to_string(),
+            true,
+            None,
+        ),
+        Followup::WholeFile(path) => (
+            "noslop check --report brief --brief-limit unlimited".to_string(),
+            true,
+            Some(path),
+        ),
     };
     if !args.include_readability && check {
         command.push_str(" --no-readability");
     } else if args.include_readability && !check {
         command.push_str(" --include-readability");
-    }
-    if args.experimental {
-        command.push_str(" --experimental");
     }
     if let Some(genre) = args.genre {
         command.push_str(&format!(" --genre {}", genre.as_str()));
@@ -346,6 +399,32 @@ severity = "warning"
     pub(super) const DOC: &str =
         "# 案内\n\nユーザー様の声を集めました。\n\n新しい段落です。ユーザー様に届けます。\n";
 
+    /// 弱い手掛かりの情報の指摘 (3 行目の P05「様々な」) だけを持つ本文。
+    pub(super) const WEAK_DOC: &str = "# 案内\n\n様々な案を集めました。\n";
+
+    /// 弱い手掛かりの情報の指摘 (3 行目の P05「様々な」) と、独自ルールの警告 (5 行目) を持つ本文。
+    pub(super) const MIXED_DOC: &str =
+        "# 案内\n\n様々な案を集めました。\n\nユーザー様に届けます。\n";
+
+    /// 省いた件数の行から、全件の確認コマンドを取り出す。
+    pub(super) fn omitted_followup(text: &str, count: usize) -> &str {
+        let head = format!("弱い手掛かりの情報の指摘 {count} 件は省きました。全件は `");
+        text.split(head.as_str())
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .unwrap_or_else(|| panic!("省いた件数の行がありません: {text}"))
+    }
+
+    /// `noslop hook claude-code <extra...>` の共通の引数。
+    pub(super) fn hook_args(extra: &[&str]) -> cli::HookArgs {
+        let mut argv = vec!["claude-code"];
+        argv.extend_from_slice(extra);
+        match parse(&argv) {
+            cli::HookCommand::ClaudeCode(a) => a,
+            _ => panic!("hook claude-code"),
+        }
+    }
+
     /// `CONFIG` の設定と、本文 `doc` の guide.md を置いた作業ディレクトリ。
     pub(super) fn workspace(doc: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -368,7 +447,97 @@ severity = "warning"
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{MIXED_DOC, WEAK_DOC, hook_args, workspace};
     use super::*;
+    use crate::diagnostic::{Severity, Signal};
+
+    fn reviewer(dir: &Path, extra: &[&str]) -> Reviewer {
+        Reviewer::new(&hook_args(extra), Some(dir), &cli::Environment::default()).unwrap()
+    }
+
+    fn lint(reviewer: &Reviewer, text: &str) -> FileReport {
+        reviewer.engine.lint(Document::parse(
+            "guide.md",
+            text,
+            SourceFormat::Markdown,
+            reviewer.parse_options(),
+        ))
+    }
+
+    /// フックのテストは、P05 の「様々な」が弱い手掛かりの情報の指摘になることを前提にする (変わったら、
+    /// 弱い手掛かりの情報の指摘になる別の例に差し替える)。
+    #[test]
+    fn the_weak_info_example_is_a_weak_info_finding() {
+        let dir = workspace(WEAK_DOC);
+        let r = reviewer(dir.path(), &[]);
+        let file = lint(&r, WEAK_DOC);
+        let findings: Vec<(&str, Severity, Option<Signal>)> = file
+            .visible()
+            .map(|d| (d.rule_id.as_str(), d.severity, d.signal))
+            .collect();
+        assert_eq!(findings, vec![("P05", Severity::Info, Some(Signal::Weak))]);
+    }
+
+    /// 弱い手掛かりの情報の指摘は件数だけにし、確認コマンドを添える。それしかないファイルは、指摘が
+    /// ないときと同じに何も返さない。`--brief-limit unlimited` (全件) では省かない。
+    #[test]
+    fn weak_info_findings_are_counted_unless_every_finding_is_requested() {
+        let dir = workspace(MIXED_DOC);
+        let r = reviewer(dir.path(), &[]);
+        assert_eq!(r.brief(vec![lint(&r, WEAK_DOC)], Some("noslop")), Ok(None));
+        let text = r
+            .brief(vec![lint(&r, MIXED_DOC)], Some("noslop check guide.md"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            text.starts_with("noslop が guide.md に 独自ルールの指摘を 1 件見つけました。"),
+            "省いた指摘は数えない: {text}"
+        );
+        assert!(!text.contains("P05"), "{text}");
+        assert_eq!(testing::omitted_followup(&text, 1), "noslop check guide.md");
+
+        let all = reviewer(dir.path(), &["--brief-limit", "unlimited"]);
+        let text = all
+            .brief(vec![lint(&all, WEAK_DOC)], Some("noslop"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            text.contains("- P05 ") && text.contains(" (AI 臭さ・情報 1 件・弱い手掛かり)"),
+            "{text}"
+        );
+        assert!(!text.contains("省きました"), "{text}");
+    }
+
+    /// PostToolUse の確認コマンドは、フックのルールの選び方を保って、check でファイル全体を見る。
+    #[test]
+    fn whole_file_followup_checks_the_file_with_the_same_selection() {
+        let cwd = std::env::temp_dir();
+        let target = Path::new("docs/guide.md");
+        let command = followup_command(
+            &hook_args(&["--genre", "tech", "--whole-file"]),
+            &cwd,
+            Followup::WholeFile(target),
+        );
+        assert!(
+            command.contains(
+                "noslop check --report brief --brief-limit unlimited --no-readability --genre tech -- 'docs/guide.md'"
+            ),
+            "{command}"
+        );
+        assert!(
+            !command.contains("--whole-file"),
+            "check にはない引数: {command}"
+        );
+        let command = followup_command(
+            &hook_args(&["--include-readability"]),
+            &cwd,
+            Followup::WholeFile(target),
+        );
+        assert!(
+            !command.contains("readability"),
+            "check は既定で読みやすさも見る: {command}"
+        );
+    }
 
     #[test]
     fn shell_arguments_are_literal_in_posix_and_powershell() {

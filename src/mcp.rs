@@ -65,9 +65,9 @@ const INSTRUCTIONS: &str = "noslop は日本語の文章から「AI 臭さ」(LL
 pub struct Server {
     /// 設定ファイルから組み立てたエンジンの設定。設定を読めなかったときはその理由。
     base: Result<EngineOptions, String>,
-    /// ジャンルと実験的ルールの有無ごとのエンジン。独自ルールの組み立ては確保したメモリを
-    /// 解放しないので、呼ばれるたびに作り直さずに使い回す。
-    engines: HashMap<(Genre, bool), (Engine, RuleCatalog)>,
+    /// ジャンルごとのエンジン。独自ルールの組み立ては確保したメモリを解放しないので、
+    /// 呼ばれるたびに作り直さずに使い回す。
+    engines: HashMap<Genre, (Engine, RuleCatalog)>,
     /// `initialize` で決めた版 (2025-11-25 以前の方式)。`_meta` で版を名乗らないリクエストは、
     /// これが決まってからでないと受け付けない。
     handshake: Option<&'static str>,
@@ -246,24 +246,18 @@ impl Server {
         }))
     }
 
-    /// ジャンルと実験的ルールの有無に合うエンジン (なければ作る)。
-    fn engine(
-        &mut self,
-        genre: Option<Genre>,
-        experimental: bool,
-    ) -> Result<&(Engine, RuleCatalog), String> {
+    /// ジャンルに合うエンジン (なければ作る)。
+    fn engine(&mut self, genre: Option<Genre>) -> Result<&(Engine, RuleCatalog), String> {
         let base = self
             .base
             .as_ref()
             .map_err(|e| format!("noslop の設定を読み込めません: {e}"))?;
         let genre = genre.unwrap_or(base.genre);
-        let experimental = experimental || base.experimental;
-        match self.engines.entry((genre, experimental)) {
+        match self.engines.entry(genre) {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(entry) => {
                 let mut options = base.clone();
                 options.genre = genre;
-                options.experimental = experimental;
                 let engine = Engine::new(options)
                     .map_err(|e| format!("noslop の設定を読み込めません: {e}"))?;
                 let catalog = RuleCatalog::from_engine(&engine);
@@ -277,9 +271,8 @@ impl Server {
         let text = text_arg(args, "text", "検査する本文")?;
         let filename = string_arg(args, "filename")?;
         let genre = genre_arg(args)?;
-        let experimental = bool_arg(args, "experimental")?.unwrap_or(false);
         let output = check_output(string_arg(args, "report")?, string_arg(args, "format")?)?;
-        let (engine, catalog) = self.engine(genre, experimental)?;
+        let (engine, catalog) = self.engine(genre)?;
         let (name, format) = match filename {
             Some(name) => (name.to_string(), SourceFormat::from_path(Path::new(name))),
             None => ("<text>".to_string(), SourceFormat::Markdown),
@@ -291,7 +284,6 @@ impl Server {
         };
         let opts = RenderOptions {
             genre: engine.options().genre,
-            experimental: engine.options().experimental,
             catalog: catalog.clone(),
             ..Default::default()
         };
@@ -336,14 +328,13 @@ impl Server {
         let after = text_arg(args, "after", "改稿後の本文")?;
         let filename = string_arg(args, "filename")?;
         let genre = genre_arg(args)?;
-        let experimental = bool_arg(args, "experimental")?.unwrap_or(false);
         let format = string_arg(args, "format")?.unwrap_or("text");
         if !matches!(format, "text" | "json" | "toon") {
             return Err(format!(
                 "未知の形式です: {format} (text・json・toon のどれかを指定してください)"
             ));
         }
-        let (engine, _) = self.engine(genre, experimental)?;
+        let (engine, _) = self.engine(genre)?;
         let (name, source_format) = match filename {
             Some(name) => (name.to_string(), SourceFormat::from_path(Path::new(name))),
             None => ("<text>".to_string(), SourceFormat::Markdown),
@@ -391,7 +382,7 @@ impl Server {
             return Err("`rule` (ルールの ID か名前) を指定してください".to_string());
         };
         let genre = genre_arg(args)?;
-        let (engine, _) = self.engine(genre, false)?;
+        let (engine, _) = self.engine(genre)?;
         let entry = engine.find(rule).ok_or_else(|| {
             format!("未知のルールです: {rule} (`rules` ツールで一覧を確認できます)")
         })?;
@@ -401,8 +392,7 @@ impl Server {
     /// `rules`: ルールの一覧を返す。
     fn rules(&mut self, args: &Map<String, Value>) -> Result<String, String> {
         let genre = genre_arg(args)?;
-        let experimental = bool_arg(args, "experimental")?.unwrap_or(false);
-        let (engine, _) = self.engine(genre, experimental)?;
+        let (engine, _) = self.engine(genre)?;
         Ok(crate::cli::rules_text(engine))
     }
 }
@@ -579,10 +569,6 @@ fn tools() -> Value {
         "enum": ["general", "tech", "business", "essay"],
         "description": "文書のジャンル。省略すると設定ファイルの値 (なければ general)"
     });
-    let experimental = json!({
-        "type": "boolean",
-        "description": "実験的な (未校正の) ルールも動かす"
-    });
     let read_only = json!({
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -603,7 +589,6 @@ fn tools() -> Value {
                         "description": "表示名。拡張子 (.md / .txt) で形式を判断する (省略時は Markdown)"
                     },
                     "genre": genre,
-                    "experimental": experimental,
                     "report": {
                         "type": "string",
                         "enum": ["brief", "full"],
@@ -634,7 +619,6 @@ fn tools() -> Value {
                         "description": "表示名。拡張子 (.md / .txt) で形式を判断する (省略時は Markdown)"
                     },
                     "genre": genre,
-                    "experimental": experimental,
                     "format": {
                         "type": "string",
                         "enum": ["text", "json", "toon"],
@@ -666,12 +650,11 @@ fn tools() -> Value {
         {
             "name": "rules",
             "title": "ルールの一覧",
-            "description": "noslop のルールの一覧 (ID・名前・レーン・状態・重大度・既定で有効か) を返します。",
+            "description": "noslop のルールの一覧 (ID・名前・レーン・手掛かりの強さ・重大度・既定で有効か) を返します。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "genre": genre,
-                    "experimental": experimental
+                    "genre": genre
                 }
             },
             "annotations": read_only
@@ -774,14 +757,6 @@ fn string_arg<'a>(args: &'a Map<String, Value>, key: &str) -> Result<Option<&'a 
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
         Some(_) => Err(format!("`{key}` は文字列で指定してください")),
-    }
-}
-
-fn bool_arg(args: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(b)) => Ok(Some(*b)),
-        Some(_) => Err(format!("`{key}` は true か false で指定してください")),
     }
 }
 
@@ -1145,10 +1120,6 @@ mod tests {
             (json!({ "text": "本文。", "genre": "poem" }), "poem"),
             (json!({ "text": "本文。", "format": "xml" }), "xml"),
             (
-                json!({ "text": "本文。", "experimental": "yes" }),
-                "`experimental`",
-            ),
-            (
                 json!({ "text": "あ".repeat(MAX_TEXT_BYTES / 3 + 1) }),
                 "大きすぎます",
             ),
@@ -1191,7 +1162,10 @@ mod tests {
             json!({ "text": SMELLY, "report": "brief", "format": "toon" }),
         );
         assert!(
-            toon.starts_with("schemaVersion: 1\nkind: brief\n"),
+            toon.starts_with(&format!(
+                "schemaVersion: {}\nkind: brief\n",
+                crate::output::brief::BRIEF_SCHEMA_VERSION
+            )),
             "{toon}"
         );
         assert!(toon.contains("occurrences["), "{toon}");
@@ -1309,7 +1283,7 @@ mod tests {
     }
 
     #[test]
-    fn engines_are_reused_per_genre_and_experimental_flag() {
+    fn engines_are_reused_per_genre() {
         let mut s = initialized();
         for _ in 0..3 {
             s.handle(call(1, "check", json!({ "text": "本文。" })))
@@ -1323,6 +1297,13 @@ mod tests {
         .unwrap();
         s.handle(call(
             3,
+            "check",
+            json!({ "text": "本文。", "genre": "tech" }),
+        ))
+        .unwrap();
+        // 以前の版の `experimental` は、ほかの未知の引数と同じく読まない (同じエンジンを使う)
+        s.handle(call(
+            4,
             "check",
             json!({ "text": "本文。", "experimental": true }),
         ))

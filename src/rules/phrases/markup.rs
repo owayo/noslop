@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::SourceFormat;
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
@@ -20,9 +20,9 @@ static P23_META: RuleMeta = RuleMeta {
     name: "MARKUP_RESIDUE",
     title: "記法の残骸",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Warning,
-    summary: "Markdown の強調の記号「**」が、太字にならずに記号のまま残っている箇所を指摘する (実験的)",
+    summary: "Markdown の強調の記号「**」が、太字にならずに記号のまま残っている箇所を指摘する",
     explanation: r"### 何を見るか
 
 Markdown の強調記法 `**…**` が、太字にならずに記号のまま残っている箇所を探します。同じ行の中で、ちょうど 2 個の `*` が対になり、そのあいだに日本語を含む 60 字以内の語句があって、語句の両端が空白でないものに限ります。
@@ -47,7 +47,9 @@ Markdown では、`**` を括弧の内側へ移す (「**語句**」) か、太�
 
 ### 根拠
 
-実験的です。人の文書 171 本 (Markdown 159 本・テキスト 12 本) では指摘がなく、生成文書 390 本 (すべて Markdown) では 27 本 (6.9%) で 62 件を指摘しました。どれも括弧や句読点に接して描画されなかった記号です。対にならない `**` と行をまたぐ対は拾わないので、生成文書のうち記号がそのような形で残った 4 本は数に入っていません。テキストとして読む文書の型は、生成文書に該当するものがなく、測っていません。昇格の条件 (生成文書での検出率 20% 以上) は満たさないので、実験的に留めています。記号が残るのは出力の記法と表示先の食い違いで、書き手が AI かどうかの判定には使えません。",
+人の文書 171 本 (Markdown 159 本・テキスト 12 本) では指摘がなく、生成文書 390 本 (すべて Markdown) では 27 本 (6.9%) で 62 件を指摘しました。どれも括弧や句読点に接して描画されなかった記号です。対にならない `**` と行をまたぐ対は拾わないので、生成文書のうち記号がそのような形で残った 4 本は数に入っていません。テキストとして読む文書の型は、生成文書に該当するものがなかったため、測定の対象外です。記号が残るのは出力の記法と表示先の食い違いで、書き手が AI かどうかの判定には使えません。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、警告の指摘が出た文書は人 37 本・生成 27 本で、人の文書にも同じくらい出ました。テキストなどで出る情報の指摘は、件数が少なく強さを測れないため、中程度としています。",
 };
 
 /// 対の中身の字数の上限。対にならない記号どうしを遠くで結ばないための範囲の制限で、
@@ -122,16 +124,20 @@ impl Rule for MarkupResidue {
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         let doc = ctx.doc;
         let markdown = doc.format == SourceFormat::Markdown;
-        let (item, severity, hint) = if markdown {
+        // ルールの強さは、Markdown の文書の警告で測ったもの。テキストなどの情報の指摘は、
+        // その測定に入らない (生成文書に該当するものがなく測れていない) ので中程度にする
+        let (item, severity, signal, hint) = if markdown {
             (
                 UNRENDERED_ITEM,
                 Severity::Warning,
+                P23_META.signal,
                 "`**` の内側の端に括弧や句読点が来ると、CommonMark では太字になりません。`**` を括弧の内側へ移す (「**語句**」) か、太字をやめてください",
             )
         } else {
             (
                 LITERAL_ITEM,
                 Severity::Info,
+                Some(Signal::Moderate),
                 "書き込み先や貼り付け先で太字として表示されないなら、記号を外してください。太字が要るなら、出力先の書式で付けてください",
             )
         };
@@ -165,14 +171,7 @@ impl Rule for MarkupResidue {
                     };
                     out.push(
                         diagnostic(
-                            &P23_META,
-                            span,
-                            context,
-                            matched,
-                            message,
-                            hint,
-                            severity,
-                            P23_META.status,
+                            &P23_META, span, context, matched, message, hint, severity, signal,
                         )
                         .with_metric("item", item),
                     );
@@ -226,7 +225,7 @@ mod tests {
         assert_eq!(matched(md, &d), ["**「来週の水曜」**"]);
         assert_eq!(d[0].rule_id, "P23");
         assert_eq!(d[0].severity, Severity::Warning);
-        assert_eq!(d[0].status, RuleStatus::Experimental);
+        assert_eq!(d[0].signal, Some(Signal::Weak));
         assert_eq!(item(&d[0]), UNRENDERED_ITEM);
         assert!(
             d[0].message.contains("記号のまま表示されます"),
@@ -292,7 +291,8 @@ mod tests {
         assert_eq!(matched(text, &d), ["**売上の回復**", "**作業の分担**"]);
         for d in &d {
             assert_eq!(d.severity, Severity::Info);
-            assert_eq!(d.status, RuleStatus::Experimental);
+            // 警告で測ったルールの強さ (弱い) は継がない
+            assert_eq!(d.signal, Some(Signal::Moderate));
             assert_eq!(item(d), LITERAL_ITEM);
             assert!(
                 d.message.contains("文字のまま残っています"),

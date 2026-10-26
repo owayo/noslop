@@ -91,7 +91,6 @@ pub struct Finding {
     pub message: String,
     pub span: Span,
     pub related: Vec<Span>,
-    pub status: crate::diagnostic::RuleStatus,
     pub lane: crate::diagnostic::Lane,
     pub severity: crate::diagnostic::Severity,
 }
@@ -103,7 +102,6 @@ impl From<Diagnostic> for Finding {
             message: d.message,
             span: d.span,
             related: d.related,
-            status: d.status,
             lane: d.lane,
             severity: d.severity,
         }

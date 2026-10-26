@@ -32,7 +32,7 @@ const DOC_WITH_TERM: &str =
 const DOC_CLEAN: &str = "# メモ\n\n今日は晴れた。散歩に出かけた。\n";
 
 #[test]
-fn repeated_short_slogans_are_experimental_and_do_not_count_fragments() {
+fn repeated_short_slogans_run_by_default_and_do_not_count_fragments() {
     let source = "## 点検を、仕組みで続ける\n\n小さな記録が示す、次の一手\n\n待っている間に、機会は失われる\n";
     for filename in ["sample.md", "sample.txt"] {
         let input = if filename.ends_with(".txt") {
@@ -40,9 +40,8 @@ fn repeated_short_slogans_are_experimental_and_do_not_count_fragments() {
         } else {
             source.to_string()
         };
-        for experimental in [false, true] {
-            let mut command = noslop();
-            command.args([
+        let output = noslop()
+            .args([
                 "check",
                 "-",
                 "--stdin-filename",
@@ -53,30 +52,24 @@ fn repeated_short_slogans_are_experimental_and_do_not_count_fragments() {
                 "tech",
                 "--format",
                 "json",
-            ]);
-            if experimental {
-                command.arg("--experimental");
-            }
-            let output = command
-                .write_stdin(input.as_str())
-                .assert()
-                .success()
-                .get_output()
-                .stdout
-                .clone();
-            let report = json(&output);
-            assert_eq!(rule_count(&report, "R21"), if experimental { 3 } else { 0 });
-            if experimental {
-                for d in report["files"][0]["diagnostics"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|d| d["ruleId"] == "R21")
-                {
-                    assert_eq!(d["severity"], "info");
-                    assert_eq!(d["status"], "experimental");
-                }
-            }
+            ])
+            .write_stdin(input.as_str())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report = json(&output);
+        assert_eq!(rule_count(&report, "R21"), 3, "{filename}");
+        for d in report["files"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["ruleId"] == "R21")
+        {
+            assert_eq!(d["severity"], "info");
+            assert_eq!(d["signal"], "moderate");
+            assert!(d.get("status").is_none());
         }
     }
     let fragments = "const A: &str = \"点検を、仕組みで続ける\";\nconst B: &str = \"小さな記録が示す、次の一手\";\nconst C: &str = \"待っている間に、機会は失われる\";\n";
@@ -264,8 +257,6 @@ fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
                 "--no-dict",
                 "--only-rules",
                 "P06",
-                // 「ポイントは」は実験的な項目
-                "--experimental",
                 "--format",
                 "json",
             ])
@@ -280,7 +271,8 @@ fn p06_point_phrase_respects_word_boundaries_in_documents_and_code() {
         let diagnostic = &report["files"][0]["diagnostics"][0];
         assert_eq!(diagnostic["metrics"]["matched"], "ポイントは");
         assert_eq!(diagnostic["severity"], "info");
-        assert_eq!(diagnostic["status"], "experimental");
+        // 人の文書にも生成文書と同じくらい出る語句なので、弱い手掛かり
+        assert_eq!(diagnostic["signal"], "weak");
         let start = source.rfind("ポイントは").unwrap();
         assert_eq!(diagnostic["range"]["start"]["offset"], start);
         assert_eq!(
@@ -340,16 +332,13 @@ fn citation_artifacts_check_visible_blocks_and_keep_exact_offsets() {
                 .iter()
                 .filter(|d| d["ruleId"] == "P22")
                 .collect();
-            if !selected {
-                assert!(findings.is_empty(), "{filename}");
-                continue;
-            }
-            assert_eq!(findings.len(), expected.len(), "{filename}");
+            // 既定でも、P22 だけを動かしても同じ箇所を拾う
+            assert_eq!(findings.len(), expected.len(), "{filename} {selected}");
             for (d, marker) in findings.iter().zip(&expected) {
                 let start = source.find(marker).unwrap();
                 assert_eq!(d["range"]["start"]["offset"], start, "{filename}");
                 assert_eq!(d["range"]["end"]["offset"], start + marker.len());
-                assert_eq!(d["status"], "experimental");
+                assert_eq!(d["signal"], "strong");
                 assert_eq!(d["metrics"]["matched"], *marker);
             }
         }
@@ -357,18 +346,14 @@ fn citation_artifacts_check_visible_blocks_and_keep_exact_offsets() {
 }
 
 #[test]
-fn closing_call_to_action_respects_opt_in_genre_and_document_kind() {
+fn closing_call_to_action_respects_genre_and_document_kind() {
     for (filename, genre, flags, expected) in [
-        ("draft.md", "general", vec![], 0),
-        ("draft.md", "general", vec!["--experimental"], 1),
-        (
-            "draft.md",
-            "tech",
-            vec!["--experimental", "--no-readability"],
-            1,
-        ),
-        ("draft.md", "business", vec!["--experimental"], 0),
-        ("draft.md", "essay", vec!["--experimental"], 0),
+        ("draft.md", "general", vec![], 1),
+        ("draft.md", "tech", vec!["--no-readability"], 1),
+        ("draft.md", "general", vec!["--ignore-rules", "R19"], 0),
+        // 業務文書と随筆では既定で止まり、明示すれば動く
+        ("draft.md", "business", vec![], 0),
+        ("draft.md", "essay", vec![], 0),
         ("draft.md", "essay", vec!["--only-rules", "R19"], 1),
         ("sample.rs", "general", vec!["--only-rules", "R19"], 0),
     ] {
@@ -407,7 +392,7 @@ fn closing_call_to_action_respects_opt_in_genre_and_document_kind() {
 }
 
 #[test]
-fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
+fn citation_and_prose_pattern_rules_run_by_default_and_skip_fragment_statistics() {
     let guide = "すべて変える必要はありません。手順の確認が大切です。誤りを見つけやすくなります。"
         .repeat(50);
     let nominal = "早朝の冷気、駅の階段、店の看板。".repeat(2);
@@ -424,8 +409,8 @@ fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
             "--format",
             "json",
         ]);
-        if enabled {
-            cmd.arg("--experimental");
+        if !enabled {
+            cmd.args(["--ignore-rules", "P22,R17,R18"]);
         }
         let output = cmd
             .write_stdin(text.as_str())
@@ -449,7 +434,7 @@ fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
                 .iter()
                 .filter(|d| ["P22", "R17", "R18"].contains(&d["ruleId"].as_str().unwrap()))
             {
-                assert_eq!(d["status"], "experimental");
+                assert_eq!(d["signal"], "strong");
                 assert_eq!(d["lane"], "slop");
                 assert_eq!(
                     d["severity"],
@@ -490,9 +475,13 @@ fn citation_and_prose_pattern_rules_are_opt_in_and_skip_fragment_statistics() {
 }
 
 #[test]
-fn markup_residue_in_plain_text_is_opt_in_information() {
+fn markup_residue_in_plain_text_is_information() {
     let text = "今月は**売上の回復**を優先する。\n";
-    for (flags, expected) in [(vec![], 0), (vec!["--only-rules", "P23"], 1)] {
+    for (flags, expected) in [
+        (vec![], 1),
+        (vec!["--only-rules", "P23"], 1),
+        (vec!["--ignore-rules", "P23"], 0),
+    ] {
         let output = noslop()
             .args([
                 "check",
@@ -514,9 +503,15 @@ fn markup_residue_in_plain_text_is_opt_in_information() {
         let report = json(&output);
         assert_eq!(rule_count(&report, "P23"), expected, "{flags:?}");
         if expected > 0 {
-            let d = &report["files"][0]["diagnostics"][0];
+            let d = report["files"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["ruleId"] == "P23")
+                .unwrap();
             assert_eq!(d["severity"], "info");
-            assert_eq!(d["status"], "experimental");
+            // ルールの強さ (弱い) は Markdown の警告で測ったもの。テキストの情報の指摘は測れておらず中程度
+            assert_eq!(d["signal"], "moderate");
             assert_eq!(d["lane"], "slop");
             assert_eq!(d["metrics"]["item"], "文字のまま残った強調の記法");
         }
@@ -568,7 +563,7 @@ fn nominal_list_calibration_does_not_suggest_a_forbidden_single_occurrence() {
 }
 
 #[test]
-fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
+fn new_editorial_rules_run_by_default_and_report_their_lanes() {
     let dir = tempfile::tempdir().unwrap();
     let text = "おっしゃる通りです。必要であれば表も作成できます。\n\n専門家は有効だと指摘しています。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n申請書は提出前に担当者が記入漏れと添付資料の不足を確認してください。\n\n操作は速く、柔軟で、直感的です。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。\n\n運用には課題が残ります。しかし、今後の普及が期待されます。\n";
     for enabled in [false, true] {
@@ -583,8 +578,8 @@ fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
             "--format",
             "json",
         ]);
-        if enabled {
-            cmd.arg("--experimental");
+        if !enabled {
+            cmd.args(["--ignore-rules", "P18,P21,R14,R15,R16"]);
         }
         let out = cmd
             .write_stdin(text)
@@ -606,7 +601,13 @@ fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
             for d in diagnostics.iter().filter(|d| {
                 ["P18", "P21", "R14", "R15", "R16"].contains(&d["ruleId"].as_str().unwrap())
             }) {
-                assert_eq!(d["status"], "experimental");
+                // 読みやすさの R14 は強さを持たない。ほかは件数が少なく測れていないので中程度
+                let signal = if d["ruleId"] == "R14" {
+                    serde_json::Value::Null
+                } else {
+                    "moderate".into()
+                };
+                assert_eq!(d["signal"], signal, "{d}");
                 assert_eq!(d["severity"], "info");
                 assert_eq!(
                     d["lane"],
@@ -627,7 +628,7 @@ fn new_editorial_rules_are_opt_in_and_report_their_lanes() {
             assert_eq!(duplicate["related"][0]["start"]["line"], 5);
         }
     }
-    // experimental 全体を有効にせず、個別指定でも動く。
+    // 指定したルールだけを動かせる。
     let out = noslop()
         .current_dir(dir.path())
         .args([
@@ -819,7 +820,7 @@ fn json_output_has_a_stable_schema() {
         .stdout
         .clone();
     let v = json(&out);
-    assert_eq!(v["schemaVersion"], 2);
+    assert_eq!(v["schemaVersion"], 3);
     assert_eq!(v["tool"]["name"], "noslop");
     assert_eq!(v["columnUnit"], "unicode-scalar");
     assert_eq!(v["settings"]["genre"], "general");
@@ -831,6 +832,10 @@ fn json_output_has_a_stable_schema() {
     assert_eq!(d["ruleId"], "X01");
     assert_eq!(d["ruleName"], "TEAM_TERM");
     assert_eq!(d["lane"], "custom");
+    // 独自ルールは手掛かりの強さを持たない
+    assert_eq!(d["signal"], serde_json::Value::Null);
+    assert!(d.get("status").is_none());
+    assert!(v["settings"].get("experimental").is_none());
     assert_eq!(d["range"]["start"]["line"], 3);
     assert_eq!(d["range"]["start"]["column"], 7);
     assert_eq!(d["excerpt"], "新しい機能はユーザー様の声から生まれました。");
@@ -1078,6 +1083,17 @@ fn rules_lists_builtin_and_custom_rules() {
     assert_eq!(x01["builtin"], false);
     assert_eq!(x01["enabled"], true);
     assert_eq!(x01["lane"], "custom");
+    assert_eq!(x01["signal"], serde_json::Value::Null);
+    assert_eq!(x01["calibrationBasis"], serde_json::Value::Null);
+    // 組み込みのルールはすべて既定で動き、AI 臭さのレーンだけが手掛かりの強さを持つ
+    for rule in v["rules"].as_array().unwrap() {
+        if rule["builtin"] == true {
+            assert_eq!(rule["enabled"], true, "{rule}");
+            assert_eq!(rule["signal"].is_string(), rule["lane"] == "slop", "{rule}");
+            assert!(rule["calibrationBasis"].is_string(), "{rule}");
+            assert!(rule.get("status").is_none(), "{rule}");
+        }
+    }
     noslop()
         .current_dir(dir.path())
         .args(["rules", "--format", "markdown"])
@@ -1757,11 +1773,11 @@ fn brief_report_comes_as_json_or_toon() {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
-        text.starts_with("schemaVersion: 1\nkind: brief\n"),
+        text.starts_with("schemaVersion: 2\nkind: brief\n"),
         "{text}"
     );
     assert!(
-        text.contains("occurrences[1]{ruleId,line,column,message,excerpt}:"),
+        text.contains("occurrences[1]{ruleId,line,column,signal,message,excerpt}:"),
         "{text}"
     );
     assert!(!text.ends_with('\n'), "TOON は末尾に改行を付けない");
@@ -1776,7 +1792,7 @@ fn full_report_comes_as_toon_and_bad_combinations_are_errors() {
         .assert()
         .success()
         .stdout(
-            predicate::str::starts_with("schemaVersion: 2\n")
+            predicate::str::starts_with("schemaVersion: 3\n")
                 .and(predicate::str::contains("diagnostics["))
                 .and(predicate::str::contains("TEAM_TERM")),
         );
@@ -1828,7 +1844,7 @@ fn diff_comes_as_toon() {
         .assert()
         .success()
         .stdout(
-            predicate::str::starts_with("schemaVersion: 2\nkind: diff\n")
+            predicate::str::starts_with("schemaVersion: 3\nkind: diff\n")
                 .and(predicate::str::contains("hasConcerns: true")),
         );
 }

@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::Sentence;
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -16,7 +16,7 @@ static META: RuleMeta = RuleMeta {
     name: "COMMA_PROFILE",
     title: "読点の使い方",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "地の文の読点が 1 文あたり平均 2 個以上 (暫定) あり、読点を打つ癖が文章全体に出ている",
     explanation: EXPLANATION,
@@ -47,7 +47,10 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。既定の閾値 2.0 は校正前の暫定値で、noslop のコーパスでは校正していません。
+既定の閾値 2.0 は暫定値で、校正していません。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 32 本・\
+生成 8 本で、人の文書のほうが多く出ました。
 ";
 
 /// metrics に載せる、読点の直前の字の数。
@@ -247,7 +250,7 @@ mod tests {
         let d = run(&rule(), &md);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].rule_id, "R13");
-        assert_eq!(d[0].status, RuleStatus::Experimental);
+        assert_eq!(d[0].signal, Some(Signal::Weak));
         assert_eq!(
             matched(&md, &d),
             vec!["締め日は、毎月、変わります、ご注意を、お願いします。"]

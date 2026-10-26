@@ -531,7 +531,6 @@ fn truncated_stop_guidance_preserves_options_and_returns_every_occurrence() {
             config_name,
             "--genre",
             "tech",
-            "--experimental",
         ];
         if include_readability {
             args.push("--include-readability");
@@ -547,10 +546,7 @@ fn truncated_stop_guidance_preserves_options_and_returns_every_occurrence() {
             .next()
             .unwrap();
         assert_eq!(command.contains("--no-readability"), !include_readability);
-        assert!(
-            command.contains("--genre tech") && command.contains("--experimental"),
-            "{command}"
-        );
+        assert!(command.contains("--genre tech"), "{command}");
         let (code, full, stderr) = rerun(command);
         assert_eq!(code, Some(0), "{stderr}: {command}");
         assert_eq!(
@@ -597,11 +593,18 @@ fn truncated_stop_guidance_preserves_options_and_returns_every_occurrence() {
             .unwrap();
         let (code, full, stderr) = rerun(command);
         assert_eq!(code, Some(0), "{stderr}");
+        // 組み込みルールの指摘も同じ文に出るので、X01 の箇所だけを数える
+        let x01 = full
+            .split("X01 TEAM_TERM")
+            .nth(1)
+            .unwrap()
+            .split("\n## ")
+            .next()
+            .unwrap();
         assert_eq!(
-            full.lines()
-                .filter(|line| line.contains("ユーザー様へ。"))
-                .count(),
-            1000
+            x01.lines().filter(|line| line.starts_with("  - L")).count(),
+            1000,
+            "{command}"
         );
     } else {
         panic!("省略時の案内がありません: {context}");
@@ -636,7 +639,6 @@ fn whole_file_and_file_guidance_reproduce_the_original_hook() {
                 "--include-readability",
                 "--genre",
                 "tech",
-                "--experimental",
             ]);
             if kind == "file" {
                 command.arg(path);
@@ -664,6 +666,47 @@ fn whole_file_and_file_guidance_reproduce_the_original_hook() {
         let (_, expected, _) = run("unlimited");
         assert_eq!(full, expected, "{command}");
     }
+}
+
+/// 弱い手掛かりの情報の指摘 (P05 の「様々な」) だけの変更は、指摘がないときと同じに何も書かずに 0 で
+/// 終わる。ほかの指摘があれば件数だけを添え、その確認コマンドは省いた指摘も返す。
+#[test]
+fn weak_info_findings_are_counted_and_the_followup_returns_them() {
+    let Some(dir) = repository() else { return };
+    fs::write(
+        dir.path().join("weak.md"),
+        "# メモ\n\n様々な案を集めました。\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = output(noslop(dir.path()).args(["hook", "git-diff"]));
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout, "", "弱い手掛かりの情報の指摘だけなら何も書かない");
+
+    let path = dir.path().join("docs/guide.md");
+    let mut doc = fs::read_to_string(&path).unwrap();
+    doc.push_str("\n様々な案をユーザー様にも届けます。\n");
+    fs::write(&path, doc).unwrap();
+    let (code, stdout, stderr) = output(noslop(dir.path()).args(["hook", "git-diff"]));
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stdout.starts_with("noslop が docs/guide.md に 独自ルールの指摘を 1 件見つけました。"),
+        "弱い指摘だけのファイルは並べない: {stdout}"
+    );
+    assert!(!stdout.contains("P05"), "{stdout}");
+    let command = stdout
+        .split("弱い手掛かりの情報の指摘 1 件は省きました。全件は `")
+        .nth(1)
+        .unwrap()
+        .split('`')
+        .next()
+        .unwrap();
+    let (code, full, stderr) = rerun(command);
+    assert_eq!(code, Some(0), "{stderr}: {command}");
+    assert!(
+        full.contains("## docs/guide.md") && full.contains("## weak.md"),
+        "{full}"
+    );
+    assert!(full.contains("P05"), "省いた指摘も返す: {full}");
 }
 
 #[test]
@@ -772,35 +815,34 @@ fn non_utf8_paths_with_the_same_display_name_are_each_checked() {
     assert_eq!(lines, vec![7, 7, 9]);
 }
 
+/// 結びの定型 (P27) はどのジャンルでも動く。弱い手掛かりの情報の指摘なので、フックは件数だけにし、
+/// それしかないファイルでは何も書かない。全件 (`--brief-limit unlimited`) なら返す。
 #[test]
-fn tech_hook_reports_stock_closers_by_default() {
+fn hooks_count_stock_closers_as_weak_info_findings() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("closer.md"), "参考になれば幸いです。\n").unwrap();
-    noslop(dir.path())
-        .args([
-            "hook",
-            "file",
-            "--genre",
-            "tech",
-            "--no-config",
-            "closer.md",
-        ])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("P27"));
-    fs::write(dir.path().join("noslop.toml"), "genre = \"tech\"\n").unwrap();
-    noslop(dir.path())
-        .args(["hook", "file", "closer.md"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("P27"));
+    for genre in ["tech", "general"] {
+        let run = |extra: &[&str]| {
+            let mut command = noslop(dir.path());
+            command
+                .args(["hook", "file", "--genre", genre, "--no-config"])
+                .args(extra)
+                .arg("closer.md");
+            command
+        };
+        run(&[]).assert().success().stdout("");
+        run(&["--brief-limit", "unlimited"])
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("P27"));
+    }
     fs::write(
         dir.path().join("noslop.toml"),
         "genre = \"tech\"\n[rules]\ndisable = [\"P27\"]\n",
     )
     .unwrap();
     noslop(dir.path())
-        .args(["hook", "file", "closer.md"])
+        .args(["hook", "file", "--brief-limit", "unlimited", "closer.md"])
         .assert()
         .success()
         .stdout("");

@@ -529,7 +529,8 @@ fn mcp_server_speaks_the_stateless_protocol_too() {
     );
     let report: Value =
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(report["schemaVersion"], 2);
+    assert_eq!(report["schemaVersion"], 3);
+    assert!(report["settings"].get("experimental").is_none(), "{report}");
     let file = &report["files"][0];
     assert_eq!(file["path"], "<text>");
     // 文書全体の点数は出さず、未抑制の指摘をレーンごと・重大度ごとに数える

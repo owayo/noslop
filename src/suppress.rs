@@ -225,7 +225,7 @@ fn resolve_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{Lane, RuleStatus, Severity, Span};
+    use crate::diagnostic::{Lane, Severity, Signal, Span};
 
     fn names() -> RuleNames {
         RuleNames::new([("P01", "AI_CONCLUSION"), ("R03", "LONG_SENTENCE")])
@@ -241,7 +241,7 @@ mod tests {
             rule,
             Severity::Warning,
             Lane::Slop,
-            RuleStatus::Stable,
+            Some(Signal::Strong),
             Span::new(start, start + needle.len()),
             "m",
         )

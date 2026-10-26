@@ -13,7 +13,6 @@ use crate::rules::{Measure, Rule, RuleContext, Scope};
 pub struct Options {
     pub genre: Genre,
     pub scope: Scope,
-    pub experimental: bool,
 }
 
 impl Default for Options {
@@ -21,7 +20,6 @@ impl Default for Options {
         Self {
             genre: Genre::General,
             scope: Scope::default(),
-            experimental: false,
         }
     }
 }
@@ -43,7 +41,6 @@ pub fn run_doc(rule: &dyn Rule, doc: &Document, options: Options) -> Vec<Diagnos
         doc,
         genre: options.genre,
         scope: options.scope,
-        experimental: options.experimental,
         morph: None,
     };
     let mut out = Vec::new();

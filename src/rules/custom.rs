@@ -7,7 +7,7 @@ use aho_corasick::{AhoCorasick, MatchKind};
 use regex::{Regex, RegexBuilder};
 
 use crate::config::{ConfigError, CustomRuleConfig};
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit};
 
 /// パターン文字列の長さの上限 (文字数)。
@@ -107,7 +107,7 @@ impl CustomRule {
             name: leak(name),
             title: leak(name),
             lane,
-            status: RuleStatus::Stable,
+            signal: None,
             default_severity: severity,
             summary: leak(&cfg.message),
             explanation: leak(&explanation),

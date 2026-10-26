@@ -3,7 +3,7 @@
 //! - R02 REPETITIVE_ENDING: 同じ文末が続く
 //! - R06 NO_NOMINAL_ENDING: 長い文書なのに名詞で終わる文が 1 つもない
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::{Document, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -40,7 +40,7 @@ static REPETITIVE_META: RuleMeta = RuleMeta {
     name: "REPETITIVE_ENDING",
     title: "文末の反復",
     lane: Lane::Readability,
-    status: RuleStatus::Experimental,
+    signal: None,
     default_severity: Severity::Info,
     summary: "同じ段落で同じ形の文末が 3 文以上続いている",
     explanation: REPETITIVE_EXPLANATION,
@@ -75,8 +75,8 @@ const REPETITIVE_EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。文末の反復を数える検出器は誤検知率をまだ測っていません。です・ます体では同じ文末が\
-続くのが普通なので、比べる長さを 3 字にして「です」「ます」だけの一致では出ないようにしています。\
+文末の反復を数える検出器は誤検知率をまだ測っていません。です・ます体では同じ文末が続くのが\
+普通なので、比べる長さを 3 字にして「です」「ます」だけの一致では出ないようにしています。\
 AI らしさの判定ではなく推敲の手掛かりとして扱います。改行で並べた「ラベル: 値」の行は、生成された\
 業務文書の冒頭 (「**作成日：** 〜」「**宛先：** 〜」) に多く、体言止めの連続として数えると文末の推敲と\
 関係のない指摘になります。noslop のコーパスでは、この行を連続に数えた場合にだけ指摘される文書が、\
@@ -229,7 +229,7 @@ static NOMINAL_META: RuleMeta = RuleMeta {
     name: "NO_NOMINAL_ENDING",
     title: "体言止めの欠如",
     lane: Lane::Slop,
-    status: RuleStatus::Stable,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
     summary: "ある程度の長さがあるのに、名詞で終わる文 (体言止め) が推定で 1 つもない",
     explanation: NOMINAL_EXPLANATION,
@@ -268,6 +268,9 @@ const NOMINAL_EXPLANATION: &str = "\
 人の書き手の 60% が体言止めを使い、生成された文章は 0% でした。2000 字前後の文書でも人の 67% が\
 使い、生成文書は 0% です。短い文書は人でも体言止めがないことが多いため、文字数の下限を設けています。\
 辞書なしの推定は品詞による判定より粗いため、情報に留めます。
+
+手掛かりの強さは「中程度」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 14 本・\
+生成 24 本でした。
 ";
 
 /// R06 NO_NOMINAL_ENDING。

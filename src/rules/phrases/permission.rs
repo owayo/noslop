@@ -3,8 +3,8 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use super::engine::{WEAK_SIGNAL_NOTE, diagnostic};
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use super::engine::diagnostic;
+use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
 
@@ -13,18 +13,18 @@ static META: RuleMeta = RuleMeta {
     name: "PERMISSIVE_ACTION",
     title: "許可の形で語る行動",
     lane: Lane::Readability,
-    status: RuleStatus::Experimental,
+    signal: None,
     default_severity: Severity::Info,
-    summary: "「〜て（も）かまいません」「〜て（も）構わない」などの行動を直接書けるか見直す (実験的)",
+    summary: "「〜て（も）かまいません」「〜て（も）構わない」などの行動を直接書けるか見直す",
     explanation: r"### 何を見るか
 
 「〜て（も）かまいません」「〜て（も）構いません」「〜て（も）かまわない」「〜て（も）構わない」と、後ろの 2 つに「でしょう」が続く形を探します。「読んでも」「急いでも」のように、漢字に「ん」と「で」が続く形や、急ぐ・泳ぐなど限られた漢字に「いで」が続く形も含みます。
 
-「空欄のままでも構いません」「どちらでも構いません」のような状態や選択肢は拾いません。「高くても」「しなくても」のように「くて」が続く形と、「〜として」「〜であって」の状態、「すべて」「かつて」の末尾、状態を表す「〜ていても」「がいても」「にいても」「あっても」「くなっても」「になっても」「となっても」、慣用句の「まったくもって」、同じ節に「どれ」「どんな」「何」「いつ」「いずれ」などの不定語がある形、質問・埋め込み疑問・直後の否定も除きます。「みんな」「どうぞ」「などの」「先ほどの」「思いつく」などは不定語から外します。辞書を使わず直前の文字で近似するため、仮名だけの「つまんでも」や許可した漢字の外にある「揺らいでも」や、状態と区別しにくい「横になっても」「ご覧になっても」や、仮名の「もがいても」などを取りこぼすことがあります。不定語の区切りも表記で近似します。この除外以外の述語の意味は判別しません。有効にしたときの既定の対象は地の文の段落です。リスト・表・引用は語句ルールのスコープ設定で対象にできます。
+「空欄のままでも構いません」「どちらでも構いません」のような状態や選択肢は拾いません。「高くても」「しなくても」のように「くて」が続く形と、「〜として」「〜であって」の状態、「すべて」「かつて」の末尾、状態を表す「〜ていても」「がいても」「にいても」「あっても」「くなっても」「になっても」「となっても」、慣用句の「まったくもって」、同じ節に「どれ」「どんな」「何」「いつ」「いずれ」などの不定語がある形、質問・埋め込み疑問・直後の否定も除きます。「みんな」「どうぞ」「などの」「先ほどの」「思いつく」などは不定語から外します。辞書を使わず直前の文字で近似するため、仮名だけの「つまんでも」や許可した漢字の外にある「揺らいでも」や、状態と区別しにくい「横になっても」「ご覧になっても」や、仮名の「もがいても」などを取りこぼすことがあります。不定語の区切りも表記で近似します。この除外以外の述語の意味は判別しません。既定の対象は地の文の段落です。リスト・表・引用は語句ルールのスコープ設定で対象にできます。
 
 ### なぜ問題か
 
-勧めや手順を許可の形にすると、何をすればよいかが曖昧になることがあります。ただし、選ぶ余地を明示する場合や、実際に許可を伝える場合には必要です。正当な許可まで誤りと断定せず、読みやすさの弱い手掛かりとして扱います。
+勧めや手順を許可の形にすると、何をすればよいかが曖昧になることがあります。ただし、選ぶ余地を明示する場合や、実際に許可を伝える場合には必要です。正当な許可まで誤りと断定せず、読みやすさの見直しの候補として扱います。
 
 ### 直し方
 
@@ -37,7 +37,7 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-人の文書 171 本中 2 本 (3 件)・生成文書 390 本中 7 本 (8 件) に反応しました。人の文章で本来の許可として使われる型でもあり、反応率の差も小さいため、実験的な情報の指摘にとどめます。文脈上の勧めと許可は判別できず、既定で有効にする前に、人の文書での出方を追加で校正します。",
+人の文書 171 本中 2 本 (3 件)・生成文書 390 本中 7 本 (8 件) に反応しました。人の文章で本来の許可として使われる型でもあり、反応率の差も小さいため、情報の指摘にとどめます。文脈上の勧めと許可は判別できません。",
 };
 
 static PERMISSION: LazyLock<Regex> = LazyLock::new(|| {
@@ -161,9 +161,9 @@ impl Rule for PermissiveAction {
                         "かまわない"
                     };
                     out.push(diagnostic(&META, span, sentence.span, matched,
-                        format!("「{}」は行動を許可の形で語っています。勧めや手順を直接書けるか確かめてください。{WEAK_SIGNAL_NOTE}", quote(matched)),
+                        format!("「{}」は行動を許可の形で語っています。勧めや手順を直接書けるか確かめてください", quote(matched)),
                         "勧めや手順なら、することを直接書いてください。任意の行動を必須に変えず、必要な許可は残せます",
-                        Severity::Info, RuleStatus::Experimental).with_metric("item", item));
+                        Severity::Info, META.signal).with_metric("item", item));
                 }
             }
         }
@@ -204,8 +204,9 @@ mod tests {
             assert_eq!(matched(md, &findings), [expected], "{md}");
             assert_eq!(findings[0].lane, Lane::Readability);
             assert_eq!(findings[0].severity, Severity::Info);
-            assert_eq!(findings[0].status, RuleStatus::Experimental);
-            assert!(findings[0].message.contains(WEAK_SIGNAL_NOTE));
+            // 読みやすさのレーンは手掛かりの強さを持たず、メッセージに断り書きも付けない
+            assert_eq!(findings[0].signal, None);
+            assert!(!findings[0].message.contains("手掛かり"));
         }
         let md = "前置きです。読んでもかまいません。\n\n急いでも構わない。";
         let findings = run(&PermissiveAction, md);
@@ -291,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn respects_scopes_and_opt_in_for_prose_and_fragments() {
+    fn respects_scopes_and_selection_for_prose_and_fragments() {
         let md = "- 追記しても構いません。\n\n> 追記しても構いません。\n\n| 項目 | 手順 |\n| --- | --- |\n| 記録 | 追記しても構いません。 |\n";
         assert!(run(&PermissiveAction, md).is_empty());
         assert_eq!(
@@ -306,15 +307,12 @@ mod tests {
             .len(),
             3
         );
-        for (experimental, explicit, expected) in
-            [(false, false, 0), (true, false, 1), (false, true, 1)]
-        {
+        for (disabled, expected) in [(false, 1), (true, 0)] {
             let engine = Engine::with_rules(
                 vec![Box::new(PermissiveAction)],
                 EngineOptions {
-                    experimental,
                     selection: Selection {
-                        cli_enable: if explicit { vec!["P28".into()] } else { vec![] },
+                        cli_disable: if disabled { vec!["P28".into()] } else { vec![] },
                         ..Selection::default()
                     },
                     ..EngineOptions::default()

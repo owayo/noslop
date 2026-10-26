@@ -2,22 +2,22 @@
 
 use std::collections::HashSet;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::{Block, Document};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 
 use super::engine::{Entry, Matcher, PhraseSpec, diagnostic};
 use super::location::{line_offsets, sentence_context, single_line_span};
 
-static P22: PhraseSpec = PhraseSpec {
+pub(super) static P22: PhraseSpec = PhraseSpec {
     meta: RuleMeta {
         id: "P22",
         name: "CITATION_ARTIFACT",
         title: "引用マーカーの残骸",
         lane: Lane::Slop,
-        status: RuleStatus::Experimental,
+        signal: Some(Signal::Strong),
         default_severity: Severity::Warning,
-        summary: "生成ツールの引用マーカーが、出典のリンクに変換されず本文に残っている箇所を指摘する (実験的)",
+        summary: "生成ツールの引用マーカーが、出典のリンクに変換されず本文に残っている箇所を指摘する",
         explanation: r"### 何を見るか
 
 本文に残った [cite_start]、[cite: 数字]、:contentReference[oaicite:数字]{index=数字}、専用の区切り文字で囲まれた cite マーカー、【数字†source】や【数字†L数字-L数字】を探します。cite マーカーの参照先は turn で始まる内部 ID に限ります。語句ルールのスコープ設定に関わらず、見出し・リスト・表・引用も含め、1 行の中にある完全なマーカーを検査します。
@@ -39,20 +39,22 @@ static P22: PhraseSpec = PhraseSpec {
 
 ### 根拠
 
-公開文書に残った未変換の引用記号を対象とする実験的なルールです。既知の記法を列挙しており、未知の生成ツールの記号を網羅するものではありません。一般の引用や外字を広く検出するためのルールでもありません。",
+公開文書に残った未変換の引用記号を対象とするルールです。既知の記法を列挙しており、未知の生成ツールの記号を網羅するものではありません。一般の引用や外字を広く検出するためのルールでもありません。
+
+手掛かりの強さは「強い」としています。人の文書 440 本と生成文書 390 本では反応がなく (人 0 本・生成 0 本) 測れませんが、生成ツールが出力する引用の記法そのものを照合するためです。",
     },
     entries: &[
-        Entry::exp_lit("[cite_start]", Severity::Warning),
-        Entry::exp_re(r"\[cite:\s*\d+(?:\s*,\s*\d+)*\s*\]", Severity::Warning),
-        Entry::exp_re(
+        Entry::lit("[cite_start]", Severity::Warning),
+        Entry::re(r"\[cite:\s*\d+(?:\s*,\s*\d+)*\s*\]", Severity::Warning),
+        Entry::re(
             r":?contentReference\[oaicite:\d+\]\{index=\d+\}",
             Severity::Warning,
         ),
-        Entry::exp_re(
+        Entry::re(
             r"\x{E200}cite(?:\x{E202}turn[0-9A-Za-z]+)+\x{E201}",
             Severity::Warning,
         ),
-        Entry::exp_re(
+        Entry::re(
             r"【\d+(?::\d+)?†(?:source|L\d+(?:[-–]L?\d+)?)】",
             Severity::Warning,
         ),
@@ -69,7 +71,7 @@ pub(super) struct CitationArtifact {
 impl CitationArtifact {
     pub fn new() -> Self {
         Self {
-            matcher: Matcher::new(P22.entries, true),
+            matcher: Matcher::new(P22.entries),
         }
     }
 
@@ -118,7 +120,7 @@ fn finding(span: Span, context: Span, matched: &str, entry: &Entry) -> Diagnosti
         P22.message.replace("{m}", &quote(matched)),
         P22.hint,
         entry.severity,
-        entry.status,
+        entry.signal_in(&P22.meta),
     )
     .with_metric("item", entry.pattern.item())
 }
@@ -176,7 +178,8 @@ mod tests {
             let md = format!("調査結果です。**{marker}**\n");
             let d = run(&CitationArtifact::new(), &md);
             assert_eq!(matched(&md, &d), [marker], "{md}");
-            assert_eq!(d[0].status, RuleStatus::Experimental);
+            assert_eq!(d[0].severity, Severity::Warning);
+            assert_eq!(d[0].signal, Some(Signal::Strong));
         }
         // 日本語を含まない単独の記号も拾う。
         assert_eq!(run(&CitationArtifact::new(), "[cite_start]").len(), 1);

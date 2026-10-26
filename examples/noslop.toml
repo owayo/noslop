@@ -21,10 +21,6 @@
 #   essay    エッセイ・ブログ。別名 blog
 genre = "general"
 
-# 実験的なルール・語句 (未校正、または辞書なしの近似) をすべて有効にする。
-# 個別に有効にしたいときは、下の [rules.<ID>] に enabled = true を書く。
-experimental = false
-
 # この重大度以上の指摘があれば終了コード 1 にする。
 #   never (既定) / info / warning / error
 # noslop は疑いを示す道具なので、既定では件数でジョブを落とさない。
@@ -113,19 +109,22 @@ mode = "auto"
 dictionary = "auto"
 
 # ルールごとの設定。表の名前はルールの ID か名前 (例: [rules.AI_CONCLUSION])。
+# ルールはすべて既定で動く (ジャンルの慣習と衝突するルールだけ、そのジャンルで止まる)。
 # 共通の項目:
-#   enabled  = true / false   有効・無効を切り替える (実験的ルールの個別の有効化もこれ)
-#   severity = "info" / "warning" / "error"   重大度を変える
+#   enabled  = true / false   有効・無効を切り替える (ジャンルで止まるルールを動かすときもこれ)
+#   severity = "info" / "warning" / "error"   重大度を変える (AI 臭さの指摘の手掛かりの強さは変わらない)
 # ルール固有の閾値は `noslop explain <ID>` に一覧がある。閾値は校正の前提を崩すので、
 # 変えるときは理由をコメントに残すこと。
 
-[rules.P04]
-# 冗長な動詞表現 (実験的)。「〜を行う」を多用する文書で見直したいときに有効にする。
-enabled = true
-
 [rules.P05]
-# ぼやけた修飾語 (実験的)。人間の文章にも多い語なので、既定では無効。
+# ぼやけた修飾語 (既定で動く)。人の文章にも同じくらい出る語なので、手掛かりの強さは「弱い」。
+# 文書の性質上よく使う語で、指摘を見なくてよいときは false にして止める。
 enabled = false
+
+[rules.R18]
+# 名詞句を並べる体言止めの反復。general と essay では既定で動き、tech と business では
+# ジャンルの既定で止まる。そのジャンルでも見たいときは true にする。
+enabled = true
 
 [rules.R01]
 # 文長の単調さ。地の文が min_sentences 文以上あるとき、burstiness が threshold 未満なら警告。
@@ -149,10 +148,6 @@ max_chars = 90
 min_count = 3
 min_ratio = 0.02
 error_above = 0.05
-
-[rules.S03]
-# 「まとめ」「おわりに」などの定型見出し (実験的)。
-enabled = false
 
 # チーム独自の禁止語・言い換え。何個でも書ける。
 # ID は組み込みルールと重ならないものにする (例: X01)。

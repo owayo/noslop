@@ -6,7 +6,7 @@
 //!   指摘: 新規 1・書き換えても残った 0・解消 4・継続 2・抑制して残した 0
 //!
 //! 新しく出た指摘 (1 件。優先して確認してください)
-//!   12:5  警告  [AI 臭さ]  P03 AI_CONJUNCTION
+//!   12:5  情報  [AI 臭さ]  P03 AI_CONJUNCTION [弱い手掛かり]
 //!     「さらに」で文をつないでいます
 //!     │ さらに、手順を見直した。
 //!
@@ -25,6 +25,8 @@
 //!
 //! 版 2 では、前後の文書全体の点数 (`before.score`・`after.score`、自然度スコア) をやめ、
 //! `noslop check --format json` と同じ形の件数 (`before.counts`・`after.counts`) に置き換えた。
+//! 版 3 では、`noslop check --format json` の版 3 と同じく、指摘の `status` をやめて手掛かりの強さ
+//! (`signal`) を足した。
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -32,7 +34,7 @@ use std::io::{self, Write};
 use anstyle::{AnsiColor, Style};
 use serde::Serialize;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
 use crate::document::Document;
 use crate::engine::FileReport;
 use crate::morph::{Method, MorphologyStatus};
@@ -44,8 +46,9 @@ use super::DiffReport;
 use super::facts::{FactChange, FactKind};
 use super::shifts::{Shift, ShiftKind};
 
-/// `noslop diff --format json` のスキーマの版。互換性のない変更をしたら上げる。
-pub const DIFF_SCHEMA_VERSION: u32 = 2;
+/// `noslop diff --format json` のスキーマの版。互換性のない変更をしたら上げる
+/// (3: 指摘の `status` を外し、手掛かりの強さの `signal` を足した。指摘の形は `check --format json` と同じ)。
+pub const DIFF_SCHEMA_VERSION: u32 = 3;
 
 /// 事実・偏りの位置として並べる行番号の上限。
 const MAX_LINES_SHOWN: usize = 5;
@@ -254,8 +257,9 @@ pub fn render_text(report: &DiffReport, out: &mut dyn Write) -> io::Result<()> {
 /// 指摘 1 件を、位置の行と抜粋で書く。`detailed` なら説明と直し方の案も書く。
 ///
 /// 見出し行は `12:5  警告  [AI 臭さ]  P03 AI_CONJUNCTION` の形で、どのレーンでも重大度の
-/// 隣にレーン名を出す (`noslop check` の端末出力と同じ呼び名)。実験的なら末尾に淡色で
-/// `[実験的]` を付ける。`prefix` は位置の前 (`前 ` など)、`suffix` は見出し行の末尾に付ける。
+/// 隣にレーン名を出す (`noslop check` の端末出力と同じ呼び名)。AI 臭さのレーンの指摘は、末尾に
+/// 淡色で手掛かりの強さ (`[強い手掛かり]` など) を付ける。`prefix` は位置の前 (`前 ` など)、
+/// `suffix` は見出し行の末尾に付ける。
 fn write_diagnostic(
     doc: &Document,
     d: &Diagnostic,
@@ -274,8 +278,8 @@ fn write_diagnostic(
         d.rule_id,
         d.rule_name
     )?;
-    if d.status == RuleStatus::Experimental {
-        write!(out, " {dm}[実験的]{dm:#}")?;
+    if let Some(signal) = d.signal {
+        write!(out, " {dm}[{}]{dm:#}", signal.label_ja())?;
     }
     writeln!(out, "{suffix}")?;
     if detailed {
@@ -535,7 +539,7 @@ fn build(report: &DiffReport) -> Report<'_> {
 mod tests {
     use super::*;
     use crate::config::CustomRuleConfig;
-    use crate::diagnostic::Lane;
+    use crate::diagnostic::{Lane, Signal};
     use crate::diff::{compare, lint_pair};
     use crate::document::SourceFormat;
     use crate::engine::{Engine, EngineOptions, Input};
@@ -638,13 +642,13 @@ mod tests {
     #[test]
     fn every_finding_names_its_lane_next_to_the_severity() {
         let doc = Document::markdown("さらに、手順を見直した。\n");
-        let heading = |lane: Lane, status: RuleStatus, suffix: &str| {
+        let heading = |lane: Lane, signal: Option<Signal>, suffix: &str| {
             let d = Diagnostic::new(
                 "P03",
                 "AI_CONJUNCTION",
                 Severity::Warning,
                 lane,
-                status,
+                signal,
                 Span::new(0, "さらに".len()),
                 "「さらに」で文をつないでいます",
             );
@@ -654,17 +658,17 @@ mod tests {
             text.lines().next().unwrap().to_string()
         };
         assert_eq!(
-            heading(Lane::Slop, RuleStatus::Stable, ""),
-            "  1:1  警告  [AI 臭さ]  P03 AI_CONJUNCTION"
+            heading(Lane::Slop, Some(Signal::Strong), ""),
+            "  1:1  警告  [AI 臭さ]  P03 AI_CONJUNCTION [強い手掛かり]"
         );
         assert_eq!(
-            heading(Lane::Readability, RuleStatus::Stable, ""),
+            heading(Lane::Readability, None, ""),
             "  1:1  警告  [読みやすさ]  P03 AI_CONJUNCTION"
         );
-        // 実験的の印はレーン名と別に末尾へ、改稿前の位置はさらにその後ろ
+        // 手掛かりの強さはレーン名と別に末尾へ、改稿前の位置はさらにその後ろ
         assert_eq!(
-            heading(Lane::Slop, RuleStatus::Experimental, " (前 2:1)"),
-            "  1:1  警告  [AI 臭さ]  P03 AI_CONJUNCTION [実験的] (前 2:1)"
+            heading(Lane::Slop, Some(Signal::Weak), " (前 2:1)"),
+            "  1:1  警告  [AI 臭さ]  P03 AI_CONJUNCTION [弱い手掛かり] (前 2:1)"
         );
     }
 
@@ -685,7 +689,7 @@ mod tests {
             "効果があると言えるでしょう。\n\n数値は１２件。\n",
         );
         let v = json_of(&r);
-        assert_eq!(v["schemaVersion"], 2);
+        assert_eq!(v["schemaVersion"], 3);
         assert_eq!(v["kind"], "diff");
         assert_eq!(v["tool"]["name"], "noslop");
         assert_eq!(v["columnUnit"], "unicode-scalar");
@@ -711,6 +715,10 @@ mod tests {
         assert_eq!(summary["suppressed"], 0);
         let p = &v["findings"]["persisting"][0];
         assert_eq!(p["after"]["ruleId"], "X01");
+        assert!(
+            p["after"]["signal"].is_null() && p["after"].get("status").is_none(),
+            "指摘の形は check --format json と同じ (独自ルールは手掛かりの強さを持たない): {p}"
+        );
         assert_eq!(p["after"]["range"]["start"]["line"], 1);
         assert_eq!(p["before"]["range"]["start"]["line"], 3);
         assert_eq!(p["after"]["excerpt"], "効果があると言えるでしょう。");
@@ -742,7 +750,12 @@ mod tests {
         let mut buf = Vec::new();
         render_toon(&r, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.starts_with("schemaVersion: 2\nkind: diff\n"), "{s}");
+        assert!(
+            s.starts_with(&format!(
+                "schemaVersion: {DIFF_SCHEMA_VERSION}\nkind: diff\n"
+            )),
+            "{s}"
+        );
         assert!(!s.ends_with('\n'), "TOON は末尾に改行を付けない");
         let decoded: serde_json::Value = toon_format::decode_strict(&s).unwrap();
         assert_eq!(

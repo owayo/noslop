@@ -1,6 +1,6 @@
 //! R12 OVERCORRECTION: 直しすぎで生まれる別の均一さ (文長の機械的な交互・体言止めの入れすぎ)。
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::Sentence;
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
@@ -12,7 +12,7 @@ static META: RuleMeta = RuleMeta {
     name: "OVERCORRECTION",
     title: "直しすぎの均一さ",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Weak),
     default_severity: Severity::Info,
     summary: "文の長短が機械的に交互に並ぶか体言止めが 4 割を超え、直し方の型が新しい均一さになっている",
     explanation: EXPLANATION,
@@ -48,10 +48,12 @@ R06 と同じく、辞書を使わずに文末の文字の種類で推定しま�
 
 ### 根拠
 
-実験的です。noslop の指摘どおりに直した文章に起こりうる副作用として設けた指標で、閾値 (−0.5 と 0.4) は\
-コーパスで校正していません。R01 の校正では、隣り合う文の長さの相関は人の文章と生成された文章を\
-見分ける指標として使えませんでした。ここで見るのは判別ではなく、長短がほぼ交互になった極端な場合\
-だけです。
+noslop の指摘どおりに直した文章に起こりうる副作用として設けた指標で、閾値 (−0.5 と 0.4) はコーパスで\
+校正していません。R01 の校正では、隣り合う文の長さの相関は人の文章と生成された文章を見分ける指標として\
+使えませんでした。ここで見るのは判別ではなく、長短がほぼ交互になった極端な場合だけです。
+
+手掛かりの強さは「弱い」です。人の文書 440 本と生成文書 390 本で測ると、指摘が出た文書は人 28 本・\
+生成 3 本で、人の文書のほうが多く出ました。
 ";
 
 /// R12 OVERCORRECTION。

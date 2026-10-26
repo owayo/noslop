@@ -1,6 +1,6 @@
 //! R03 LONG_SENTENCE: 一文が長すぎる。
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
 use crate::document::{Document, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, RuleUnit};
@@ -14,7 +14,7 @@ static META: RuleMeta = RuleMeta {
     name: "LONG_SENTENCE",
     title: "長すぎる一文",
     lane: Lane::Readability,
-    status: RuleStatus::Stable,
+    signal: None,
     default_severity: Severity::Info,
     summary: "一文が目安 (90 字、エッセイは 110 字) より長く、読み手に構造の保持を強いている",
     explanation: EXPLANATION,

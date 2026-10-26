@@ -5,20 +5,20 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
 
-use super::engine::{WEAK_SIGNAL_NOTE, diagnostic};
+use super::engine::diagnostic;
 
 static META: RuleMeta = RuleMeta {
     id: "P25",
     name: "SOURCE_STANCE",
     title: "出典の態度の解説",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
-    summary: "本・記事・著者などを主語にして、内容よりも出典の態度を語る言い回しを見直す (実験的)",
+    summary: "本・記事・著者などを主語にして、内容よりも出典の態度を語る言い回しを見直す",
     explanation: r"### 何を見るか
 
 「本」「本書」「この本」「著者」「この章」「本章」「記事」「論文」「資料」「ドキュメント」に「は」「が」「では」が続き、同じ文の主語のあと 40 字以内に始まる「認める」「強調する」「指摘する」「釘を刺す」「戒める」「説く」「念を押す」「主張する」「警告する」の活用形がある箇所を探します。「この記事」「この資料」なども含みます。「筆者」は書き手自身を指すことがあるため、単独では数えず、「本書の筆者」「この記事の筆者」のように出典を直接添えた主語に限ります。主語のあとで開いた括弧の中にある述語と、主語自体が括弧の中にあるものは数えません。
@@ -40,7 +40,9 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-人の書評や読書メモにも出る型です。単独の「筆者」を含めた旧条件では、人の文書 176 本中 2 本に書き手自身への反応があり、除外後は 0 本でした。生成文書 811 本では、変更前後とも 0 本でした。このコーパスでは外部の出典を主語にした例が足りず、書評や読書メモに絞った校正もないため、実験的な情報の指摘にとどめます。辞書を使わず文字列と括弧で近似し、近い主語との距離で照合します。入れ子の節の主語への帰属や、出典への帰属が必要かまでは判定しません。",
+人の書評や読書メモにも出る型です。単独の「筆者」を含めた旧条件では、人の文書 176 本中 2 本に書き手自身への反応があり、除外後は 0 本でした。生成文書 811 本では、変更前後とも 0 本でした。このコーパスでは外部の出典を主語にした例が足りず、書評や読書メモに絞った校正もないため、情報の指摘にとどめます。辞書を使わず文字列と括弧で近似し、近い主語との距離で照合します。入れ子の節の主語への帰属や、出典への帰属が必要かまでは判定しません。
+
+人の文書 440 本と生成文書 390 本でも反応がなく (人 0 本・生成 0 本) 強さを測れないため、手掛かりの強さは中程度としています。",
 };
 
 pub(super) struct SourceStance;
@@ -150,9 +152,9 @@ impl Rule for SourceStance {
                         sentence.range.start + range.start..sentence.range.start + range.end,
                     );
                     out.push(diagnostic(&META, span, sentence.span, matched,
-                        format!("出典への言及「{}」のあとにある「{}」が、内容の説明に必要か確かめてください。{WEAK_SIGNAL_NOTE}", quote(&subject), quote(matched)),
+                        format!("出典への言及「{}」のあとにある「{}」が、内容の説明に必要か確かめてください", quote(&subject), quote(matched)),
                         "内容を直接述べられるか確かめてください。必要な帰属は残し、原文にない事実を足さないでください",
-                        Severity::Info, RuleStatus::Experimental).with_metric("item", item));
+                        Severity::Info, META.signal).with_metric("item", item));
                 }
             }
         }
@@ -193,7 +195,7 @@ mod tests {
             let findings = run(&SourceStance, md);
             assert_eq!(matched(md, &findings), [expected], "{md}");
             assert_eq!(findings[0].severity, Severity::Info);
-            assert_eq!(findings[0].status, RuleStatus::Experimental);
+            assert_eq!(findings[0].signal, Some(Signal::Moderate));
             assert_eq!(findings[0].lane, Lane::Slop);
             assert!(findings[0].context.is_some());
         }
@@ -293,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn follows_scope_and_requires_selection_even_for_fragments() {
+    fn follows_scope_and_selection_even_for_fragments() {
         let md = "# 本書は強調する\n\n- 本書は強調する。\n\n> 本書は強調する。\n";
         assert!(run(&SourceStance, md).is_empty());
         assert_eq!(
@@ -308,15 +310,12 @@ mod tests {
             .len(),
             2
         );
-        for (experimental, explicit, expected) in
-            [(false, false, 0), (true, false, 1), (false, true, 1)]
-        {
+        for (disabled, expected) in [(false, 1), (true, 0)] {
             let engine = Engine::with_rules(
                 vec![Box::new(SourceStance)],
                 EngineOptions {
-                    experimental,
                     selection: Selection {
-                        cli_enable: if explicit { vec!["P25".into()] } else { vec![] },
+                        cli_disable: if disabled { vec!["P25".into()] } else { vec![] },
                         ..Selection::default()
                     },
                     ..EngineOptions::default()

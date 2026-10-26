@@ -1,6 +1,7 @@
 //! 語句辞書による照合の共通部品。
 //!
-//! 辞書の 1 項目 ([`Entry`]) はリテラルか正規表現で、項目ごとに重大度と校正状況を持つ。
+//! 辞書の 1 項目 ([`Entry`]) はリテラルか正規表現で、項目ごとに重大度を持ち、手掛かりの強さを
+//! ルールの値から変えることもできる。
 //! ルールは項目の並び ([`PhraseSpec`]) を持ち、文ごとに一致を探して診断にする。
 
 use std::ops::Range;
@@ -10,7 +11,7 @@ use super::quotes::QuoteRanges;
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Severity, Signal, Span};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 
 /// 辞書の項目の照合方法。
@@ -36,76 +37,43 @@ impl Pattern {
 pub(super) struct Entry {
     pub pattern: Pattern,
     pub severity: Severity,
-    pub status: RuleStatus,
-    /// メッセージの末尾に添える注記 (弱いシグナルの断り書きなど)。
-    pub note: Option<&'static str>,
+    /// 手掛かりの強さ。`None` ならルールの値 ([`RuleMeta::signal`]) を使う。
+    ///
+    /// ルールの強さは、ルールの校正の基準の重大度以上の項目で測ったもの。基準より軽い項目
+    /// (警告のルールにある情報の項目) はその測定に入らないので、必ず自分の強さを書く。
+    pub signal: Option<Signal>,
 }
 
-/// 人間の文章にも一定数出るため重大度を下げた語句に添える注記。
-pub(super) const WEAK_SIGNAL_NOTE: &str =
-    "人間の文章にもよく出るため、弱い手掛かりとして扱っています";
-
-/// 人の文章にも同じくらいかそれ以上に出ると測れたため、既定から外した語句に添える注記。
-pub(super) const HUMAN_COMMON_NOTE: &str =
-    "人の文章にも同じくらいかそれ以上に出るため、既定では指摘しない語句です";
-
 impl Entry {
-    /// 校正済みのリテラル。
+    /// リテラル。
     pub const fn lit(s: &'static str, severity: Severity) -> Self {
         Self {
             pattern: Pattern::Literal(s),
             severity,
-            status: RuleStatus::Stable,
-            note: None,
+            signal: None,
         }
     }
 
-    /// 校正済みの正規表現。
+    /// 正規表現。
     pub const fn re(s: &'static str, severity: Severity) -> Self {
         Self {
             pattern: Pattern::Regex(s),
             severity,
-            status: RuleStatus::Stable,
-            note: None,
+            signal: None,
         }
     }
 
-    /// 校正済みだが人間の文章にも出る弱いシグナル (情報レベル)。
-    pub const fn weak(s: &'static str) -> Self {
+    /// 手掛かりの強さをルールの値から変える (項目ごとに測った強さがルールと違うときなど)。
+    pub const fn with_signal(self, signal: Signal) -> Self {
         Self {
-            pattern: Pattern::Literal(s),
-            severity: Severity::Info,
-            status: RuleStatus::Stable,
-            note: Some(WEAK_SIGNAL_NOTE),
-        }
-    }
-
-    /// 未校正のリテラル。
-    pub const fn exp_lit(s: &'static str, severity: Severity) -> Self {
-        Self {
-            pattern: Pattern::Literal(s),
-            severity,
-            status: RuleStatus::Experimental,
-            note: None,
-        }
-    }
-
-    /// 未校正の正規表現。
-    pub const fn exp_re(s: &'static str, severity: Severity) -> Self {
-        Self {
-            pattern: Pattern::Regex(s),
-            severity,
-            status: RuleStatus::Experimental,
-            note: None,
-        }
-    }
-
-    /// メッセージに注記を添える (実験的な項目に弱い手掛かりの断り書きを付けるときなど)。
-    pub const fn with_note(self, note: &'static str) -> Self {
-        Self {
-            note: Some(note),
+            signal: Some(signal),
             ..self
         }
+    }
+
+    /// この項目の指摘の手掛かりの強さ。
+    pub fn signal_in(&self, meta: &RuleMeta) -> Option<Signal> {
+        self.signal.or(meta.signal)
     }
 }
 
@@ -150,15 +118,11 @@ pub(super) struct Matcher {
 }
 
 impl Matcher {
-    /// `include_experimental` が偽なら、実験的な項目を照合から外す。
-    pub fn new(entries: &[Entry], include_experimental: bool) -> Self {
+    pub fn new(entries: &[Entry]) -> Self {
         let mut literal_patterns = Vec::new();
         let mut literal_entries = Vec::new();
         let mut regexes = Vec::new();
         for (idx, entry) in entries.iter().enumerate() {
-            if entry.status == RuleStatus::Experimental && !include_experimental {
-                continue;
-            }
             match entry.pattern {
                 Pattern::Literal(s) => {
                     literal_patterns.push(s);
@@ -276,7 +240,7 @@ pub(super) fn diagnostic(
     message: String,
     hint: &str,
     severity: Severity,
-    status: RuleStatus,
+    signal: Option<Signal>,
 ) -> Diagnostic {
     let quoted = quote(matched);
     let mut d = meta
@@ -286,7 +250,7 @@ pub(super) fn diagnostic(
         .with_metric("item", quoted.clone())
         .with_metric("matched", quoted);
     d.severity = severity;
-    d.status = status;
+    d.signal = signal;
     d
 }
 
@@ -297,10 +261,7 @@ pub(super) fn diagnostic(
 /// 言い回しの癖を指すもので、引用した語句や発言は書き手の言い回しではないため。
 pub(super) struct PhraseRule {
     spec: &'static PhraseSpec,
-    /// 校正済みの項目だけの照合器。
-    stable: Matcher,
-    /// 実験的な項目も含む照合器。
-    full: Matcher,
+    matcher: Matcher,
     exclude_quoted_mentions: bool,
     /// 文書の結び (地の文の最後の段落) だけを見るときの段落の数。
     closing_paragraphs: Option<usize>,
@@ -310,8 +271,7 @@ impl PhraseRule {
     pub fn new(spec: &'static PhraseSpec) -> Self {
         Self {
             spec,
-            stable: Matcher::new(spec.entries, false),
-            full: Matcher::new(spec.entries, true),
+            matcher: Matcher::new(spec.entries),
             exclude_quoted_mentions: true,
             closing_paragraphs: None,
         }
@@ -349,9 +309,6 @@ impl Rule for PhraseRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
-        // ルール自体が実験的なら、有効にされた時点で全項目を使う
-        let use_full = self.spec.meta.status == RuleStatus::Experimental || ctx.experimental;
-        let matcher = if use_full { &self.full } else { &self.stable };
         let closing = self
             .closing_paragraphs
             .map(|count| ctx.doc.closing_paragraphs(count));
@@ -364,7 +321,7 @@ impl Rule for PhraseRule {
                 .then(|| QuoteRanges::new(&block.text));
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
-                for hit in matcher.find(text) {
+                for hit in self.matcher.find(text) {
                     let entry = &self.spec.entries[hit.entry];
                     let matched = &text[hit.range.clone()];
                     let abs = (sentence.range.start + hit.range.start)
@@ -372,10 +329,7 @@ impl Rule for PhraseRule {
                     if quotes.as_ref().is_some_and(|q| q.excludes(&abs)) {
                         continue;
                     }
-                    let mut message = self.spec.message.replace("{m}", &quote(matched));
-                    if let Some(note) = entry.note {
-                        message.push_str(&format!("（{note}）"));
-                    }
+                    let message = self.spec.message.replace("{m}", &quote(matched));
                     out.push(
                         diagnostic(
                             &self.spec.meta,
@@ -385,7 +339,7 @@ impl Rule for PhraseRule {
                             message,
                             self.spec.hint,
                             entry.severity,
-                            entry.status,
+                            entry.signal_in(&self.spec.meta),
                         )
                         .with_metric("item", entry.pattern.item()),
                     );
@@ -402,29 +356,27 @@ mod tests {
     const ENTRIES: &[Entry] = &[
         Entry::lit("言える", Severity::Warning),
         Entry::lit("と言えるでしょう", Severity::Warning),
-        Entry::exp_lit("でしょう", Severity::Info),
+        Entry::lit("でしょう", Severity::Info).with_signal(Signal::Weak),
         Entry::re(r"ことが(でき|出来)(る|ます)", Severity::Info),
     ];
 
     #[test]
     fn prefers_leftmost_longest_and_drops_overlaps() {
-        let m = Matcher::new(ENTRIES, true);
+        let m = Matcher::new(ENTRIES);
         let hits = m.find("これはと言えるでしょう。");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].entry, 1);
     }
 
     #[test]
-    fn experimental_entries_are_excluded_unless_requested() {
-        let stable = Matcher::new(ENTRIES, false);
-        assert!(stable.find("晴れるでしょう").is_empty());
-        let full = Matcher::new(ENTRIES, true);
-        assert_eq!(full.find("晴れるでしょう").len(), 1);
+    fn every_entry_is_matched() {
+        let m = Matcher::new(ENTRIES);
+        assert_eq!(m.find("晴れるでしょう").len(), 1);
     }
 
     #[test]
     fn regex_and_literal_hits_are_merged_in_order() {
-        let m = Matcher::new(ENTRIES, false);
+        let m = Matcher::new(ENTRIES);
         let hits = m.find("読むことができる。言える。");
         let entries: Vec<_> = hits.iter().map(|h| h.entry).collect();
         assert_eq!(entries, vec![3, 0]);
@@ -441,7 +393,7 @@ mod tests {
             name: "TEST_PHRASES",
             title: "テスト",
             lane: crate::diagnostic::Lane::Slop,
-            status: RuleStatus::Stable,
+            signal: Some(Signal::Strong),
             default_severity: Severity::Warning,
             summary: "テスト用",
             explanation: "テスト用",
@@ -480,6 +432,29 @@ mod tests {
     }
 
     #[test]
+    fn entries_inherit_or_override_the_signal_of_the_rule() {
+        use crate::rules::testing::run;
+        let md = "晴れるでしょう。それは言える。\n";
+        let d = run(&PhraseRule::new(&SPEC), md);
+        let signals: Vec<_> = d
+            .iter()
+            .map(|d| (text_metric(d, "item"), d.signal))
+            .collect();
+        assert_eq!(
+            signals,
+            vec![
+                (Some("でしょう"), Some(Signal::Weak)),
+                (Some("言える"), Some(Signal::Strong)),
+            ]
+        );
+        // メッセージに強さの断り書きは足さない (強さは出力の札で示す)
+        assert!(
+            d.iter()
+                .all(|d| d.message.starts_with('「') && d.message.ends_with('」'))
+        );
+    }
+
+    #[test]
     fn rules_without_dictionary_items_use_the_matched_text_as_the_item() {
         let span = Span::new(0, 3);
         let d = diagnostic(
@@ -490,17 +465,18 @@ mod tests {
             "テスト".into(),
             "テスト",
             Severity::Info,
-            RuleStatus::Stable,
+            Some(Signal::Moderate),
         );
         assert_eq!(text_metric(&d, "item"), Some("…を 示す"));
         assert_eq!(text_metric(&d, "matched"), Some("…を 示す"));
+        assert_eq!(d.signal, Some(Signal::Moderate));
     }
 
     #[test]
     fn a_named_group_narrows_the_match_to_the_group() {
         // 前の文字は条件にだけ使い、指す範囲はグループ m に限る
         const GROUPED: &[Entry] = &[Entry::re(r"(?:^|[^が])(?P<m>大事なのは、)", Severity::Info)];
-        let m = Matcher::new(GROUPED, false);
+        let m = Matcher::new(GROUPED);
         let text = "ここで大事なのは、頻度だ。";
         let hits = m.find(text);
         assert_eq!(hits.len(), 1);
@@ -511,7 +487,7 @@ mod tests {
         // 条件を満たさない位置は拾わない
         assert!(m.find("確認が大事なのは、夜に変わるからだ。").is_empty());
         // グループを持たない正規表現は一致の全体を指す (既存の動き)
-        let plain = Matcher::new(ENTRIES, false);
+        let plain = Matcher::new(ENTRIES);
         let text = "読むことができる。";
         assert_eq!(&text[plain.find(text)[0].range.clone()], "ことができる");
     }
@@ -519,7 +495,7 @@ mod tests {
     #[test]
     fn grouped_matches_can_share_context() {
         const GROUPED: &[Entry] = &[Entry::re(r"(?:^|。)(?P<m>要約)(?:。|$)", Severity::Info)];
-        let matcher = Matcher::new(GROUPED, false);
+        let matcher = Matcher::new(GROUPED);
         let text = "要約。要約。要約";
         let ranges: Vec<_> = matcher
             .find(text)
@@ -529,7 +505,7 @@ mod tests {
         assert_eq!(ranges, vec![0..6, 9..15, 18..24]);
         // 候補が増えても、同じ位置では長い指摘を優先する。
         let entries = [GROUPED[0], Entry::lit("要約。要約", Severity::Info)];
-        let matcher = Matcher::new(&entries, false);
+        let matcher = Matcher::new(&entries);
         let ranges: Vec<_> = matcher
             .find(text)
             .into_iter()
@@ -542,7 +518,7 @@ mod tests {
     fn empty_and_absent_groups_advance_on_character_boundaries() {
         for pattern in [r"(?P<m>要約|)", r"(?P<m>要約)?"] {
             let entries = [Entry::re(pattern, Severity::Info)];
-            let matcher = Matcher::new(&entries, false);
+            let matcher = Matcher::new(&entries);
             let text = "あ要約。要約い";
             let ranges: Vec<_> = matcher
                 .find(text)
@@ -558,18 +534,19 @@ mod tests {
     #[test]
     fn grouped_search_keeps_anchors_relative_to_the_whole_text() {
         const GROUPED: &[Entry] = &[Entry::re(r"^(?P<m>要約)", Severity::Info)];
-        let matcher = Matcher::new(GROUPED, false);
+        let matcher = Matcher::new(GROUPED);
         let hits = matcher.find("要約要約");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].range, 0..6);
     }
 
     #[test]
-    fn notes_can_be_attached_to_experimental_entries() {
-        const NOTED: &[Entry] =
-            &[Entry::exp_lit("大切です", Severity::Info).with_note(WEAK_SIGNAL_NOTE)];
-        assert_eq!(NOTED[0].note, Some(WEAK_SIGNAL_NOTE));
-        assert_eq!(NOTED[0].status, RuleStatus::Experimental);
-        assert_eq!(NOTED[0].severity, Severity::Info);
+    fn entries_keep_their_severity_and_signal() {
+        const MARKED: &[Entry] =
+            &[Entry::lit("大切です", Severity::Info).with_signal(Signal::Moderate)];
+        assert_eq!(MARKED[0].signal, Some(Signal::Moderate));
+        assert_eq!(MARKED[0].severity, Severity::Info);
+        assert_eq!(MARKED[0].signal_in(&SPEC.meta), Some(Signal::Moderate));
+        assert_eq!(ENTRIES[0].signal_in(&SPEC.meta), Some(Signal::Strong));
     }
 }

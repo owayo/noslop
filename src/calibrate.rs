@@ -5,11 +5,13 @@
 //! 率は重大度を問わないものに加えて、重大度ごとの内訳と、警告以上・重大だけで数えたものも出し、
 //! 誤検知率には片側 95% の上限 (Wilson のスコア区間) を添える。
 //!
-//! 校正済みのルールの見直しは、ルールごとの校正の基準 ([`Rule::calibration_basis`]) の重大度
-//! 以上の指摘で判定する。確度の低い語句を意図して情報にしたルールが、情報の指摘だけで
-//! 「校正が成り立っていない」と判定されないためである。情報も利用者の画面に出るので、
-//! 重大度を問わないと目標を超えるルールは、別の理由 (軽い指摘が多い) で挙げる。
-//! 実験的なルールと語句の昇格は、重大度を問わない率で判定する。
+//! ルールの見直しは、ルールごとの校正の基準 ([`Rule::calibration_basis`]) の重大度以上の指摘で
+//! 判定する。確度の低い語句を意図して情報にしたルールが、情報の指摘だけで「校正が成り立って
+//! いない」と判定されないためである。情報も利用者の画面に出るので、重大度を問わないと目標を
+//! 超えるルールは、別の理由 (軽い指摘が多い) で挙げる。
+//!
+//! AI 臭さのレーンのルールと語句の項目は、人と生成の文書反応率から手掛かりの強さを測り
+//! ([`SignalCriteria`])、宣言した強さ ([`Signal`]) と食い違うものを挙げる。
 //!
 //! 閾値を持つルール ([`Rule::measure`] を実装したもの) は、閾値を動かしたときの率も求め、
 //! 誤検知率が目標以下のまま検出率が最大になる閾値を提案する。
@@ -19,7 +21,7 @@
 //! 相対パスのハッシュで決める。何度実行しても同じ分け方になり、同じ相対パスの文書は人と
 //! 生成で同じ側に入る (お題をそろえたコーパスは、お題ごと同じ側に入る)。
 //!
-//! 出した率は与えたコーパスでの値にすぎない。校正済みへの昇格や閾値の変更は、この結果を
+//! 出した率は与えたコーパスでの値にすぎない。閾値・重大度・手掛かりの強さの変更は、この結果を
 //! 見て人が判断する (手順は `docs/calibration.md`)。
 //!
 //! [`Rule::measure`]: crate::rules::Rule::measure
@@ -35,28 +37,22 @@ use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::ConfigError;
-use crate::diagnostic::{Diagnostic, Lane, Metric, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Metric, Severity, Signal};
 use crate::document::{Document, SourceFormat};
 use crate::engine::{Engine, EngineOptions};
 use crate::rules::{Fires, Measure, RuleContext, RuleMeta};
 use crate::walk::{self, WalkOptions};
 
 /// JSON 出力のスキーマの版。互換性のない変更をしたら上げる。
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 /// 誤検知率の目標の既定値。
 pub const DEFAULT_TARGET_FP: f64 = 0.05;
 /// 検証用に取り分ける文書の割合の既定値。
 pub const DEFAULT_HOLDOUT: f64 = 0.3;
-/// 校正済みに上げる候補とする検出率の下限の既定値。
-pub const DEFAULT_MIN_DETECTION: f64 = 0.2;
 /// 1 群の文書がこれより少ないと警告する。
 pub const MIN_DOCS_PER_GROUP: usize = 10;
 /// 検証用に回った文書が 1 群でこれより少ないと警告する。
 const MIN_HOLDOUT_DOCS: usize = 5;
-/// 語句の項目を昇格の候補にするのに要る、その項目が出た生成文書の数。
-const MIN_ITEM_AI_DOCS: usize = 3;
-/// 語句の項目を昇格の候補にするのに要る、生成文書での割合の人の文書での割合に対する倍率。
-const MIN_ITEM_LIFT: f64 = 2.0;
 /// 見直しの候補に添える、人の文書で多く出た項目の数。
 const REVIEW_TOP_ITEMS: usize = 3;
 /// 語句の項目に添える、よく出た表記の数。
@@ -78,35 +74,87 @@ pub struct CalibrateOptions {
     /// 生成された文書 (ファイルかディレクトリ)。
     pub ai: Vec<PathBuf>,
     /// エンジンの設定 (ジャンル・設定ファイルのルール設定・範囲など)。
-    ///
-    /// `experimental` は見ない。既定の動作はいつも `experimental = false` で測り、
-    /// `include_experimental` なら実験的な動作も別に測る。
     pub engine: EngineOptions,
     /// ディレクトリから集めるファイルの条件。
     pub walk: WalkOptions,
-    /// 実験的なルールと語句も測るか。
-    pub include_experimental: bool,
     /// 許容する誤検知率 (0 以上 1 以下)。
     pub target_fp: f64,
     /// 検証用に取り分ける文書の割合 (0 以上 1 未満)。
     pub holdout: f64,
-    /// 校正済みに上げる候補とする検出率の下限 (0 以上 1 以下)。
-    pub min_detection: f64,
 }
 
 impl CalibrateOptions {
-    /// 既定の条件 (一般のジャンル、実験的なものも測る、目標 5%、検証 30%)。
+    /// 既定の条件 (一般のジャンル、目標 5%、検証 30%)。
     pub fn new(human: Vec<PathBuf>, ai: Vec<PathBuf>) -> Self {
         Self {
             human,
             ai,
             engine: EngineOptions::default(),
             walk: WalkOptions::default(),
-            include_experimental: true,
             target_fp: DEFAULT_TARGET_FP,
             holdout: DEFAULT_HOLDOUT,
-            min_detection: DEFAULT_MIN_DETECTION,
         }
+    }
+}
+
+/// 手掛かりの強さを測る基準。基準は固定し、変えるときは [`SCHEMA_VERSION`] を上げて
+/// `docs/calibration.md` も直す (同じ「測った強さ」の意味が実行ごとに変わらないように)。
+///
+/// 人の文書で指摘された文書の数を H、生成文書で指摘された文書の数を A、それぞれの割合を
+/// h・a とする。H + A が `min_docs` 未満なら測れない。A が `strong_min_ai_docs` 以上で、
+/// a が h の `strong_lift` 倍以上、h が `strong_max_human_rate` 以下なら強い。H が
+/// `weak_min_human_docs` 以上で、a が h の `weak_max_lift` 倍以下なら弱い。ほかは中程度。
+/// 割合は丸める前の値で比べる。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCriteria {
+    pub min_docs: usize,
+    pub strong_min_ai_docs: usize,
+    pub strong_lift: f64,
+    pub strong_max_human_rate: f64,
+    pub weak_min_human_docs: usize,
+    pub weak_max_lift: f64,
+}
+
+/// 手掛かりの強さを測る基準 (組み込みのルールと語句の強さも、この基準で決めた)。
+pub const SIGNAL_CRITERIA: SignalCriteria = SignalCriteria {
+    min_docs: 5,
+    strong_min_ai_docs: 5,
+    strong_lift: 3.0,
+    strong_max_human_rate: 0.05,
+    weak_min_human_docs: 5,
+    weak_max_lift: 1.5,
+};
+
+impl SignalCriteria {
+    /// 人の文書 `human_docs` 件のうち `human_fired` 件、生成文書 `ai_docs` 件のうち `ai_fired` 件が
+    /// 指摘されたときの強さ。どちらかの群に文書がないか、件数が足りなければ `None`。
+    pub fn measure(
+        &self,
+        human_fired: usize,
+        human_docs: usize,
+        ai_fired: usize,
+        ai_docs: usize,
+    ) -> Option<Signal> {
+        if human_docs == 0 || ai_docs == 0 || human_fired + ai_fired < self.min_docs {
+            return None;
+        }
+        let h = human_fired as f64 / human_docs as f64;
+        let a = ai_fired as f64 / ai_docs as f64;
+        if ai_fired >= self.strong_min_ai_docs
+            && a + EPSILON >= self.strong_lift * h
+            && h <= self.strong_max_human_rate + EPSILON
+        {
+            Some(Signal::Strong)
+        } else if human_fired >= self.weak_min_human_docs && a <= self.weak_max_lift * h + EPSILON {
+            Some(Signal::Weak)
+        } else {
+            Some(Signal::Moderate)
+        }
+    }
+
+    fn of(&self, o: &Outcome) -> Option<Signal> {
+        self.measure(o.human_fired, o.human_docs, o.ai_fired, o.ai_docs)
     }
 }
 
@@ -142,16 +190,6 @@ impl Group {
     }
 }
 
-/// ルールをどちらの動作で測ったか。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// 既定の動作 (`--experimental` なし) で動くルール。
-    Default,
-    /// 既定では動かず、実験的な動作 (`--experimental` あり) で測ったルール。
-    Experimental,
-}
-
 /// 校正の結果。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,10 +203,12 @@ pub struct CalibrationReport {
     pub thresholds: Vec<ThresholdSweep>,
     /// 語句ルールの項目ごとの反応。
     pub items: Vec<ItemStats>,
-    /// 校正済みに上げる候補。
-    pub promotions: Vec<Promotion>,
-    /// 見直しが必要な校正済みルール。
+    /// 見直しが必要なルール。
     pub reviews: Vec<Review>,
+    /// 宣言した手掛かりの強さと、測った強さが食い違うルールと項目。
+    pub signal_reviews: Vec<SignalReview>,
+    /// 件数が足りず、手掛かりの強さを測れなかったもの。
+    pub unmeasured: Unmeasured,
     pub warnings: Vec<String>,
     /// 読めなかった入力。
     pub errors: Vec<CorpusError>,
@@ -181,8 +221,8 @@ pub struct Settings {
     pub genre: &'static str,
     pub target_fp: f64,
     pub holdout: f64,
-    pub min_detection: f64,
-    pub include_experimental: bool,
+    /// 手掛かりの強さを測る基準。
+    pub signal_criteria: SignalCriteria,
 }
 
 /// 群ごとの文書の数。
@@ -308,8 +348,11 @@ pub struct RuleStats {
     pub name: &'static str,
     pub title: &'static str,
     pub lane: Lane,
-    pub status: RuleStatus,
-    pub mode: Mode,
+    /// 宣言した手掛かりの強さ (AI 臭さのレーンの組み込みルールだけ)。
+    pub signal: Option<Signal>,
+    /// 校正の基準の重大度以上の指摘で測った手掛かりの強さ (AI 臭さのレーンの組み込みルールだけ。
+    /// 件数が足りなければ `None`)。
+    pub measured_signal: Option<Signal>,
     /// 校正の基準: 誤検知率の目標を当てはめる重大度 (見直しはこの重大度以上の指摘で判定する)。
     pub calibration_basis: Severity,
     pub human: Rate,
@@ -380,17 +423,6 @@ impl Outcome {
                 .false_positive
                 .is_some_and(|fp| fp <= target_fp + EPSILON)
     }
-
-    /// 校正済みに上げる条件 (誤検知率が目標以下、検出率が下限以上) を満たすか。
-    fn promotable(&self, target_fp: f64, min_detection: f64) -> bool {
-        self.usable(target_fp) && self.detection.is_some_and(|d| d + EPSILON >= min_detection)
-    }
-
-    /// 誤検知率の 95% 上限まで目標以下か (件数が少なくても目標以下と言い切れるか)。
-    fn confirmed(&self, target_fp: f64) -> bool {
-        self.false_positive_upper95
-            .is_some_and(|u| u <= target_fp + EPSILON)
-    }
 }
 
 /// ルール 1 つ・設定キー 1 つの閾値の掃引。
@@ -400,7 +432,6 @@ pub struct ThresholdSweep {
     pub rule_id: &'static str,
     pub rule_name: &'static str,
     pub lane: Lane,
-    pub status: RuleStatus,
     /// 測った量の名前。
     pub measure: &'static str,
     /// 閾値の設定キー (`[rules.<ID>]` に書くキー)。
@@ -443,19 +474,19 @@ pub struct ItemStats {
     pub item: String,
     /// よく出た表記 (件数の多い順に最大 3 つ)。
     pub examples: Vec<String>,
-    pub status: RuleStatus,
     /// 項目の重大度 (辞書で宣言した重大度。設定で上書きしていればその値)。
     pub severity: Severity,
+    /// 項目の指摘の手掛かりの強さ (AI 臭さのレーンの組み込みルールだけ)。
+    pub signal: Option<Signal>,
+    /// 重大度を問わずに測った手掛かりの強さ (宣言した強さを持つ項目だけ。件数が足りなければ `None`)。
+    pub measured_signal: Option<Signal>,
     /// 人の文書での反応 (文書の数は人の文書全体)。
     pub human: Rate,
     /// 生成文書での反応。
     pub ai: Rate,
-    /// 実験的な項目を校正済みに上げたときの、ルール全体の率 (全文書・重大度を問わない)。
-    /// 校正済みのルールにある実験的な項目だけに付ける。
-    pub promoted_rule: Option<Outcome>,
 }
 
-/// 昇格・見直しに添える項目。
+/// 見直しに添える項目。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemSummary {
@@ -480,44 +511,34 @@ impl ItemSummary {
     }
 }
 
-/// 校正済みに上げる候補。
+/// 宣言した手掛かりの強さと測った強さが食い違うルール (または語句の項目)。
+///
+/// 設計上の理由 (生成ツールの記法を照合するなど) で強さを決めたものも挙がる。直すかどうかは、
+/// ルールの説明の「根拠」と照らして人が決める。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Promotion {
+pub struct SignalReview {
     pub rule_id: &'static str,
     pub rule_name: &'static str,
-    /// 語句の項目を上げる候補なら、その項目。
+    /// 語句の項目なら、その項目 (ルール全体なら `None`)。
     pub item: Option<ItemSummary>,
-    /// 閾値を変えれば条件を満たす候補なら、その変更。
-    pub threshold: Option<ThresholdChange>,
-    /// 判断に使った率 (重大度を問わない。項目なら、上げた後のルール全体の率)。
+    pub declared: Signal,
+    pub measured: Signal,
+    /// 測った率 (ルールは校正の基準の重大度以上の指摘、項目は重大度を問わない指摘で数えた)。
     pub outcome: Outcome,
-    /// 率を測った文書の範囲。
-    pub basis: Basis,
-    /// 件数が少なく、誤検知率の 95% 上限が目標を超える (目標以下と言い切れない)。
-    pub small_sample: bool,
 }
 
-/// 閾値の変更の提案。
-#[derive(Debug, Clone, Serialize)]
+/// 件数が足りず、手掛かりの強さを測れなかったもの。
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ThresholdChange {
-    pub key: &'static str,
-    pub from: Option<f64>,
-    pub to: f64,
+pub struct Unmeasured {
+    /// 測れなかったルールの ID。
+    pub rules: Vec<&'static str>,
+    /// 測れなかった語句の項目の数 (指摘の出なかった項目は数えない)。
+    pub items: usize,
 }
 
-/// 率を測った文書の範囲。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Basis {
-    /// 全文書 (閾値を選んでいないので、分けずに全部で測る)。
-    All,
-    /// 検証用の文書 (閾値を校正用の文書で選んだので、選ぶのに使っていない文書で測る)。
-    Holdout,
-}
-
-/// 見直しが必要な校正済みルール。
+/// 見直しが必要なルール。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
@@ -545,8 +566,8 @@ pub enum ReviewReason {
     /// (指摘はあるのに見分けられていない)。
     NoSeparation,
     /// 基準の重大度では目標以下だが、重大度を問わないと誤検知率が目標を超える
-    /// (基準が情報より重いルールだけ)。直ちに実験的に戻す話ではなく、原因の項目の重大度・除外・
-    /// 説明を見直す材料。
+    /// (基準が情報より重いルールだけ)。直ちにルールを止める話ではなく、原因の項目の重大度・
+    /// 手掛かりの強さ・除外・説明を見直す材料。
     InfoBurden,
 }
 
@@ -567,7 +588,7 @@ impl ReviewReason {
                 "見分けられていない (基準の重大度以上で数えると、生成文書で指摘される割合が人の文書を上回らない)"
             }
             ReviewReason::InfoBurden => {
-                "軽い指摘が多い (基準の重大度では目標以下だが、重大度を問わないと目標を超える。直ちに実験的に戻す話ではなく、原因の項目の重大度・除外・説明を見直す材料)"
+                "軽い指摘が多い (基準の重大度では目標以下だが、重大度を問わないと目標を超える。直ちにルールを止める話ではなく、原因の項目の重大度・手掛かりの強さ・除外・説明を見直す材料)"
             }
         }
     }
@@ -592,19 +613,8 @@ pub struct CorpusError {
 /// 条件の誤りと、エンジンの設定の誤り (未知のルールなど) だけをエラーとして返す。
 pub fn calibrate(options: &CalibrateOptions) -> Result<CalibrationReport, ConfigError> {
     validate(options)?;
-    let base = Engine::new(EngineOptions {
-        experimental: false,
-        ..options.engine.clone()
-    })?;
-    let full = if options.include_experimental {
-        Some(Engine::new(EngineOptions {
-            experimental: true,
-            ..options.engine.clone()
-        })?)
-    } else {
-        None
-    };
-    let evaluated = evaluated_rules(&base, full.as_ref());
+    let engine = Engine::new(options.engine.clone())?;
+    let evaluated = evaluated_rules(&engine);
     let index: HashMap<&'static str, usize> = evaluated
         .iter()
         .enumerate()
@@ -629,8 +639,7 @@ pub fn calibrate(options: &CalibrateOptions) -> Result<CalibrationReport, Config
     );
 
     let scan = Scan {
-        base: &base,
-        full: full.as_ref(),
+        engine: &engine,
         evaluated: &evaluated,
         index: &index,
         holdout: options.holdout,
@@ -662,18 +671,14 @@ fn validate(options: &CalibrateOptions) -> Result<(), ConfigError> {
     if !(0.0..1.0).contains(&options.holdout) {
         return invalid("--holdout には 0 以上 1 未満の値を指定してください");
     }
-    if !(0.0..=1.0).contains(&options.min_detection) {
-        return invalid("--min-detection には 0 以上 1 以下の値を指定してください");
-    }
     Ok(())
 }
 
 /// 測るルール 1 つ。
 struct Evaluated {
-    /// エンジンのルール一覧での添字 (2 つのエンジンで共通)。
+    /// エンジンのルール一覧での添字。
     entry: usize,
     meta: &'static RuleMeta,
-    mode: Mode,
     builtin: bool,
     /// 数値として読める設定項目の現在値 (`Rule::options` の順)。
     options: Vec<(&'static str, f64)>,
@@ -682,7 +687,7 @@ struct Evaluated {
 }
 
 impl Evaluated {
-    /// 昇格・見直しの対象か (組み込みの、AI 臭さのレーンのルール)。
+    /// 見直しと手掛かりの強さの対象か (組み込みの、AI 臭さのレーンのルール)。
     fn judged(&self) -> bool {
         self.builtin && self.meta.lane == Lane::Slop
     }
@@ -695,25 +700,17 @@ impl Evaluated {
     }
 }
 
-/// 既定の動作で動くルールは既定の動作で、そうでないルールは実験的な動作で測る。
-fn evaluated_rules(base: &Engine, full: Option<&Engine>) -> Vec<Evaluated> {
+/// 動かすルール (設定とジャンルで止めたものを除く) を測る。
+fn evaluated_rules(engine: &Engine) -> Vec<Evaluated> {
     let mut out = Vec::new();
-    for (i, entry) in base.entries().iter().enumerate() {
-        let full_entry = full.map(|f| &f.entries()[i]);
-        if let Some(f) = full_entry {
-            debug_assert_eq!(entry.rule.meta().id, f.rule.meta().id);
-        }
-        let (mode, rule) = if entry.enabled {
-            (Mode::Default, &entry.rule)
-        } else if let Some(f) = full_entry.filter(|f| f.enabled) {
-            (Mode::Experimental, &f.rule)
-        } else {
+    for (i, entry) in engine.entries().iter().enumerate() {
+        if !entry.enabled {
             continue;
-        };
+        }
+        let rule = &entry.rule;
         out.push(Evaluated {
             entry: i,
             meta: rule.meta(),
-            mode,
             builtin: entry.builtin,
             options: rule
                 .options()
@@ -912,13 +909,15 @@ impl Tally {
     }
 }
 
-/// 語句の項目: (測るルールの添字, 項目, 項目の校正状況)。
-type ItemKey = (usize, String, RuleStatus);
+/// 語句の項目: (測るルールの添字, 項目)。
+type ItemKey = (usize, String);
 
 /// 1 文書での項目の出方。
 #[derive(Debug, Clone, Default)]
 struct ItemHit {
     hits: Hits,
+    /// 項目の指摘の手掛かりの強さ。
+    signal: Option<Signal>,
     /// 一致した表記ごとの件数。
     notations: HashMap<String, usize>,
 }
@@ -939,8 +938,7 @@ struct DocResult {
 
 /// 文書を 1 つずつ測る道具一式。
 struct Scan<'a> {
-    base: &'a Engine,
-    full: Option<&'a Engine>,
+    engine: &'a Engine,
     evaluated: &'a [Evaluated],
     /// ルール ID → 測るルールの添字。
     index: &'a HashMap<&'static str, usize>,
@@ -948,13 +946,6 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
-    fn engine(&self, mode: Mode) -> &Engine {
-        match (mode, self.full) {
-            (Mode::Experimental, Some(full)) => full,
-            _ => self.base,
-        }
-    }
-
     fn doc(&self, source: Source) -> Result<DocResult, CorpusError> {
         let name = walk::display(&source.path);
         let fail = |message: String| CorpusError {
@@ -971,65 +962,34 @@ impl Scan<'_> {
             name.clone(),
             text,
             SourceFormat::from_path(&source.path),
-            &self.base.options().parse,
+            &self.engine.options().parse,
         );
         let characters = doc.body_char_count();
         let line_per_paragraph = looks_line_per_paragraph(&doc);
-        let measures: Vec<Vec<Measure>> = self
-            .evaluated
-            .iter()
-            .map(|ev| {
-                let engine = self.engine(ev.mode);
-                let o = engine.options();
-                let morph = engine.doc_morphology(&doc);
-                let ctx = RuleContext {
-                    doc: &doc,
-                    genre: o.genre,
-                    scope: o.scope,
-                    experimental: o.experimental,
-                    morph: morph.as_ref(),
-                };
-                engine.entries()[ev.entry].rule.measure(&ctx)
-            })
-            .collect();
+        let measures: Vec<Vec<Measure>> = {
+            let o = self.engine.options();
+            let morph = self.engine.doc_morphology(&doc);
+            let ctx = RuleContext {
+                doc: &doc,
+                genre: o.genre,
+                scope: o.scope,
+                morph: morph.as_ref(),
+            };
+            self.evaluated
+                .iter()
+                .map(|ev| self.engine.entries()[ev.entry].rule.measure(&ctx))
+                .collect()
+        };
 
         // 抑制コメントで残した指摘も数える (検出器そのものの反応を測るため)
-        let (base_diags, full_diags) = match self.full {
-            Some(full) => (
-                self.base.lint(doc.clone()).diagnostics,
-                full.lint(doc).diagnostics,
-            ),
-            None => (self.base.lint(doc).diagnostics, Vec::new()),
-        };
         let mut hits = vec![Hits::default(); self.evaluated.len()];
         let mut items = HashMap::new();
-        for d in &base_diags {
+        for d in &self.engine.lint(doc).diagnostics {
             let Some(&r) = self.index.get(d.rule_id.as_str()) else {
                 continue;
             };
-            if self.evaluated[r].mode == Mode::Default {
-                hits[r].add(d.severity);
-                record_item(&mut items, r, d);
-            }
-        }
-        for d in &full_diags {
-            let Some(&r) = self.index.get(d.rule_id.as_str()) else {
-                continue;
-            };
-            let ev = &self.evaluated[r];
-            match ev.mode {
-                Mode::Experimental => {
-                    hits[r].add(d.severity);
-                    record_item(&mut items, r, d);
-                }
-                // 校正済みのルールにある実験的な項目は、実験的な動作でだけ出る
-                Mode::Default => {
-                    if ev.meta.status == RuleStatus::Stable && d.status == RuleStatus::Experimental
-                    {
-                        record_item(&mut items, r, d);
-                    }
-                }
-            }
+            hits[r].add(d.severity);
+            record_item(&mut items, r, d);
         }
         let split = if split_point(&source.key) < self.holdout {
             Split::Holdout
@@ -1092,8 +1052,9 @@ fn record_item(items: &mut HashMap<ItemKey, ItemHit>, rule: usize, d: &Diagnosti
         return;
     };
     let item = text_metric(d, "item").unwrap_or(matched);
-    let hit = items.entry((rule, item.clone(), d.status)).or_default();
+    let hit = items.entry((rule, item.clone())).or_default();
     hit.hits.add(d.severity);
+    hit.signal = hit.signal.or(d.signal);
     *hit.notations.entry(matched.clone()).or_default() += 1;
 }
 
@@ -1115,11 +1076,18 @@ fn build_report(
             name: ev.meta.name,
             title: ev.meta.title,
             lane: ev.meta.lane,
-            status: ev.meta.status,
-            mode: ev.mode,
+            signal: ev.meta.signal,
+            measured_signal: None,
             calibration_basis: ev.basis,
             human: rule_rate(docs, Group::Human, &corpus.human, r),
             ai: rule_rate(docs, Group::Ai, &corpus.ai, r),
+        })
+        .map(|mut stats| {
+            if stats.signal.is_some() {
+                stats.measured_signal =
+                    SIGNAL_CRITERIA.of(&stats.outcome_at(stats.calibration_basis));
+            }
+            stats
         })
         .collect();
     let thresholds: Vec<ThresholdSweep> = evaluated
@@ -1131,9 +1099,9 @@ fn build_report(
                 .map(move |key| sweep(docs, r, ev, key, options.target_fp))
         })
         .collect();
-    let items = item_stats(evaluated, docs, &rules, &corpus);
-    let promotions = promotions(options, evaluated, &rules, &thresholds, &items);
+    let items = item_stats(evaluated, docs, &corpus);
     let reviews = reviews(options, evaluated, &rules, &items);
+    let (signal_reviews, unmeasured) = signal_reviews(evaluated, &rules, &items);
     let warnings = warnings(options, &corpus, docs);
     CalibrationReport {
         schema_version: SCHEMA_VERSION,
@@ -1141,15 +1109,15 @@ fn build_report(
             genre: options.engine.genre.as_str(),
             target_fp: options.target_fp,
             holdout: options.holdout,
-            min_detection: options.min_detection,
-            include_experimental: options.include_experimental,
+            signal_criteria: SIGNAL_CRITERIA,
         },
         corpus,
         rules,
         thresholds,
         items,
-        promotions,
         reviews,
+        signal_reviews,
+        unmeasured,
         warnings,
         errors,
     }
@@ -1198,8 +1166,7 @@ fn wilson_upper(fired: usize, docs: usize) -> Option<f64> {
 /// 人の文書が 1 件も指摘されなくても、誤検知率の 95% 上限が `target` 以下になるのに要る
 /// 文書の数。`target` が 0 以下なら、何件そろえても届かないので `None`。
 ///
-/// 目標以下かの判定は、昇格の候補の注記 ([`Outcome::confirmed`]) と同じ許容誤差で行う
-/// (警告の件数だけそろえた候補に注記が付かないように)。
+/// 目標以下かの判定は、閾値の提案 ([`Outcome::usable`]) と同じ許容誤差で行う。
 fn required_docs(target: f64) -> Option<usize> {
     if target <= 0.0 {
         return None;
@@ -1331,7 +1298,6 @@ fn sweep(
         rule_id: ev.meta.id,
         rule_name: ev.meta.name,
         lane: ev.meta.lane,
-        status: ev.meta.status,
         measure,
         key,
         fires: fires_key(direction),
@@ -1426,62 +1392,41 @@ fn fires_label(direction: Fires, switches_to: Option<Severity>) -> String {
     }
 }
 
-fn item_stats(
-    evaluated: &[Evaluated],
-    docs: &[DocResult],
-    rules: &[RuleStats],
-    corpus: &Corpus,
-) -> Vec<ItemStats> {
+fn item_stats(evaluated: &[Evaluated], docs: &[DocResult], corpus: &Corpus) -> Vec<ItemStats> {
     #[derive(Default)]
     struct Agg {
         human: Tally,
         ai: Tally,
         severity: Option<Severity>,
+        signal: Option<Signal>,
         notations: HashMap<String, usize>,
-        /// 項目が出た文書のうち、ルール (校正済みの項目) が何も指摘しなかった文書の数。
-        human_new: usize,
-        ai_new: usize,
     }
     let mut aggs: HashMap<&ItemKey, Agg> = HashMap::new();
     for d in docs {
         for (key, hit) in &d.items {
             let agg = aggs.entry(key).or_default();
             agg.severity = agg.severity.max(hit.hits.highest());
+            agg.signal = agg.signal.or(hit.signal);
             for (notation, n) in &hit.notations {
                 *agg.notations.entry(notation.clone()).or_default() += n;
             }
-            let new = usize::from(d.hits[key.0].total() == 0);
             match d.group {
-                Group::Human => {
-                    agg.human.add(&hit.hits);
-                    agg.human_new += new;
-                }
-                Group::Ai => {
-                    agg.ai.add(&hit.hits);
-                    agg.ai_new += new;
-                }
+                Group::Human => agg.human.add(&hit.hits),
+                Group::Ai => agg.ai.add(&hit.hits),
             }
         }
     }
     let mut out: Vec<(usize, ItemStats)> = aggs
         .into_iter()
-        .map(|((rule, item, status), agg)| {
+        .map(|((rule, item), agg)| {
             let ev = &evaluated[*rule];
-            let stats = &rules[*rule];
-            let promoted_rule = (*status == RuleStatus::Experimental
-                && ev.mode == Mode::Default
-                && ev.meta.status == RuleStatus::Stable)
-                .then(|| {
-                    Outcome::new(
-                        Severity::Info,
-                        stats.human.fired + agg.human_new,
-                        stats.human.docs,
-                        stats.ai.fired + agg.ai_new,
-                        stats.ai.docs,
-                    )
-                });
             let mut notations: Vec<(String, usize)> = agg.notations.into_iter().collect();
             notations.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let human = agg.human.rate(corpus.human.docs, corpus.human.characters);
+            let ai = agg.ai.rate(corpus.ai.docs, corpus.ai.characters);
+            let measured_signal = agg
+                .signal
+                .and_then(|_| SIGNAL_CRITERIA.measure(human.fired, human.docs, ai.fired, ai.docs));
             let stats = ItemStats {
                 rule_id: ev.meta.id,
                 rule_name: ev.meta.name,
@@ -1491,11 +1436,11 @@ fn item_stats(
                     .take(ITEM_EXAMPLES)
                     .map(|(n, _)| n)
                     .collect(),
-                status: *status,
                 severity: agg.severity.unwrap_or(Severity::Info),
-                human: agg.human.rate(corpus.human.docs, corpus.human.characters),
-                ai: agg.ai.rate(corpus.ai.docs, corpus.ai.characters),
-                promoted_rule,
+                signal: agg.signal,
+                measured_signal,
+                human,
+                ai,
             };
             (*rule, stats)
         })
@@ -1505,98 +1450,63 @@ fn item_stats(
             .then(b.ai.fired.cmp(&a.ai.fired))
             .then(a.human.fired.cmp(&b.human.fired))
             .then_with(|| a.item.cmp(&b.item))
-            .then(
-                (a.status == RuleStatus::Experimental).cmp(&(b.status == RuleStatus::Experimental)),
-            )
     });
     out.into_iter().map(|(_, item)| item).collect()
 }
 
-fn promotions(
-    options: &CalibrateOptions,
+/// 宣言した手掛かりの強さと、測った強さが食い違うルールと項目 (ルールの順、項目は `items` の順)。
+/// 件数が足りず測れなかったものは、食い違いとせずに別に数える。
+fn signal_reviews(
     evaluated: &[Evaluated],
     rules: &[RuleStats],
-    thresholds: &[ThresholdSweep],
     items: &[ItemStats],
-) -> Vec<Promotion> {
-    let (target, min_detection) = (options.target_fp, options.min_detection);
-    let candidate = |ev: &Evaluated,
-                     item: Option<ItemSummary>,
-                     threshold: Option<ThresholdChange>,
-                     outcome: Outcome,
-                     basis: Basis| Promotion {
-        rule_id: ev.meta.id,
-        rule_name: ev.meta.name,
-        item,
-        threshold,
-        small_sample: !outcome.confirmed(target),
-        outcome,
-        basis,
-    };
+) -> (Vec<SignalReview>, Unmeasured) {
     let mut out = Vec::new();
-    for (r, ev) in evaluated.iter().enumerate() {
-        if ev.meta.status != RuleStatus::Experimental || !ev.judged() {
+    let mut unmeasured = Unmeasured::default();
+    for (ev, stats) in evaluated.iter().zip(rules) {
+        if !ev.judged() {
             continue;
         }
-        // 重大度を問わない率で判定する (情報だけのルールは、警告以上で数えると 0% に見えるため)
-        let current = rules[r].outcome();
-        if current.promotable(target, min_detection) {
-            out.push(candidate(ev, None, None, current, Basis::All));
+        let Some(declared) = stats.signal else {
             continue;
+        };
+        match stats.measured_signal {
+            None => unmeasured.rules.push(ev.meta.id),
+            Some(measured) if measured != declared => out.push(SignalReview {
+                rule_id: ev.meta.id,
+                rule_name: ev.meta.name,
+                item: None,
+                declared,
+                measured,
+                outcome: stats.outcome_at(stats.calibration_basis),
+            }),
+            Some(_) => {}
         }
-        // 指摘するかどうかを決める閾値が 1 つだけのルールは、閾値を変えれば条件を満たすかも見る
-        // (複数あるルールは、キーごとの率がルール全体の率と一致しないので見ない。重大度の
-        // 切り替えを決める閾値は、指摘するかどうかを変えないので数えない)
-        let sweeps: Vec<&ThresholdSweep> = thresholds
-            .iter()
-            .filter(|t| t.rule_id == ev.meta.id && t.switches_to.is_none())
-            .collect();
-        if let [sweep] = sweeps.as_slice()
-            && let Some(suggested) = &sweep.suggested
-            && sweep
-                .current
-                .as_ref()
-                .is_none_or(|c| !same(c.threshold, suggested.threshold))
-            && suggested.holdout.promotable(target, min_detection)
-        {
-            let change = ThresholdChange {
-                key: sweep.key,
-                from: sweep.current.as_ref().map(|c| c.threshold),
-                to: suggested.threshold,
+        for item in items.iter().filter(|i| i.rule_id == ev.meta.id) {
+            let Some(declared) = item.signal else {
+                continue;
             };
-            out.push(candidate(
-                ev,
-                None,
-                Some(change),
-                suggested.holdout.clone(),
-                Basis::Holdout,
-            ));
+            match item.measured_signal {
+                None => unmeasured.items += 1,
+                Some(measured) if measured != declared => out.push(SignalReview {
+                    rule_id: ev.meta.id,
+                    rule_name: ev.meta.name,
+                    item: Some(ItemSummary::of(item)),
+                    declared,
+                    measured,
+                    outcome: Outcome::new(
+                        Severity::Info,
+                        item.human.fired,
+                        item.human.docs,
+                        item.ai.fired,
+                        item.ai.docs,
+                    ),
+                }),
+                Some(_) => {}
+            }
         }
     }
-    for item in items {
-        let Some(after) = &item.promoted_rule else {
-            continue;
-        };
-        let Some(ev) = evaluated.iter().find(|ev| ev.meta.id == item.rule_id) else {
-            continue;
-        };
-        let human_rate = item.human.rate.unwrap_or(0.0);
-        let ai_rate = item.ai.rate.unwrap_or(0.0);
-        if ev.judged()
-            && item.ai.fired >= MIN_ITEM_AI_DOCS
-            && ai_rate >= MIN_ITEM_LIFT * human_rate
-            && after.usable(target)
-        {
-            out.push(candidate(
-                ev,
-                Some(ItemSummary::of(item)),
-                None,
-                after.clone(),
-                Basis::All,
-            ));
-        }
-    }
-    out
+    (out, unmeasured)
 }
 
 fn reviews(
@@ -1608,7 +1518,7 @@ fn reviews(
     let target = options.target_fp;
     let mut out = Vec::new();
     for (r, ev) in evaluated.iter().enumerate() {
-        if ev.meta.status != RuleStatus::Stable || !ev.judged() || ev.mode != Mode::Default {
+        if !ev.judged() {
             continue;
         }
         let at_basis = rules[r].outcome_at(ev.basis);
@@ -1634,12 +1544,7 @@ fn reviews(
         };
         let mut human_items: Vec<&ItemStats> = items
             .iter()
-            .filter(|i| {
-                i.rule_id == ev.meta.id
-                    && i.status == RuleStatus::Stable
-                    && i.human.fired > 0
-                    && relevant(i.severity)
-            })
+            .filter(|i| i.rule_id == ev.meta.id && i.human.fired > 0 && relevant(i.severity))
             .collect();
         human_items.sort_by(|a, b| {
             b.human
@@ -1778,7 +1683,8 @@ pub fn render_text(report: &CalibrationReport, out: &mut dyn Write) -> io::Resul
         let mut rows = vec![
             [
                 "ID",
-                "状態",
+                "強さ",
+                "測った強さ",
                 "基準",
                 "誤検知 全",
                 "誤検知 基準",
@@ -1793,7 +1699,8 @@ pub fn render_text(report: &CalibrationReport, out: &mut dyn Write) -> io::Resul
             let basis = r.calibration_basis;
             rows.push(vec![
                 r.id.to_string(),
-                status_label(r.status).to_string(),
+                signal_level(r.signal).to_string(),
+                measured_level(r.signal, r.measured_signal).to_string(),
                 basis.label_ja().to_string(),
                 pct(r.human.rate),
                 pct(r.human.rate_at_least(basis)),
@@ -1802,7 +1709,7 @@ pub fn render_text(report: &CalibrationReport, out: &mut dyn Write) -> io::Resul
                 r.name.to_string(),
             ]);
         }
-        write_columns(out, "  ", &rows, &[3, 4, 5, 6])?;
+        write_columns(out, "  ", &rows, &[4, 5, 6, 7])?;
     }
 
     writeln!(out)?;
@@ -1859,16 +1766,7 @@ pub fn render_text(report: &CalibrationReport, out: &mut dyn Write) -> io::Resul
     }
 
     writeln!(out)?;
-    writeln!(out, "校正済みに上げる候補 ({})", promotion_condition(s))?;
-    if report.promotions.is_empty() {
-        writeln!(out, "  (なし)")?;
-    }
-    for p in &report.promotions {
-        writeln!(out, "  - {}", promotion_text(p, s.target_fp))?;
-    }
-
-    writeln!(out)?;
-    writeln!(out, "見直しが必要な校正済みルール")?;
+    writeln!(out, "見直しが必要なルール")?;
     if report.reviews.is_empty() {
         writeln!(out, "  (なし)")?;
     }
@@ -1899,6 +1797,22 @@ pub fn render_text(report: &CalibrationReport, out: &mut dyn Write) -> io::Resul
                 )?;
             }
         }
+    }
+
+    writeln!(out)?;
+    writeln!(
+        out,
+        "手掛かりの強さの見直し (宣言した強さと測った強さが食い違うもの。{})",
+        signal_criteria_text(&s.signal_criteria)
+    )?;
+    if report.signal_reviews.is_empty() {
+        writeln!(out, "  (なし)")?;
+    }
+    for r in &report.signal_reviews {
+        writeln!(out, "  - {}", signal_review_text(r))?;
+    }
+    if let Some(line) = unmeasured_text(&report.unmeasured) {
+        writeln!(out, "  {line}")?;
     }
 
     if !report.errors.is_empty() {
@@ -1938,18 +1852,19 @@ pub fn render_markdown(report: &CalibrationReport, out: &mut dyn Write) -> io::R
     writeln!(out)?;
     writeln!(
         out,
-        "| ID | ルール | 状態 | 基準 | 誤検知 全 | 誤検知 基準 | 検出 全 | 検出 基準 |"
+        "| ID | ルール | 強さ | 測った強さ | 基準 | 誤検知 全 | 誤検知 基準 | 検出 全 | 検出 基準 |"
     )?;
-    writeln!(out, "|---|---|---|---|---:|---:|---:|---:|")?;
+    writeln!(out, "|---|---|---|---|---|---:|---:|---:|---:|")?;
     for r in &report.rules {
         let basis = r.calibration_basis;
         writeln!(
             out,
-            "| {} | {} ({}) | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} ({}) | {} | {} | {} | {} | {} | {} | {} |",
             r.id,
             cell(r.name),
             cell(r.title),
-            status_label(r.status),
+            signal_level(r.signal),
+            measured_level(r.signal, r.measured_signal),
             basis.label_ja(),
             pct(r.human.rate),
             pct(r.human.rate_at_least(basis)),
@@ -2001,19 +1916,7 @@ pub fn render_markdown(report: &CalibrationReport, out: &mut dyn Write) -> io::R
     }
 
     writeln!(out)?;
-    writeln!(out, "## 校正済みに上げる候補")?;
-    writeln!(out)?;
-    writeln!(out, "条件: {}。", promotion_condition(s))?;
-    writeln!(out)?;
-    if report.promotions.is_empty() {
-        writeln!(out, "なし")?;
-    }
-    for p in &report.promotions {
-        writeln!(out, "- {}", cell(&promotion_text(p, s.target_fp)))?;
-    }
-
-    writeln!(out)?;
-    writeln!(out, "## 見直しが必要な校正済みルール")?;
+    writeln!(out, "## 見直しが必要なルール")?;
     writeln!(out)?;
     if report.reviews.is_empty() {
         writeln!(out, "なし")?;
@@ -2049,6 +1952,26 @@ pub fn render_markdown(report: &CalibrationReport, out: &mut dyn Write) -> io::R
         }
     }
 
+    writeln!(out)?;
+    writeln!(out, "## 手掛かりの強さの見直し")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "宣言した強さと、このコーパスで測った強さが食い違うもの。{}。",
+        signal_criteria_text(&s.signal_criteria)
+    )?;
+    writeln!(out)?;
+    if report.signal_reviews.is_empty() {
+        writeln!(out, "なし")?;
+    }
+    for r in &report.signal_reviews {
+        writeln!(out, "- {}", cell(&signal_review_text(r)))?;
+    }
+    if let Some(line) = unmeasured_text(&report.unmeasured) {
+        writeln!(out)?;
+        writeln!(out, "{line}")?;
+    }
+
     if !report.errors.is_empty() {
         writeln!(out)?;
         writeln!(out, "## 読めなかった入力")?;
@@ -2062,16 +1985,10 @@ pub fn render_markdown(report: &CalibrationReport, out: &mut dyn Write) -> io::R
 
 fn settings_line(s: &Settings) -> String {
     format!(
-        "ジャンル {} / 目標の誤検知率 {} / 検証に回す割合 {} / 昇格に要る検出率 {} / 実験的なルールと語句を{}",
+        "ジャンル {} / 目標の誤検知率 {} / 検証に回す割合 {}",
         s.genre,
         pct(Some(s.target_fp)),
-        pct(Some(s.holdout)),
-        pct(Some(s.min_detection)),
-        if s.include_experimental {
-            "含む"
-        } else {
-            "含まない"
-        }
+        pct(Some(s.holdout))
     )
 }
 
@@ -2093,14 +2010,6 @@ fn corpus_line(corpus: &Corpus) -> String {
     )
 }
 
-fn promotion_condition(s: &Settings) -> String {
-    format!(
-        "重大度を問わない誤検知 {} 以下、検出 {} 以上。誤検知の 95% 上限が目標を超える候補には注記を付ける",
-        pct(Some(s.target_fp)),
-        pct(Some(s.min_detection))
-    )
-}
-
 /// 下限の重大度の呼び方 (「重大度を問わない」「警告以上」「重大」)。
 fn at_least_label(severity: Severity) -> &'static str {
     match severity {
@@ -2119,47 +2028,54 @@ fn switch_note(severity: Severity) -> String {
     )
 }
 
-fn promotion_text(p: &Promotion, target_fp: f64) -> String {
-    let mut text = if let Some(item) = &p.item {
-        format!(
-            "{} {} の項目「{}」({}{}、生成 {} 件・人 {} 件): 上げた後の {} は {}",
-            p.rule_id,
-            p.rule_name,
+/// 手掛かりの強さの基準の説明。
+fn signal_criteria_text(c: &SignalCriteria) -> String {
+    format!(
+        "測った強さは、人の文書の割合 h と生成文書の割合 a から決める: 指摘された文書が合わせて {} 件未満なら測れない、生成 {} 件以上で a が h の {} 倍以上かつ h が {} 以下なら強い、人 {} 件以上で a が h の {} 倍以下なら弱い、ほかは中程度",
+        c.min_docs,
+        c.strong_min_ai_docs,
+        num(c.strong_lift),
+        pct(Some(c.strong_max_human_rate)),
+        c.weak_min_human_docs,
+        num(c.weak_max_lift)
+    )
+}
+
+fn signal_review_text(r: &SignalReview) -> String {
+    let what = match &r.item {
+        Some(item) => format!(
+            "{} {} の項目「{}」({}{})",
+            r.rule_id,
+            r.rule_name,
             item.item,
             examples_text(&item.item, &item.examples),
-            item.severity.label_ja(),
-            item.ai_docs,
-            item.human_docs,
-            p.rule_id,
-            outcome_text(&p.outcome)
-        )
-    } else {
-        match &p.threshold {
-            Some(change) => format!(
-                "{} {}: {} を {} から {} にすると {} (検証用の文書)",
-                p.rule_id,
-                p.rule_name,
-                change.key,
-                change.from.map_or_else(|| "—".to_string(), num),
-                num(change.to),
-                outcome_text(&p.outcome)
-            ),
-            None => format!(
-                "{} {}: {} (全文書・現在の閾値)",
-                p.rule_id,
-                p.rule_name,
-                outcome_text(&p.outcome)
-            ),
-        }
+            item.severity.label_ja()
+        ),
+        None => format!("{} {}", r.rule_id, r.rule_name),
     };
-    if p.small_sample {
-        text.push_str(&format!(
-            "。件数が少なく、目標の {} 以下と言い切れません (95% 上限 {})",
-            pct(Some(target_fp)),
-            pct(p.outcome.false_positive_upper95)
-        ));
+    format!(
+        "{what}: 宣言は{}、測った強さは{} ({}。{})",
+        r.declared.level_ja(),
+        r.measured.level_ja(),
+        at_least_label(r.outcome.at_least),
+        outcome_text(&r.outcome)
+    )
+}
+
+/// 測れなかったルールと項目の要約。なければ `None`。
+fn unmeasured_text(u: &Unmeasured) -> Option<String> {
+    if u.rules.is_empty() && u.items == 0 {
+        return None;
     }
-    text
+    let rules = if u.rules.is_empty() {
+        "なし".to_string()
+    } else {
+        u.rules.join("・")
+    };
+    Some(format!(
+        "件数が足りず測れなかったもの: ルール {rules}、語句の項目 {} 件",
+        u.items
+    ))
 }
 
 fn review_text(r: &Review, target_fp: f64) -> String {
@@ -2272,10 +2188,17 @@ fn thousands(n: usize) -> String {
     out
 }
 
-fn status_label(status: RuleStatus) -> &'static str {
-    match status {
-        RuleStatus::Stable => "校正済み",
-        RuleStatus::Experimental => "実験的",
+/// 宣言した強さの表示 (持たないルールは「-」)。
+fn signal_level(signal: Option<Signal>) -> &'static str {
+    signal.map_or("-", Signal::level_ja)
+}
+
+/// 測った強さの表示 (持たないルールは「-」、測れなかったら「測定不足」)。
+fn measured_level(signal: Option<Signal>, measured: Option<Signal>) -> &'static str {
+    match (signal, measured) {
+        (None, _) => "-",
+        (Some(_), None) => "測定不足",
+        (Some(_), Some(m)) => m.level_ja(),
     }
 }
 
@@ -2392,17 +2315,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 見直しと昇格 (合成した件数で)
+    // 見直しと手掛かりの強さ (合成した件数で)
     // -----------------------------------------------------------------------
 
     macro_rules! test_meta {
-        ($id:literal, $status:expr, $severity:expr) => {{
+        ($id:literal, $signal:expr, $severity:expr) => {{
             static META: RuleMeta = RuleMeta {
                 id: $id,
                 name: $id,
                 title: "テスト用",
                 lane: Lane::Slop,
-                status: $status,
+                signal: Some($signal),
                 default_severity: $severity,
                 summary: "テスト用",
                 explanation: "",
@@ -2411,15 +2334,11 @@ mod tests {
         }};
     }
 
-    /// 昇格・見直しの対象になる、組み込みの AI 臭さのルール。
+    /// 見直しと手掛かりの強さの対象になる、組み込みの AI 臭さのルール。
     fn judged(meta: &'static RuleMeta, basis: Severity) -> Evaluated {
         Evaluated {
             entry: 0,
             meta,
-            mode: match meta.status {
-                RuleStatus::Stable => Mode::Default,
-                RuleStatus::Experimental => Mode::Experimental,
-            },
             builtin: true,
             options: Vec::new(),
             basis,
@@ -2472,12 +2391,12 @@ mod tests {
         use ReviewReason::*;
         use Severity::*;
         let evaluated = [
-            judged(test_meta!("A01", RuleStatus::Stable, Warning), Warning),
-            judged(test_meta!("A02", RuleStatus::Stable, Warning), Warning),
-            judged(test_meta!("A03", RuleStatus::Stable, Info), Info),
-            judged(test_meta!("A04", RuleStatus::Stable, Warning), Error),
-            judged(test_meta!("A05", RuleStatus::Stable, Warning), Warning),
-            judged(test_meta!("A06", RuleStatus::Stable, Warning), Warning),
+            judged(test_meta!("A01", Signal::Strong, Warning), Warning),
+            judged(test_meta!("A02", Signal::Strong, Warning), Warning),
+            judged(test_meta!("A03", Signal::Strong, Info), Info),
+            judged(test_meta!("A04", Signal::Strong, Warning), Error),
+            judged(test_meta!("A05", Signal::Strong, Warning), Warning),
+            judged(test_meta!("A06", Signal::Strong, Warning), Warning),
         ];
         let docs = severity_docs(
             40,
@@ -2546,64 +2465,112 @@ mod tests {
             text.contains("人の文書の内訳: 情報 0・警告 20・重大 0"),
             "{text}"
         );
-        assert!(text.contains("直ちに実験的に戻す話ではなく"), "{text}");
+        assert!(text.contains("直ちにルールを止める話ではなく"), "{text}");
     }
 
     #[test]
-    fn promotions_use_the_rate_of_every_severity() {
+    fn signal_criteria_classify_documents_at_the_boundaries() {
+        let m = |h: usize, a: usize| SIGNAL_CRITERIA.measure(h, 100, a, 100);
+        // 合わせて 5 件に届かなければ測れない
+        assert_eq!(m(2, 2), None);
+        assert_eq!(m(0, 5), Some(Signal::Strong));
+        // 強い: 生成が 5 件以上、人の 3 倍以上、人が 5% 以下 (ちょうどを含む)
+        assert_eq!(m(1, 4), Some(Signal::Moderate), "生成が 5 件に届かない");
+        assert_eq!(m(2, 6), Some(Signal::Strong), "ちょうど 3 倍");
+        assert_eq!(m(2, 5), Some(Signal::Moderate), "3 倍に届かない");
+        assert_eq!(m(5, 15), Some(Signal::Strong), "人がちょうど 5%");
+        assert_eq!(m(6, 18), Some(Signal::Moderate), "人が 5% を超える");
+        // 弱い: 人が 5 件以上で、生成が人の 1.5 倍以下 (ちょうどを含む)
+        assert_eq!(m(10, 15), Some(Signal::Weak), "ちょうど 1.5 倍");
+        assert_eq!(m(10, 16), Some(Signal::Moderate));
+        assert_eq!(m(20, 3), Some(Signal::Weak), "人のほうが多い");
+        assert_eq!(m(4, 1), Some(Signal::Moderate), "人が 5 件に届かない");
+        // 群の大きさが違っても割合で比べる (人 2.5%・生成 7.5% はちょうど 3 倍)
+        assert_eq!(
+            SIGNAL_CRITERIA.measure(10, 400, 15, 200),
+            Some(Signal::Strong)
+        );
+        assert_eq!(SIGNAL_CRITERIA.measure(10, 400, 7, 200), Some(Signal::Weak));
+        // どちらかの群に文書がなければ測れない
+        assert_eq!(SIGNAL_CRITERIA.measure(0, 0, 10, 100), None);
+        assert_eq!(SIGNAL_CRITERIA.measure(10, 100, 0, 0), None);
+    }
+
+    #[test]
+    fn signals_are_measured_on_the_calibration_basis_and_compared_with_the_declaration() {
         use Severity::*;
         let evaluated = [
-            // 情報だけのルール: 警告以上で数えると人も生成も 0% に見える
-            judged(test_meta!("B01", RuleStatus::Experimental, Info), Info),
-            // 警告のルール: 人の文書で 1 件も出ない
-            judged(
-                test_meta!("B02", RuleStatus::Experimental, Warning),
-                Warning,
-            ),
-            // 警告のルールでも、情報の指摘で人の文書に多く出るなら上げない
-            judged(
-                test_meta!("B03", RuleStatus::Experimental, Warning),
-                Warning,
-            ),
+            // 情報のルール: 人 50%・生成 83% は 1.5 倍を超えるので中程度 (宣言は弱い)
+            judged(test_meta!("B01", Signal::Weak, Info), Info),
+            // 警告のルール: 人の文書に警告が 1 件も出ないので強い
+            judged(test_meta!("B02", Signal::Strong, Warning), Warning),
+            // 人の文書の情報の指摘は、基準 (警告以上) の強さに数えない
+            judged(test_meta!("B03", Signal::Strong, Warning), Warning),
+            // 合わせて 3 件しかないので測れない
+            judged(test_meta!("B04", Signal::Moderate, Info), Info),
         ];
         let per_rule = [
             ([30, 0, 0], [50, 0, 0]),
             ([0, 0, 0], [0, 40, 0]),
             ([30, 0, 0], [0, 40, 0]),
+            ([1, 0, 0], [2, 0, 0]),
         ];
         let report = synthetic_report(&evaluated, &severity_docs(60, &per_rule));
-        let promoted: Vec<(&str, bool)> = report
-            .promotions
+        let measured: Vec<(Option<Signal>, Option<Signal>)> = report
+            .rules
             .iter()
-            .map(|p| (p.rule_id, p.small_sample))
+            .map(|r| (r.signal, r.measured_signal))
             .collect();
-        // 60 件で 0 件なら、95% 上限 (4.3%) も目標以下
-        assert_eq!(promoted, vec![("B02", false)]);
-        let p = &report.promotions[0];
-        assert_eq!(p.outcome.at_least, Info);
-        assert!(p.outcome.false_positive_upper95.unwrap() <= 0.05);
+        assert_eq!(
+            measured,
+            vec![
+                (Some(Signal::Weak), Some(Signal::Moderate)),
+                (Some(Signal::Strong), Some(Signal::Strong)),
+                (Some(Signal::Strong), Some(Signal::Strong)),
+                (Some(Signal::Moderate), None),
+            ]
+        );
+        let reviews: Vec<(&str, Signal, Signal)> = report
+            .signal_reviews
+            .iter()
+            .map(|r| (r.rule_id, r.declared, r.measured))
+            .collect();
+        assert_eq!(reviews, vec![("B01", Signal::Weak, Signal::Moderate)]);
+        assert_eq!(report.signal_reviews[0].outcome.at_least, Info);
+        assert_eq!(report.unmeasured.rules, vec!["B04"]);
 
-        // 20 件では、0 件でも 95% 上限が 11.9% で目標を超える
-        let report = synthetic_report(&evaluated, &severity_docs(20, &per_rule));
-        let promoted: Vec<(&str, bool)> = report
-            .promotions
-            .iter()
-            .map(|p| (p.rule_id, p.small_sample))
-            .collect();
-        assert_eq!(promoted, vec![("B02", true)]);
         let mut text = Vec::new();
         render_text(&report, &mut text).unwrap();
         let text = String::from_utf8(text).unwrap();
+        assert!(text.contains("手掛かりの強さの見直し"), "{text}");
         assert!(
-            text.contains("件数が少なく、目標の 5.0% 以下と言い切れません (95% 上限 11.9%)"),
+            text.contains("B01 B01: 宣言は弱い、測った強さは中程度 (重大度を問わない。誤検知 50.0% (30/60) 検出 83.3% (50/60))"),
             "{text}"
         );
-        assert!(text.contains("最低 52 件要ります"), "{:?}", report.warnings);
+        assert!(
+            text.contains("件数が足りず測れなかったもの: ルール B04、語句の項目 0 件"),
+            "{text}"
+        );
         let mut json = Vec::new();
         render_json(&report, &mut json).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-        assert_eq!(value["promotions"][0]["smallSample"], true);
-        assert_eq!(value["promotions"][0]["outcome"]["atLeast"], "info");
+        assert_eq!(value["signalReviews"][0]["declared"], "weak");
+        assert_eq!(value["signalReviews"][0]["measured"], "moderate");
+        assert_eq!(value["unmeasured"]["rules"][0], "B04");
+        assert_eq!(value["rules"][3]["measuredSignal"], serde_json::Value::Null);
+        assert_eq!(value["settings"]["signalCriteria"]["minDocs"], 5);
+        assert_eq!(value["settings"]["signalCriteria"]["strongLift"], 3.0);
+
+        // 人の文書が 20 件では、0 件でも 95% 上限が目標を超えると警告する
+        let report = synthetic_report(&evaluated, &severity_docs(20, &per_rule));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("最低 52 件要ります")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2615,7 +2582,7 @@ mod tests {
         name: "STUB",
         title: "テスト用",
         lane: Lane::Slop,
-        status: RuleStatus::Experimental,
+        signal: Some(Signal::Moderate),
         default_severity: Severity::Info,
         summary: "テスト用",
         explanation: "",
@@ -2625,7 +2592,6 @@ mod tests {
         Evaluated {
             entry: 0,
             meta: &STUB,
-            mode: Mode::Experimental,
             builtin: true,
             options: vec![("k", current)],
             basis: Severity::Info,
@@ -2875,8 +2841,13 @@ mod tests {
 
         assert_eq!(report.rules.len(), 1);
         let r01 = &report.rules[0];
-        assert_eq!((r01.id, r01.mode), ("R01", Mode::Default));
+        assert_eq!(r01.id, "R01");
         assert_eq!(r01.calibration_basis, Severity::Warning);
+        // 人 0 件・生成 12 件 (警告以上) は強い手掛かりで、宣言と一致する
+        assert_eq!(
+            (r01.signal, r01.measured_signal),
+            (Some(Signal::Strong), Some(Signal::Strong))
+        );
         assert_eq!((r01.human.fired, r01.ai.fired), (0, 12));
         assert_eq!((r01.human.rate, r01.ai.rate), (Some(0.0), Some(1.0)));
         assert_eq!(r01.human.per_1000_chars, Some(0.0));
@@ -2908,7 +2879,7 @@ mod tests {
         assert_eq!((current.all.human_fired, current.all.ai_fired), (0, 12));
         // 現在の閾値で誤検知 0・検出 100% なので、動かす理由がない
         assert_eq!(sweep.suggested.as_ref().unwrap().threshold, -0.50);
-        assert!(report.promotions.is_empty());
+        assert!(report.signal_reviews.is_empty());
         assert!(report.reviews.is_empty());
         assert!(!report.warnings.iter().any(|w| w.contains("1 群")));
 
@@ -2933,45 +2904,26 @@ mod tests {
         )
     }
 
-    /// 接続詞で始まる段落と「過言ではない」を含む生成文書 (R09 と P01 の実験的な項目が出る)。
+    /// 接続詞で始まる段落と「過言ではない」を含む生成文書 (R09 と、P01 の情報の項目が出る)。
     fn conjunction_doc(i: usize) -> String {
         format!(
             "最初の段落に{i}番目の結論を書く。\n\nしかし、例外もある。\n\nまた、費用の問題もある。\n\nこれは革命と言っても過言ではない。\n"
         )
     }
 
-    fn promotion_report() -> CalibrationReport {
+    fn review_report() -> CalibrationReport {
         let dir = tempfile::tempdir().unwrap();
         write_docs(&dir.path().join("human"), (0..10).map(contrast_doc));
         write_docs(&dir.path().join("ai"), (0..10).map(conjunction_doc));
         calibrate(&corpus_options(dir.path(), only(&["R05", "R09", "P01"]))).unwrap()
     }
 
-    /// P01 の実験的な正規表現の項目。
+    /// P01 の情報の正規表現の項目。
     const OVERSTATEMENT: &str = "/(?:と言っても)?過言では(?:ない|ありません)/";
 
     #[test]
-    fn lists_promotion_candidates_and_rules_to_review() {
-        let report = promotion_report();
-        let promoted: Vec<(&str, Option<&str>, bool)> = report
-            .promotions
-            .iter()
-            .map(|p| {
-                (
-                    p.rule_id,
-                    p.item.as_ref().map(|i| i.item.as_str()),
-                    p.small_sample,
-                )
-            })
-            .collect();
-        // 人の文書 10 件で 0 件では、95% 上限が 21.3% なので注記が付く
-        assert!(promoted.contains(&("R09", None, true)), "{promoted:?}");
-        assert!(
-            promoted.contains(&("P01", Some(OVERSTATEMENT), true)),
-            "{promoted:?}"
-        );
-        assert_eq!(promoted.len(), 2, "{promoted:?}");
-
+    fn lists_rules_to_review_and_signal_mismatches() {
+        let report = review_report();
         // R05 は重大になる割合で校正したので、重大の指摘で数えて見直す
         let reviews: Vec<(&str, ReviewReason, Severity)> = report
             .reviews
@@ -2992,26 +2944,42 @@ mod tests {
         assert_eq!(sweep.switches_to, Some(Severity::Error));
         assert_eq!(sweep.current.as_ref().unwrap().all.human_fired, 10);
 
+        // 人の文書にだけ重大で出た R05 は、宣言 (強い) と測った強さ (弱い) が食い違う。
+        // 生成文書にだけ出た R09 は強いまま。P01 は基準 (警告以上) の指摘がなく測れない
+        let rules: Vec<(&str, Signal, Signal)> = report
+            .signal_reviews
+            .iter()
+            .filter(|r| r.item.is_none())
+            .map(|r| (r.rule_id, r.declared, r.measured))
+            .collect();
+        assert_eq!(rules, vec![("R05", Signal::Strong, Signal::Weak)]);
+        let r09 = report.rules.iter().find(|r| r.id == "R09").unwrap();
+        assert_eq!(r09.measured_signal, Some(Signal::Strong));
+        assert!(report.unmeasured.rules.contains(&"P01"));
+
         let item = report
             .items
             .iter()
             .find(|i| i.item == OVERSTATEMENT)
             .unwrap();
-        assert_eq!(item.status, RuleStatus::Experimental);
+        assert!(item.signal.is_some());
+        assert_eq!(item.measured_signal, Some(Signal::Strong));
         assert_eq!(item.examples, vec!["と言っても過言ではない"]);
         assert_eq!(
             (item.severity, item.human.fired, item.ai.fired),
             (Severity::Info, 0, 10)
         );
         assert_eq!(item.ai.by_severity.info.hits, 10);
-        let after = item.promoted_rule.as_ref().unwrap();
-        assert_eq!(
-            (after.at_least, after.human_fired, after.ai_fired),
-            (Severity::Info, 0, 10)
-        );
-        // P01 の校正済みの項目は、どちらの文書にも出ていない
+        // P01 の警告の項目は、どちらの文書にも出ていない (情報の項目だけが出た)
         let p01 = report.rules.iter().find(|r| r.id == "P01").unwrap();
-        assert_eq!((p01.human.fired, p01.ai.fired), (0, 0));
+        assert_eq!((p01.human.fired, p01.ai.fired), (0, 10));
+        assert_eq!(
+            (
+                p01.human.at_least.warning.fired,
+                p01.ai.at_least.warning.fired
+            ),
+            (0, 0)
+        );
     }
 
     #[test]
@@ -3027,9 +2995,7 @@ mod tests {
             &dir.path().join("ai"),
             (0..10).map(|i| format!("{i}件目の本文を書いた。\n")),
         );
-        let mut options = corpus_options(dir.path(), only(&["P12"]));
-        options.engine.experimental = true;
-        let report = calibrate(&options).unwrap();
+        let report = calibrate(&corpus_options(dir.path(), only(&["P12"]))).unwrap();
         let rows: Vec<&ItemStats> = report.items.iter().filter(|i| i.rule_id == "P12").collect();
         assert_eq!(rows.len(), 1, "{rows:?}");
         let row = rows[0];
@@ -3043,9 +3009,12 @@ mod tests {
         assert_eq!(row.severity, Severity::Info);
         assert_eq!((row.human.fired, row.human.by_severity.info.fired), (7, 7));
         assert_eq!(row.human.docs, 10);
+        // 読みやすさのルールは手掛かりの強さを持たない
+        assert_eq!((row.signal, row.measured_signal), (None, None));
 
-        // 読みやすさの実験的ルールは、AI 臭さの見直し候補には入れない。
+        // 読みやすさのルールは、AI 臭さの見直し候補には入れない。
         assert!(report.reviews.is_empty());
+        assert!(report.signal_reviews.is_empty());
     }
 
     #[test]
@@ -3087,28 +3056,32 @@ mod tests {
     }
 
     #[test]
-    fn experimental_items_are_skipped_when_not_requested() {
+    fn every_rule_runs_with_the_default_engine() {
         let dir = tempfile::tempdir().unwrap();
         write_docs(&dir.path().join("human"), (0..10).map(contrast_doc));
         write_docs(&dir.path().join("ai"), (0..10).map(conjunction_doc));
-        let mut options = corpus_options(dir.path(), EngineOptions::default());
-        options.include_experimental = false;
-        let report = calibrate(&options).unwrap();
-        assert!(report.rules.iter().all(|r| r.mode == Mode::Default));
-        assert!(report.rules.iter().all(|r| r.status == RuleStatus::Stable));
-        assert!(report.items.iter().all(|i| i.status == RuleStatus::Stable));
-        assert!(!report.rules.iter().any(|r| r.id == "R09"));
+        let report = calibrate(&corpus_options(dir.path(), EngineOptions::default())).unwrap();
+        let ids: Vec<&str> = report.rules.iter().map(|r| r.id).collect();
+        let unique: HashSet<&str> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "{ids:?}");
+        assert!(ids.contains(&"R09") && ids.contains(&"P01"), "{ids:?}");
+        for r in &report.rules {
+            assert_eq!(r.signal.is_some(), r.lane == Lane::Slop, "{}", r.id);
+            if r.signal.is_none() {
+                assert_eq!(r.measured_signal, None, "{}", r.id);
+            }
+        }
     }
 
     #[test]
     fn renders_text_markdown_and_json() {
-        let report = promotion_report();
+        let report = review_report();
         let mut text = Vec::new();
         render(&report, ReportFormat::Text, &mut text).unwrap();
         let text = String::from_utf8(text).unwrap();
-        assert!(text.contains("校正済みに上げる候補"), "{text}");
+        assert!(text.contains("手掛かりの強さの見直し"), "{text}");
         assert!(
-            text.contains("項目「/(?:と言っても)?過言では(?:ない|ありません)/」(例「と言っても過言ではない」、情報、生成 10 件・人 0 件)"),
+            text.contains("R05 ANTITHESIS_REPETITION: 宣言は強い、測った強さは弱い (重大。誤検知 100.0% (10/10) 検出 0.0% (0/10))"),
             "{text}"
         );
         assert!(
@@ -3129,21 +3102,22 @@ mod tests {
             text.contains("この閾値が決めるのは重大にするかどうかで"),
             "{text}"
         );
-        assert!(text.contains("95% 上限 21.3%"), "{text}");
+        assert!(text.contains("95% 上限が 21.3%"), "{text}");
 
         let mut md = Vec::new();
         render(&report, ReportFormat::Markdown, &mut md).unwrap();
         let md = String::from_utf8(md).unwrap();
         assert!(md.starts_with("# noslop calibrate の結果"), "{md}");
         assert!(md.contains("| R09 | PARAGRAPH_LEAD_CONJUNCTION"), "{md}");
-        assert!(md.contains("| R05 | ANTITHESIS_REPETITION (否定→肯定の対比の反復) | 校正済み | 重大 | 100.0% | 100.0% | 0.0% | 0.0% |"), "{md}");
-        assert!(md.contains("## 見直しが必要な校正済みルール"), "{md}");
+        assert!(md.contains("| R05 | ANTITHESIS_REPETITION (否定→肯定の対比の反復) | 強い | 弱い | 重大 | 100.0% | 100.0% | 0.0% | 0.0% |"), "{md}");
+        assert!(md.contains("## 見直しが必要なルール"), "{md}");
+        assert!(md.contains("## 手掛かりの強さの見直し"), "{md}");
         assert!(md.contains("### 誤検知が目標を超える"), "{md}");
 
         let mut json = Vec::new();
         render(&report, ReportFormat::Json, &mut json).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["schemaVersion"], 2);
         assert_eq!(value["settings"]["targetFp"], 0.05);
         let review = &value["reviews"][0];
         assert_eq!(review["reason"], "falsePositives");
@@ -3162,7 +3136,20 @@ mod tests {
         assert!(human["bySeverity"]["warning"]["fired"].is_number());
         assert!(human["atLeast"]["error"]["upper95"].is_number());
         assert!(value["items"][0]["examples"].is_array());
-        assert!(value["promotions"][0]["smallSample"].is_boolean());
+        assert!(value.get("promotions").is_none());
+        assert!(value["settings"].get("includeExperimental").is_none());
+        // 語句の項目の食い違い (P01 の情報の項目) も並ぶので、ルール全体の行を探す
+        let r05 = value["signalReviews"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["ruleId"] == "R05" && r["item"].is_null())
+            .unwrap();
+        assert_eq!(
+            (&r05["declared"], &r05["measured"]),
+            (&"strong".into(), &"weak".into())
+        );
+        assert!(value["rules"][0]["signal"].is_string());
     }
 
     #[test]
@@ -3221,10 +3208,6 @@ mod tests {
             },
             CalibrateOptions {
                 target_fp: 1.5,
-                ..base.clone()
-            },
-            CalibrateOptions {
-                min_detection: f64::NAN,
                 ..base.clone()
             },
             CalibrateOptions {

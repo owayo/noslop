@@ -7,7 +7,7 @@
 //! - `S` 構造: Markdown の体裁 (太字・箇条書き・見出し) を拾う ([`structure`])
 //!
 //! どの系統のルールも「AI 臭さ」(`Lane::Slop`) か「読みやすさ」(`Lane::Readability`) の
-//! どちらかのレーンに属し、校正状況 (`RuleStatus`) を持つ。
+//! どちらかのレーンに属する。AI 臭さのレーンのルールは、手掛かりの強さ (`Signal`) も持つ。
 
 pub mod custom;
 pub mod phrases;
@@ -17,7 +17,7 @@ pub mod structure;
 #[cfg(test)]
 pub mod testing;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::{Block, BlockKind, Document};
 use crate::genre::Genre;
 use crate::morph::DocMorphology;
@@ -32,8 +32,9 @@ pub struct RuleMeta {
     /// 日本語の短い名前 (「結論の押し付け」など)。
     pub title: &'static str,
     pub lane: Lane,
-    /// ルール全体の校正状況。語句ルールは項目ごとにも持つ。
-    pub status: RuleStatus,
+    /// 手掛かりの強さ。AI 臭さのレーンのルールは必ず持ち、読みやすさのレーンと独自ルールは持たない。
+    /// 指摘の既定の値で、語句ルールは項目ごとに、重大度で分かれるルールは指摘ごとに変えることがある。
+    pub signal: Option<Signal>,
     pub default_severity: Severity,
     /// 1 行の説明。
     pub summary: &'static str,
@@ -42,14 +43,14 @@ pub struct RuleMeta {
 }
 
 impl RuleMeta {
-    /// このルールの既定の重大度・レーン・ステータスで診断を作る。
+    /// このルールの既定の重大度・レーン・手掛かりの強さで診断を作る。
     pub fn diagnostic(&'static self, span: Span, message: impl Into<String>) -> Diagnostic {
         Diagnostic::new(
             self.id,
             self.name,
             self.default_severity,
             self.lane,
-            self.status,
+            self.signal,
             span,
             message,
         )
@@ -104,8 +105,6 @@ pub struct RuleContext<'a> {
     pub doc: &'a Document,
     pub genre: Genre,
     pub scope: Scope,
-    /// 実験的な項目 (未校正の語句など) も動かすか。
-    pub experimental: bool,
     /// 形態素 (辞書があるときだけ)。辞書を使うルールは、なければ辞書なしの近似で判定する。
     pub morph: Option<&'a DocMorphology<'a>>,
 }
@@ -116,7 +115,6 @@ impl<'a> RuleContext<'a> {
             doc,
             genre: Genre::General,
             scope: Scope::default(),
-            experimental: false,
             morph: None,
         }
     }
@@ -338,24 +336,38 @@ mod tests {
         }
     }
 
-    /// docs/rule-catalog.md のルールの表が、組み込みルールの ID・名前・レーン・状態と食い違わない。
-    /// ジャンルで状態が変わるルール (P27) は、表の状態の欄に両方の状態が書かれていればよい。
+    /// docs/rule-catalog.md のルールの表が、組み込みルールの ID・名前・レーン・手掛かりの強さと
+    /// 食い違わない。強さの欄は、ルールの既定の強さ (持たないルールは `-`) で始まる (語句や重大度で
+    /// 強さが分かれるルールは、その後ろに補足を書く)。
     #[test]
     fn the_rule_catalog_matches_the_builtin_rules() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let catalog = std::fs::read_to_string(root.join("docs/rule-catalog.md")).unwrap();
-        let tech = builtin_rules(Genre::Tech);
-        for (rule, tech_rule) in builtin_rules(Genre::General).iter().zip(&tech) {
-            let m = rule.meta();
-            let row = catalog
-                .lines()
-                .find(|line| line.starts_with(&format!("| {} | ", m.id)))
-                .unwrap_or_else(|| panic!("docs/rule-catalog.md に {} の行がない", m.id));
-            let cells: Vec<&str> = row.trim_matches('|').split(" | ").map(str::trim).collect();
-            assert_eq!(cells[1], format!("`{}`", m.name), "{row}");
-            assert_eq!(cells[3], m.lane.as_str(), "{row}");
-            for status in [m.status, tech_rule.meta().status] {
-                assert!(cells[4].contains(status.as_str()), "{row}");
+        for genre in Genre::ALL {
+            for rule in builtin_rules(genre) {
+                let m = rule.meta();
+                let row = catalog
+                    .lines()
+                    .find(|line| line.starts_with(&format!("| {} | ", m.id)))
+                    .unwrap_or_else(|| panic!("docs/rule-catalog.md に {} の行がない", m.id));
+                let cells: Vec<&str> = row.trim_matches('|').split(" | ").map(str::trim).collect();
+                assert_eq!(cells[1], format!("`{}`", m.name), "{row}");
+                assert_eq!(cells[3], m.lane.as_str(), "{row}");
+                assert!(
+                    cells[4].starts_with(m.signal.map_or("-", Signal::level_ja)),
+                    "{row}"
+                );
+            }
+        }
+    }
+
+    /// AI 臭さのレーンの組み込みルールは手掛かりの強さを持ち、読みやすさのレーンは持たない。
+    #[test]
+    fn only_slop_rules_carry_a_signal() {
+        for genre in Genre::ALL {
+            for rule in builtin_rules(genre) {
+                let m = rule.meta();
+                assert_eq!(m.signal.is_some(), m.lane == Lane::Slop, "{}", m.id);
             }
         }
     }

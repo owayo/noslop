@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::text;
 
@@ -15,9 +15,9 @@ static META: RuleMeta = RuleMeta {
     name: "REPEATED_EVALUATIVE_TRIAD",
     title: "評価語の三項列挙の反復",
     lane: Lane::Slop,
-    status: RuleStatus::Experimental,
+    signal: Some(Signal::Moderate),
     default_severity: Severity::Info,
-    summary: "短い評価語・抽象語の三項列挙が複数の文に繰り返し現れる箇所を指摘する (実験的)",
+    summary: "短い評価語・抽象語の三項列挙が複数の文に繰り返し現れる箇所を指摘する",
     explanation: r"### 何を見るか
 
 地の文で、評価語や抽象語を読点「、」「，」または中黒「・」でちょうど 3 項並べる形が、3 文以上 (min_count で変更可能。最小 2 文) に現れるときに指します。同じ文に複数あっても 1 文と数え、最初の三項列挙を指します。
@@ -39,7 +39,9 @@ static META: RuleMeta = RuleMeta {
 
 ### 根拠
 
-未校正の実験的なルールです。対象語と 3 文は暫定の値で、誤検知率は測っていません。人も使う列挙なので、単発では指摘しません。",
+対象語と 3 文は暫定の値で、校正していません。人も使う列挙なので、単発では指摘しません。
+
+人の文書 440 本と生成文書 390 本では反応がなく (人 0 本・生成 0 本) 強さを測れないため、手掛かりの強さは中程度としています。",
 };
 
 static TRIAD: LazyLock<Regex> = LazyLock::new(|| {

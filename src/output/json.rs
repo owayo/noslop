@@ -7,13 +7,16 @@
 //! 指摘をレーンごと・重大度ごとに数えた件数 (`files[].counts`) に置き換えた。指摘を足し合わせた
 //! 点数は、コーパスで人の文書と AI の文書を見分けられず、指摘があっても満点が出て安心材料と
 //! 誤読されていた。1 件ずつの指摘とその件数だけを出し、判断は書き手に委ねる。
+//!
+//! 版 3 では、試験的な区分をなくしたので、指摘の `status` (`stable` / `experimental`) と
+//! `settings.experimental` をやめ、AI 臭さのレーンの指摘に手掛かりの強さ (`signal`) を足した。
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::diagnostic::{Diagnostic, Lane, Metric, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Metric, Severity, Signal, Span};
 use crate::document::{Document, SourceFormat};
 use crate::engine::{FileError, FileReport, RunReport};
 use crate::morph::MorphologyStatus;
@@ -21,7 +24,7 @@ use crate::output::text::{Counts, SeverityCounts};
 use crate::output::{Position, RenderOptions, toon};
 
 /// JSON のスキーマの版。互換性のない変更をしたら上げる。
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// 列の数え方 (`columnUnit`)。列は Unicode スカラー値の個数で数える。
 pub(crate) const COLUMN_UNIT: &str = "unicode-scalar";
@@ -58,7 +61,6 @@ impl Tool {
 #[serde(rename_all = "camelCase")]
 struct Settings<'a> {
     genre: &'static str,
-    experimental: bool,
     fail_on: &'static str,
     /// 判定の方式 (形態素解析の辞書を使ったか)。
     morphology: &'a MorphologyStatus,
@@ -122,7 +124,8 @@ pub(crate) struct DiagnosticEntry<'a> {
     rule_name: &'a str,
     severity: Severity,
     lane: Lane,
-    status: RuleStatus,
+    /// 手掛かりの強さ (AI 臭さのレーンの組み込みルールだけ。ほかは `null`)。
+    signal: Option<Signal>,
     message: &'a str,
     hint: Option<&'a str>,
     range: Range,
@@ -199,7 +202,7 @@ impl<'a> DiagnosticEntry<'a> {
             rule_name: &d.rule_name,
             severity: d.severity,
             lane: d.lane,
-            status: d.status,
+            signal: d.signal,
             message: &d.message,
             hint: d.hint.as_deref(),
             range: Range::of(doc, d.span),
@@ -281,7 +284,6 @@ fn build<'a>(report: &'a RunReport, opts: &RenderOptions) -> Report<'a> {
         column_unit: COLUMN_UNIT,
         settings: Settings {
             genre: opts.genre.as_str(),
-            experimental: opts.experimental,
             fail_on: opts.fail_on.as_str(),
             morphology: &report.morphology,
         },
@@ -312,7 +314,7 @@ mod tests {
         let mut buf = Vec::new();
         render(&report, &RenderOptions::default(), &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
-        assert_eq!(v["schemaVersion"], 2);
+        assert_eq!(v["schemaVersion"], 3);
         assert_eq!(v["tool"]["name"], "noslop");
         assert_eq!(v["columnUnit"], "unicode-scalar");
         assert_eq!(v["settings"]["failOn"], "never");
@@ -320,7 +322,9 @@ mod tests {
         assert_eq!(d["ruleId"], "T01");
         assert_eq!(d["severity"], "warning");
         assert_eq!(d["lane"], "slop");
-        assert_eq!(d["status"], "stable");
+        assert_eq!(d["signal"], "strong");
+        assert!(d.get("status").is_none());
+        assert!(v["settings"].get("experimental").is_none());
         assert_eq!(d["range"]["start"]["line"], 3);
         assert_eq!(d["range"]["start"]["column"], 4);
         assert_eq!(d["excerpt"], "これは言えるでしょう。");
@@ -361,12 +365,22 @@ mod tests {
             "抑制した指摘は数えず、0 件のレーンと重大度も省かない"
         );
         assert_eq!(v["summary"]["suppressed"], 1);
+        let readability = v["files"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["ruleId"] == "T03")
+            .unwrap();
+        assert!(
+            readability["signal"].is_null(),
+            "読みやすさの指摘は手掛かりの強さを持たない: {readability}"
+        );
 
         // TOON も同じデータを描く
         let mut buf = Vec::new();
         render_toon(&report, &RenderOptions::default(), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.starts_with("schemaVersion: 2\n"), "{s}");
+        assert!(s.starts_with("schemaVersion: 3\n"), "{s}");
         let decoded: serde_json::Value = toon_format::decode_strict(&s).unwrap();
         assert_eq!(decoded, v, "TOON の表現形式によらず JSON と同じ件数を返す");
     }

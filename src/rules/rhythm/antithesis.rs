@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 
@@ -15,7 +15,7 @@ static META: RuleMeta = RuleMeta {
     name: "ANTITHESIS_REPETITION",
     title: "否定→肯定の対比の反復",
     lane: Lane::Slop,
-    status: RuleStatus::Stable,
+    signal: Some(Signal::Strong),
     default_severity: Severity::Error,
     summary: "「〜ではなく」「〜だけでなく〜も」の対比が文書全体で繰り返され、構文のリズムが目立っている",
     explanation: EXPLANATION,
@@ -57,6 +57,10 @@ const EXPLANATION: &str = "\
 13 本、生成 1,729 本中 18 本) ので、情報に留めます。5% 以上で重大になるのは、人の文書で 176 本中 \
 2 本 (1.1%)、生成文書で 1,729 本中 58 本です。技術文書でも 5% 以上になった人の文書は 50 本中 1 本で、\
 区切りはジャンルによらずそろえています。
+
+手掛かりの強さは重大度で分かれ、重大の指摘は「強い」、情報の指摘は「弱い」です。人の文書 440 本と\
+生成文書 390 本で測ると、重大の指摘が出た文書は人 2 本・生成 23 本、情報の指摘だけが出た文書は\
+人 18 本・生成 3 本でした。`info_below` で作る警告の帯は測っていないので「中程度」です。
 ";
 
 /// 「ではなく」(直後の 30 字まで) と「だけでなく〜も」。
@@ -100,6 +104,17 @@ impl AntithesisRepetition {
         } else {
             Severity::Info
         }
+    }
+}
+
+/// 検出したときの重大度ごとの手掛かりの強さ。重大 (比率が `error_above` 以上) は人の文書に
+/// ほとんど出ず、情報 (それ未満) は人の文書のほうに多く出る。警告は `info_below` を設定した
+/// ときだけ出る帯で、測っていないので中程度にする。
+fn signal_at(severity: Severity) -> Signal {
+    match severity {
+        Severity::Error => Signal::Strong,
+        Severity::Warning => Signal::Moderate,
+        Severity::Info => Signal::Weak,
     }
 }
 
@@ -247,6 +262,7 @@ impl Rule for AntithesisRepetition {
                 .with_metric("sentences", total_sentences)
                 .with_metric("ratio", ratio);
             d.severity = severity;
+            d.signal = Some(signal_at(severity));
             out.push(d);
         }
     }
@@ -309,6 +325,44 @@ mod tests {
         assert_eq!(severities(&d), [Severity::Error]);
         assert_eq!(d.len(), 3);
         assert_eq!(d[0].related.len(), 3);
+    }
+
+    /// 指摘の (重大度, 手掛かりの強さ)。3 件とも同じであることも確かめる。
+    fn signals(d: &[Diagnostic]) -> Vec<(Severity, Option<Signal>)> {
+        let mut s: Vec<_> = d.iter().map(|d| (d.severity, d.signal)).collect();
+        s.dedup();
+        s
+    }
+
+    #[test]
+    fn signal_follows_the_detected_severity() {
+        let r = rule(Genre::General);
+        // ルールの強さは、校正の基準 (重大) の指摘の強さ
+        assert_eq!(r.meta().signal, Some(Signal::Strong));
+        // 3/10 = 30%: 重大は強い手掛かり
+        assert_eq!(
+            signals(&run(&r, &text_with(10))),
+            [(Severity::Error, Some(Signal::Strong))]
+        );
+        // 3/120 = 2.5%: 情報は弱い手掛かり
+        assert_eq!(
+            signals(&run(&r, &text_with(120))),
+            [(Severity::Info, Some(Signal::Weak))]
+        );
+        // `info_below` で作る警告の帯は測っていないので中程度
+        let mut r = rule(Genre::General);
+        r.configure("error_above", &toml::Value::Float(0.5))
+            .unwrap();
+        r.configure("info_below", &toml::Value::Float(0.2)).unwrap();
+        assert_eq!(
+            signals(&run(&r, &text_with(10))),
+            [(Severity::Warning, Some(Signal::Moderate))]
+        );
+        // 3/40 = 7.5%: 警告の帯より下は情報 (弱い手掛かり)
+        assert_eq!(
+            signals(&run(&r, &text_with(40))),
+            [(Severity::Info, Some(Signal::Weak))]
+        );
     }
 
     #[test]

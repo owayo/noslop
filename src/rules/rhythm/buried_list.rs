@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use crate::diagnostic::{Diagnostic, Lane, RuleStatus, Severity};
+use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, RuleUnit};
 use crate::text;
@@ -14,7 +14,7 @@ static META: RuleMeta = RuleMeta {
     name: "BURIED_LIST",
     title: "一文に埋もれた列挙",
     lane: Lane::Readability,
-    status: RuleStatus::Experimental,
+    signal: None,
     default_severity: Severity::Info,
     summary: "同格の項目が読点で 3 つ以上つながれ、列挙が長い一文に埋まっている可能性がある",
     explanation: EXPLANATION,
@@ -52,8 +52,8 @@ const EXPLANATION: &str = "\
 
 ### 根拠
 
-実験的です。品詞で名詞を判定する方式で生成文書 241 本を調べた結果、読点の個数で指す方式は\
-文書の 6 割に反応し、中身はほぼ同格の列挙だったため、この形の検出に置き換えました。その調査では\
+品詞で名詞を判定する方式で生成文書 241 本を調べた結果、読点の個数で指す方式は文書の 6 割に\
+反応し、中身はほぼ同格の列挙だったため、この形の検出に置き換えました。その調査では\
 項目が 4 つ以上の並びはほぼすべて本当の列挙で、3 つの並びは精度が落ちたため、3 項目の場合だけ\
 長い文に絞っています。辞書を使わないこの実装は区画の末尾の文字種で名詞を推定しているため、同じ\
 精度は保証できません。動詞の連用形で並ぶ手順 (「読み込み、解決し、初期化して」) は拾えません。
