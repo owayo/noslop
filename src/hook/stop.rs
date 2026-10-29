@@ -183,9 +183,10 @@ fn fit(brief: &str, notes: &str, budget: usize, followup: Option<&str>) -> Strin
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::process::{Command, Stdio};
 
-    use super::super::testing::{CONFIG, DOC, WEAK_DOC, omitted_followup, parse};
+    use super::super::testing::{
+        CONFIG, DOC, WEAK_DOC, commit, git, git_available, omitted_followup, parse,
+    };
     use super::*;
 
     fn git_diff_args(extra: &[&str]) -> GitDiffHookArgs {
@@ -209,54 +210,6 @@ mod tests {
     /// `hook git-diff` の出力 (手元の設定と辞書に左右されないよう、空の環境で)。
     fn run(dir: &Path, extra: &[&str]) -> Option<String> {
         review_git_diff(&git_diff_args(extra), dir, &cli::Environment::default()).unwrap()
-    }
-
-    /// テスト用の git。手元の git の設定 (署名・フック・既定のブランチ名・改行の変換) に左右されない
-    /// ように切る。
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args([
-                "-c",
-                "user.name=noslop",
-                "-c",
-                "user.email=you@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "init.defaultBranch=main",
-                "-c",
-                "core.autocrlf=false",
-            ])
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(Stdio::null())
-            .output()
-            .expect("git を実行できません");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn commit(dir: &Path) {
-        git(dir, &["add", "-A"]);
-        git(dir, &["commit", "-q", "--no-verify", "-m", "c"]);
-    }
-
-    /// git を実行できるか (できない環境では、差分を見るテストを飛ばす)。
-    fn git_available() -> bool {
-        let ok = Command::new("git")
-            .arg("--version")
-            .stdin(Stdio::null())
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if !ok {
-            eprintln!("git を実行できないので、差分を見るテストを飛ばします");
-        }
-        ok
     }
 
     /// `CONFIG` の設定と、本文 `DOC` の guide.md をコミットしたリポジトリ。git がなければ `None`。
