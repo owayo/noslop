@@ -85,7 +85,7 @@ Markdown と同じ改稿指示を、データとして出します。JSON と TO
 
 データには、metrics・fingerprint・抑制した指摘・バイト位置を入れません。指摘の追跡や前回の結果との突き合わせには全指摘のレポート (`--format json`・`--format toon`) を使います。`note` は指摘がないときだけ入り、内容の正しさまでは確かめていないことを伝えます。
 
-TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust) (仕様 v4.1) で行います。区切りはカンマ、インデントは 2、末尾に改行を付けません。レーン別件数などのマップも表として出るため、行の配置を固定とみなさず、TOON のデコーダーで読み取ってください。全指摘・改稿指示・diff の出力は、リファレンス実装 (`@toon-format/toon` 4.1.1) の strict モードで JSON と同じデータに戻ることを確かめています。引用符・改行などを含む抜粋と値の型は、Rust 側でも復号して照合します。
+TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust) (仕様 v4.4) で行います。区切りはカンマ、インデントは 2、末尾に改行を付けません。レーン別件数などのマップも表として出るため、行の配置を固定とみなさず、TOON のデコーダーで読み取ってください。全指摘・改稿指示・diff の出力は、リファレンス実装 (`@toon-format/toon` 4.4.0) の strict モードで JSON と同じデータに戻ることを確かめています。引用符・改行などを含む抜粋と値の型は、Rust 側でも復号して照合します。
 
 ## スキル (`noslop skill-install`)
 

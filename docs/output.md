@@ -216,4 +216,4 @@ TOON は、ルールと該当箇所を 1 行 1 要素の表にするぶん短く
 
 全指摘のレポート（`--format json` と同じデータ）と `noslop diff` の結果を TOON で出します（`--format toon`）。指摘ごとに `metrics` の項目が違うなど、表にできない部分もあります。LLM に指摘を渡すなら、改稿指示の TOON（`--report brief --format toon`）を使ってください。
 
-TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust)（仕様 v4.1）で行い、末尾に改行は付けません。レーン別件数などの同じ形のオブジェクトは、キー付きの表になることがあります。行の配置を固定とみなさず、TOON のデコーダーで読み取ってください。全指摘・改稿指示・diff の出力は、リファレンス実装（`@toon-format/toon` 4.1.1）の strict モードで JSON と同じデータに戻ることを確かめています。
+TOON の符号化は公式の Rust 実装 [toon-format](https://github.com/toon-format/toon-rust)（仕様 v4.4）で行い、末尾に改行は付けません。レーン別件数などの同じ形のオブジェクトは、キー付きの表になることがあります。行の配置を固定とみなさず、TOON のデコーダーで読み取ってください。全指摘・改稿指示・diff の出力は、リファレンス実装（`@toon-format/toon` 4.4.0）の strict モードで JSON と同じデータに戻ることを確かめています。

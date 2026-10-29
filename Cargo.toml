@@ -30,7 +30,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.106", default-features = false, features = ["analyzer"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.107", default-features = false, features = ["analyzer"] }
 
 [features]
 default = ["cli", "bundled-dict"]
@@ -70,13 +70,13 @@ process-wrap = { version = "10.0.1", default-features = false, features = ["std"
 rayon = "1.12.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 # gws のフックが止めた書き込みの記録の名前 (セッション・書き込み先・値のハッシュ)。hasami の download と
 # 同じ版で、依存の木に新しく加わらない
-sha2 = { version = "0.11.0", optional = true }
+sha2 = { version = "0.11.1", optional = true }
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
-toon-format = { version = "0.6.1", default-features = false }
+toon-format = { version = "0.7.0", default-features = false }
 toml = "1.1.8"
 # コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。code で全言語をまとめて有効にする。
 # 文法の crate は tree-sitter 0.27 で読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の
@@ -116,8 +116,8 @@ tempfile = "3.27.0"
 # build.rs で配布辞書の目録 (dict/catalog.json) を読み、検証して定数を作る
 [build-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-sha2 = "0.11.0"
+serde_json = "1.0.154"
+sha2 = "0.11.1"
 
 [profile.release]
 lto = true
