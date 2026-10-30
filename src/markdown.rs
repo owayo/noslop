@@ -311,6 +311,8 @@ struct Builder<'a> {
     quote_depth: usize,
     footnote_depth: usize,
     item_depth: usize,
+    /// 開いているリスト項目ごとの、項目の始まりの行内の HTML の状態。項目の終わりで戻す。
+    item_html_stack: Vec<crate::html::HtmlBody>,
     /// コードブロックの内側 (テキストを捨てる)。
     skip_depth: usize,
     /// 画像・自動リンクの内側 (プレースホルダに畳んだので中身を捨てる)。
@@ -336,6 +338,7 @@ impl<'a> Builder<'a> {
             quote_depth: 0,
             footnote_depth: 0,
             item_depth: 0,
+            item_html_stack: Vec::new(),
             skip_depth: 0,
             inline_skip: 0,
             mark_stack: Vec::new(),
@@ -495,6 +498,7 @@ impl<'a> Builder<'a> {
             Tag::Item => {
                 self.flush();
                 self.item_depth += 1;
+                self.item_html_stack.push(self.inline_html_body.clone());
             }
             Tag::FootnoteDefinition(_) => {
                 self.flush();
@@ -577,9 +581,11 @@ impl<'a> Builder<'a> {
             TagEnd::Item => {
                 self.flush();
                 self.item_depth = self.item_depth.saturating_sub(1);
-                // 詰まったリストの項目には段落の終わりが来ない。閉じていない行内の要素 (hidden など) は、
-                // ブラウザと同じく項目の終わりで閉じ、次の項目と後ろの本文に持ち越さない
-                self.inline_html_body = crate::html::HtmlBody::default();
+                // 詰まったリストの項目には段落の終わりが来ない。項目の中で開いて閉じていない行内の要素
+                // (hidden など) は、ブラウザと同じく項目の終わりで閉じ、次の項目と後ろの本文に持ち越さない。
+                // 戻すのは項目の始まりの状態なので、親の項目で開いた要素は、入れ子の子の項目が終わっても
+                // 続き、親の項目の終わりで閉じる
+                self.inline_html_body = self.item_html_stack.pop().unwrap_or_default();
             }
             TagEnd::FootnoteDefinition => {
                 self.flush();
@@ -1211,6 +1217,43 @@ mod tests {
                 "{src}: {b:?}"
             );
             for kept in ["前文", "次の項目の本文", "後の段落の本文"] {
+                assert!(
+                    b.iter().any(|b| b.text.contains(kept)),
+                    "{kept}: {src}: {b:?}"
+                );
+            }
+        }
+    }
+
+    /// 親の項目で閉じていない行内の要素は、入れ子の子の項目にも続き、親の項目の終わりで閉じる
+    /// (子の項目の終わりで親の状態を消さない)。子の項目で開いた要素は、その子の項目の終わりで閉じる。
+    #[test]
+    fn unclosed_inline_html_in_a_parent_item_covers_every_nested_item() {
+        for tag in ["code", "span hidden", "template"] {
+            let src = format!(
+                "- 前文<{tag}>除く本文。\n  - 子の一つ目。\n  - 子の二つ目。\n- 次の項目の本文。\n"
+            );
+            let b = blocks(&src);
+            for hidden in ["除く本文", "子の一つ目", "子の二つ目"] {
+                assert!(
+                    b.iter().all(|b| !b.text.contains(hidden)),
+                    "{hidden}: {src}: {b:?}"
+                );
+            }
+            for kept in ["前文", "次の項目の本文"] {
+                assert!(
+                    b.iter().any(|b| b.text.contains(kept)),
+                    "{kept}: {src}: {b:?}"
+                );
+            }
+
+            let src = format!("- 親の本文。\n  - 子の前<{tag}>除く本文。\n  - 子の二つ目。\n");
+            let b = blocks(&src);
+            assert!(
+                b.iter().all(|b| !b.text.contains("除く本文")),
+                "{src}: {b:?}"
+            );
+            for kept in ["親の本文", "子の前", "子の二つ目"] {
                 assert!(
                     b.iter().any(|b| b.text.contains(kept)),
                     "{kept}: {src}: {b:?}"
