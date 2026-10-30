@@ -1440,6 +1440,76 @@ fn diff_reports_new_findings_and_lost_facts() {
 }
 
 #[test]
+fn diff_reports_people_and_roles_added_as_subjects_or_addressees() {
+    let dir = workspace();
+    fs::write(
+        dir.path().join("before.md"),
+        "設定を変更したら、再起動してください。\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("after.md"),
+        "設定を変更したら、担当者が再起動します。管理者に完了を報告してください。\n",
+    )
+    .unwrap();
+    let out = noslop()
+        .current_dir(dir.path())
+        .args([
+            "diff",
+            "before.md",
+            "after.md",
+            "--no-config",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v = json(&out.stdout);
+    assert_eq!(v["schemaVersion"], 4);
+    let actors: Vec<(&str, &str, bool)> = v["facts"]["added"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"] == "actor")
+        .map(|f| {
+            (
+                f["key"].as_str().unwrap(),
+                f["text"].as_str().unwrap(),
+                f["suspicious"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actors,
+        [("担当", "担当者", false), ("管理者", "管理者", false)]
+    );
+    assert_eq!(v["facts"]["removed"], serde_json::json!([]));
+
+    noslop()
+        .current_dir(dir.path())
+        .args([
+            "diff",
+            "before.md",
+            "after.md",
+            "--no-config",
+            "--color",
+            "never",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("人・組織・担当「担当者」 0 → 1 回 (後 1 行)")
+                .and(predicate::str::contains(
+                    "人・組織・担当「管理者」 0 → 1 回 (後 1 行)",
+                ))
+                .and(predicate::str::contains(
+                    "原文にない人や担当を補っていないか確かめてください",
+                )),
+        );
+}
+
+#[test]
 fn diff_compares_decimal_amounts_without_float_rounding() {
     let dir = workspace();
     for (before, after, changed) in [
@@ -1844,7 +1914,7 @@ fn diff_comes_as_toon() {
         .assert()
         .success()
         .stdout(
-            predicate::str::starts_with("schemaVersion: 3\nkind: diff\n")
+            predicate::str::starts_with("schemaVersion: 4\nkind: diff\n")
                 .and(predicate::str::contains("hasConcerns: true")),
         );
 }

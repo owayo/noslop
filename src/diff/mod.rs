@@ -4,7 +4,8 @@
 //!
 //! 1. 指摘の変化: 新規・書き換えても残った・継続・解消・抑制して残した (fingerprint を多重集合
 //!    として突き合わせる)
-//! 2. 事実の変化: 数字・日付・固有名詞らしい語・引用・URL の消失と追加 ([`facts`])
+//! 2. 事実の変化: 数字・日付・固有名詞らしい語・引用・URL と、主語や依頼先の人・担当の消失と追加
+//!    ([`facts`])
 //! 3. 改稿の偏り: 同じ変換を文書全体に一律に当てた形跡 ([`shifts`])
 //!
 //! どれも改稿を失敗扱いにするものではない。指摘の件数を減らすことを目的にした書き直し
@@ -21,7 +22,7 @@ use crate::document::Document;
 use crate::engine::{Coverage, Engine, FileError, FileReport, Input};
 use crate::morph::MorphologyStatus;
 
-pub use facts::{Fact, FactChange, FactChanges, FactKind};
+pub use facts::{ExtractedFacts, Fact, FactChange, FactChanges, FactKind};
 pub use render::{DIFF_SCHEMA_VERSION, render_json, render_text, render_toon};
 pub use shifts::{Shift, ShiftKind};
 

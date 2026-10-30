@@ -5,6 +5,7 @@
 use std::sync::LazyLock;
 
 mod chinese;
+pub(crate) mod quotes;
 
 /// インラインコード・数式・画像など、解析テキストで 1 文字ぶんの「語」に置き換えた箇所。
 ///

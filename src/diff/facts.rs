@@ -1,10 +1,12 @@
-//! 事実の変化: 数字・日付・英字の語・カタカナ語・固有名詞・括弧の語・URL の消失と追加。
+//! 事実の変化: 数字・日付・英字の語・カタカナ語・固有名詞・括弧の語・URL・人や担当の消失と追加。
 //!
-//! 改稿で事実を落としていないか、原文にない事実 (とくに数字) を足していないかを
+//! 改稿で事実を落としていないか、原文にない事実 (とくに数字) や人・担当を足していないかを
 //! 確かめるための手掛かりを取り出す。表記の揺れ (全角と半角、漢数字と算用数字、
 //! 「ヶ月」と「か月」) は正規化してから比べる。
 
-use std::collections::BTreeMap;
+mod actors;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::LazyLock;
 
@@ -26,6 +28,8 @@ pub enum FactKind {
     Katakana,
     Url,
     Proper,
+    /// 主語や連絡・依頼の相手の位置にある、人・組織・担当の語 (担当者・管理者・私たちなど)。
+    Actor,
 }
 
 impl FactKind {
@@ -38,6 +42,7 @@ impl FactKind {
             FactKind::Katakana => "カタカナ語",
             FactKind::Url => "URL",
             FactKind::Proper => "固有名詞",
+            FactKind::Actor => "人・組織・担当",
         }
     }
 
@@ -72,6 +77,16 @@ pub struct FactChange {
     pub spans: Vec<Span>,
     /// 改稿前に 1 度も出ない数値・日付が増えた (原文にない数字の追加)。
     pub suspicious: bool,
+}
+
+/// 文書から取り出した事実と、照合だけに使う人・組織・担当の語。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtractedFacts {
+    /// 位置の順に並んだ事実。人・組織・担当の語は、主語や連絡・依頼の相手の位置にあるものだけ。
+    pub facts: Vec<Fact>,
+    /// 文書のどこか (原文と各ブロックの解析用テキスト) に出る人・組織・担当の語の照合キー。
+    /// 位置を問わず、複合語や引用の中の出現も含む。相手の文書にこの語がなければ増減として出す。
+    pub actors: BTreeSet<&'static str>,
 }
 
 /// 事実の変化。
@@ -125,19 +140,23 @@ static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https?://[^\s<>()（）「」『』\[\]]+").expect("url regex"));
 
 /// 文書の全ブロック (見出し・リスト・表を含む) から事実を取り出す。位置の順に並ぶ。
-pub fn extract(doc: &Document) -> Vec<Fact> {
+pub fn extract(doc: &Document) -> ExtractedFacts {
     extract_with_morphology(doc, None)
 }
 
 /// 文字種による抽出に、辞書が固有名詞とした語を加える。辞書がなければ文字種だけで読む。
-pub fn extract_with_morphology(doc: &Document, morphology: Option<&Morphology>) -> Vec<Fact> {
+pub fn extract_with_morphology(doc: &Document, morphology: Option<&Morphology>) -> ExtractedFacts {
     let mut facts = Vec::new();
     let morph = morphology.map(|m| m.for_document(doc));
     for block in &doc.blocks {
         extract_block(doc, block, morph.as_ref(), &mut facts);
+        actors::extract_block(doc, block, &mut facts);
     }
     facts.sort_by_key(|f| (f.span.start, f.kind));
-    facts
+    ExtractedFacts {
+        facts,
+        actors: actors::presence(doc),
+    }
 }
 
 /// 種類が文脈で入れ替わらないよう、英字・長いカタカナの語は文字種による抽出に任せる。
@@ -482,30 +501,37 @@ fn kanji_to_number(s: &str) -> Option<u64> {
 ///
 /// - 減ったもの: 数値・日付は 1 回でも減ったもの (その数字に触れた文が消えた)。語 (括弧の語・
 ///   英字の語・カタカナ語・固有名詞・URL) は改稿後に 1 度も出なくなったものだけ。何度も使う語を
-///   1 回減らすのは普通の推敲なので出さない
+///   1 回減らすのは普通の推敲なので出さない。人・組織・担当の語は、改稿前に主語などの位置に
+///   あった語が、改稿後の文書のどこにも (位置を問わず) 出なくなったものだけ
 /// - 増えたもの: 改稿前に 1 度も出ない事実。数値・日付は原文にない数字として強調する。
-///   既にある事実を繰り返しただけのものは出さない
-pub fn compare(before: &[Fact], after: &[Fact]) -> FactChanges {
+///   既にある事実を繰り返しただけのものは出さない。人・組織・担当の語は、主語などの位置に出た語が、
+///   改稿前の文書のどこにも (位置を問わず) なかったものだけ
+pub fn compare(before: &ExtractedFacts, after: &ExtractedFacts) -> FactChanges {
     #[derive(Default)]
     struct Tally<'a> {
         before: Vec<&'a Fact>,
         after: Vec<&'a Fact>,
     }
     let mut tallies: BTreeMap<(FactKind, &str), Tally<'_>> = BTreeMap::new();
-    for f in before {
+    for f in &before.facts {
         tallies.entry((f.kind, &f.key)).or_default().before.push(f);
     }
-    for f in after {
+    for f in &after.facts {
         tallies.entry((f.kind, &f.key)).or_default().after.push(f);
     }
 
     let mut changes = FactChanges::default();
     for ((kind, key), t) in tallies {
         let (nb, na) = (t.before.len(), t.after.len());
-        let lost = if kind.is_verifiable() {
-            na < nb
+        let (lost, new) = if kind == FactKind::Actor {
+            (
+                nb > 0 && !after.actors.contains(key),
+                na > 0 && !before.actors.contains(key),
+            )
+        } else if kind.is_verifiable() {
+            (na < nb, nb == 0 && na > 0)
         } else {
-            na == 0 && nb > 0
+            (na == 0 && nb > 0, nb == 0 && na > 0)
         };
         if lost {
             changes.removed.push(FactChange {
@@ -517,7 +543,7 @@ pub fn compare(before: &[Fact], after: &[Fact]) -> FactChanges {
                 spans: t.before.iter().map(|f| f.span).collect(),
                 suspicious: false,
             });
-        } else if nb == 0 && na > 0 {
+        } else if new {
             changes.added.push(FactChange {
                 kind,
                 key: key.to_string(),
@@ -543,6 +569,7 @@ mod tests {
 
     fn keys(doc: &str) -> Vec<(FactKind, String)> {
         extract(&Document::markdown(doc))
+            .facts
             .into_iter()
             .map(|f| (f.kind, f.key))
             .collect()
@@ -563,6 +590,7 @@ mod tests {
         );
         let facts = extract_with_morphology(&doc, Some(&morph));
         let proper: Vec<_> = facts
+            .facts
             .iter()
             .filter(|f| f.kind == FactKind::Proper)
             .collect();
@@ -661,7 +689,7 @@ mod tests {
         assert_eq!(changes.added.len(), 1);
         assert_eq!(changes.added[0].key, "京都");
         assert!(!changes.added[0].suspicious);
-        let changes = compare(&after, &[]);
+        let changes = compare(&after, &ExtractedFacts::default());
         assert_eq!(changes.removed.len(), 2);
     }
 
@@ -781,7 +809,8 @@ mod tests {
         ));
         let changes = compare(&before, &after);
         let removed: Vec<&str> = changes.removed.iter().map(|c| c.key.as_str()).collect();
-        assert_eq!(removed, vec!["40件", "slack"]);
+        // 主語の「担当」は、文ごと消えて改稿後のどこにも出ない
+        assert_eq!(removed, vec!["40件", "slack", "担当"]);
         assert_eq!(changes.added.len(), 1);
         assert_eq!(changes.added[0].key, "35%");
         assert!(changes.added[0].suspicious);
@@ -816,5 +845,261 @@ mod tests {
         ));
         let before = extract(&Document::markdown("参加は40件、見学も40件だった。\n"));
         assert!(compare(&before, &again).added.is_empty());
+    }
+
+    /// 人・組織・担当の語の増減を、(消えた語の表記, 増えた語の表記) で返す。
+    fn actor_changes(before: &str, after: &str) -> (Vec<String>, Vec<String>) {
+        let changes = compare(
+            &extract(&Document::markdown(before)),
+            &extract(&Document::markdown(after)),
+        );
+        let texts = |list: &[FactChange]| -> Vec<String> {
+            list.iter()
+                .filter(|c| c.kind == FactKind::Actor)
+                .map(|c| c.text.clone())
+                .collect()
+        };
+        (texts(&changes.removed), texts(&changes.added))
+    }
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn actors_added_as_subjects_or_addressees_are_reported_but_not_suspicious() {
+        let before = Document::markdown("設定を変更したら、再起動してください。\n");
+        let after = Document::markdown(
+            "設定を変更したら、担当者が再起動します。管理者に完了を報告してください。\n",
+        );
+        let changes = compare(&extract(&before), &extract(&after));
+        assert!(changes.removed.is_empty());
+        let actors: Vec<_> = changes
+            .added
+            .iter()
+            .filter(|c| c.kind == FactKind::Actor)
+            .collect();
+        assert_eq!(
+            actors
+                .iter()
+                .map(|c| (c.key.as_str(), c.text.as_str()))
+                .collect::<Vec<_>>(),
+            [("担当", "担当者"), ("管理者", "管理者")]
+        );
+        for c in actors {
+            assert!(!c.suspicious);
+            assert_eq!((c.before_count, c.after_count), (0, 1));
+            assert_eq!(after.slice(c.spans[0]), c.text);
+        }
+    }
+
+    #[test]
+    fn actors_already_in_the_original_in_any_form_or_position_are_not_reported() {
+        for (before, after) in [
+            ("担当を決めてください。", "担当者が再起動します。"),
+            ("私たちは確認します。", "私達が確認します。"),
+            ("私たちは確認します。", "わたしたちが確認します。"),
+            ("我々が進めます。", "われわれが進めます。"),
+            // 同じものを指す言い換え (文体に合わせた入れ替え) は足したとみなさない
+            ("今を生きる我々が進めます。", "私たちが進めます。"),
+            ("当社が対応します。", "弊社が対応します。"),
+            ("上司に報告します。", "上長に報告します。"),
+            ("皆さんに伝えます。", "みなさんに伝えます。"),
+            ("アドミンについて説明します。", "管理者が対応します。"),
+            ("管理者について説明します。", "アドミンが対応します。"),
+            // 複合語・引用・コード・引用ブロック・装飾の中にあれば、原文にあるとみなす
+            ("システム管理者の手順です。", "管理者が再起動します。"),
+            (
+                "「担当者が再起動します。」とある。",
+                "担当者が再起動します。",
+            ),
+            ("`担当者` を参照する。", "担当者が再起動します。"),
+            ("> 担当者が再起動します。", "担当者が再起動します。"),
+            ("**管理**者の手順です。", "管理者が再起動します。"),
+        ] {
+            assert_eq!(
+                actor_changes(before, after),
+                (vec![], vec![]),
+                "{before} → {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn actors_inside_compounds_modifiers_quotes_and_hidden_text_are_not_taken() {
+        for after in [
+            "システム管理者が再起動します。",
+            "営業の担当者が再起動します。",
+            "ご担当者が再起動します。",
+            "「担当者が再起動します。」と書いてあります。",
+            "「説明、担当者が再起動します",
+            "> 担当者が再起動します。",
+            "~~担当者が再起動します。~~",
+            "| 担当者 | 再起動します |\n| --- | --- |\n| 済み | 済み |",
+            "私たち・管理者が再起動します。",
+            "担当者もしくは管理者が再起動します。",
+            "管理者もどきが再起動します。",
+            "皆さんがたが再起動します。",
+            "担当者様が再起動します。",
+            "- 管理者に\n- 報告してください。",
+            // 文の途中で折り返した行の頭は、文の頭にしない
+            "営業の\n担当者が再起動します。",
+            "システム\n管理者が再起動します。",
+            // 助詞や述語に見える語の頭
+            "担当がらみの不具合を調べます。",
+            "管理者に通知しきい値の変更権限はありません。",
+            "管理者に確認しかできません。",
+            // 述語の残りが取り消し線に重なる
+            "管理者に報告し~~ません~~。",
+        ] {
+            assert_eq!(
+                actor_changes("再起動します。", after),
+                (vec![], vec![]),
+                "{after}"
+            );
+        }
+    }
+
+    #[test]
+    fn topics_take_the_listed_particles_including_negations() {
+        for (after, expected) in [
+            ("担当者は作業を進めます。", &["担当者"][..]),
+            ("担当者が作業を進めます。", &["担当者"]),
+            ("担当者も作業を進めます。", &["担当者"]),
+            ("当社では作業を進めます。", &["当社"]),
+            ("責任者 が作業を進めます。", &[]),
+            (
+                "担当者ではなく、管理者が作業を進めます。",
+                &["担当者", "管理者"],
+            ),
+            ("作業は、我々が進めます。", &["我々"]),
+            ("作業を進める。 上司が確認する。", &["上司"]),
+        ] {
+            assert_eq!(
+                actor_changes("作業を進めます。", after),
+                (vec![], words(expected)),
+                "{after}"
+            );
+        }
+    }
+
+    #[test]
+    fn addressees_need_a_listed_predicate_right_after_or_after_a_short_object() {
+        for (after, expected) in [
+            ("管理者に報告してください。", true),
+            ("管理者にご連絡ください。", true),
+            ("管理者へも共有します。", true),
+            ("管理者にはお知らせしません。", true),
+            ("管理者にお伝えください。", true),
+            ("管理者に知らせた。", true),
+            ("管理者に頼んでください。", true),
+            ("管理者に相談を依頼する。", true),
+            ("管理者に完了を報告してください。", true),
+            ("管理者にURLを共有します。", true),
+            ("管理者に一二三四五六七八九十一二を報告します。", true),
+            ("管理者に一二三四五六七八九十一二三を報告します。", false),
+            ("管理者に完了について報告します。", false),
+            ("管理者にメールで連絡します。", false),
+            ("管理者に「完了」を報告します。", false),
+            ("管理者に連絡先を尋ねてください。", false),
+            ("管理者に確認画面を見せてください。", false),
+            ("管理者に報告書を出してください。", false),
+            ("管理者に頼る。", false),
+            ("管理者に頼みごとをする。", false),
+            ("管理者に頼もしさを感じる。", false),
+            ("管理者に伝わる。", false),
+            ("管理者に確認が必要です。", false),
+            ("管理者において確認する。", false),
+            ("管理者への報告をお願いします。", false),
+        ] {
+            let (_, added) = actor_changes("作業を進めます。", after);
+            assert_eq!(!added.is_empty(), expected, "{after}");
+        }
+    }
+
+    #[test]
+    fn changed_addressees_and_explicit_subjects_are_reported_as_changes() {
+        assert_eq!(
+            actor_changes("担当者に報告します。", "管理者に報告します。"),
+            (words(&["担当者"]), words(&["管理者"]))
+        );
+        // 語が新しいことだけを知らせる。原文の根拠を超えるかは読み手が確かめる
+        assert_eq!(
+            actor_changes(
+                "作業は私だけで進めます。再起動します。",
+                "作業は私だけで進めます。私たちが再起動します。"
+            ),
+            (vec![], words(&["私たち"]))
+        );
+    }
+
+    #[test]
+    fn actors_are_removed_only_when_the_word_disappears_entirely() {
+        assert_eq!(
+            actor_changes("担当者が再起動します。", "再起動してください。"),
+            (words(&["担当者"]), vec![])
+        );
+        for after in [
+            "「担当者」という表記を使います。",
+            "システム担当が再起動します。",
+            "作業の担当を決めます。",
+        ] {
+            assert_eq!(
+                actor_changes("担当者が再起動します。", after),
+                (vec![], vec![]),
+                "{after}"
+            );
+        }
+    }
+
+    #[test]
+    fn actors_in_headings_lists_tables_and_wrapped_lines_keep_source_positions() {
+        let source = "# 担当者が行う作業\n\n- 管理者が実行します。\n\n| 手順 |\n| --- |\n| 責任者が承認します |\n\n設定を変えたら、上長に\n報告してください。\n\n　事務局が受け付けます。\n\n・弊社が手配します。\n\n**私たち**が確認します。\n\n[みなさん](https://example.com)も確認します。\n";
+        let doc = Document::markdown(source);
+        let extracted = extract(&doc);
+        let actors: Vec<&Fact> = extracted
+            .facts
+            .iter()
+            .filter(|f| f.kind == FactKind::Actor)
+            .collect();
+        assert_eq!(
+            actors.iter().map(|f| f.text.as_str()).collect::<Vec<_>>(),
+            [
+                "担当者",
+                "管理者",
+                "責任者",
+                "上長",
+                "事務局",
+                "弊社",
+                "私たち",
+                "みなさん"
+            ]
+        );
+        for fact in &actors {
+            assert_eq!(doc.slice(fact.span), fact.text);
+            assert!(extracted.actors.contains(fact.key.as_str()), "{}", fact.key);
+        }
+    }
+
+    #[test]
+    fn repeated_new_actors_are_one_change_with_their_count() {
+        let changes = compare(
+            &extract(&Document::markdown("作業を進めます。\n")),
+            &extract(&Document::markdown(
+                "担当者が始めます。担当が続けます。担当者に報告します。\n",
+            )),
+        );
+        let actors: Vec<_> = changes
+            .added
+            .iter()
+            .filter(|c| c.kind == FactKind::Actor)
+            .collect();
+        assert_eq!(actors.len(), 1);
+        assert_eq!(
+            (actors[0].key.as_str(), actors[0].text.as_str()),
+            ("担当", "担当者")
+        );
+        assert_eq!((actors[0].before_count, actors[0].after_count), (0, 3));
+        assert_eq!(actors[0].spans.len(), 3);
     }
 }

@@ -23,7 +23,6 @@ mod jargon;
 mod location;
 mod markup;
 mod permission;
-mod quotes;
 mod reading;
 mod stance;
 mod syntax;

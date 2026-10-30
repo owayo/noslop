@@ -27,6 +27,8 @@
 //! `noslop check --format json` と同じ形の件数 (`before.counts`・`after.counts`) に置き換えた。
 //! 版 3 では、`noslop check --format json` の版 3 と同じく、指摘の `status` をやめて手掛かりの強さ
 //! (`signal`) を足した。
+//! 版 4 では、事実の種類 (`facts.removed[].kind`・`facts.added[].kind`) に、主語や連絡・依頼の
+//! 相手の位置にある人・組織・担当の語 (`actor`) を足した。
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -47,8 +49,9 @@ use super::facts::{FactChange, FactKind};
 use super::shifts::{Shift, ShiftKind};
 
 /// `noslop diff --format json` のスキーマの版。互換性のない変更をしたら上げる
-/// (3: 指摘の `status` を外し、手掛かりの強さの `signal` を足した。指摘の形は `check --format json` と同じ)。
-pub const DIFF_SCHEMA_VERSION: u32 = 3;
+/// (4: 事実の種類に人・組織・担当の `actor` を足した。3: 指摘の `status` を外し、手掛かりの強さの
+/// `signal` を足した。指摘の形は `check --format json` と同じ)。
+pub const DIFF_SCHEMA_VERSION: u32 = 4;
 
 /// 事実・偏りの位置として並べる行番号の上限。
 const MAX_LINES_SHOWN: usize = 5;
@@ -234,6 +237,12 @@ pub fn render_text(report: &DiffReport, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "  増えたもの ({} 件)", facts.added.len())?;
         for c in &facts.added {
             write_fact(&after.doc, c, "後", out)?;
+        }
+        if facts.added.iter().any(|c| c.kind == FactKind::Actor) {
+            writeln!(
+                out,
+                "    {dm}人・組織・担当の語は、主語や連絡・依頼の相手として新しく出たものです。原文にない人や担当を補っていないか確かめてください{dm:#}"
+            )?;
         }
     }
 
@@ -640,6 +649,44 @@ mod tests {
     }
 
     #[test]
+    fn actor_facts_carry_a_note_only_when_added_and_are_actor_in_json() {
+        let r = report(
+            "設定を変更したら、再起動してください。\n",
+            "設定を変更したら、担当者が再起動します。管理者に完了を報告してください。\n",
+        );
+        let text = text_of(&r);
+        for part in [
+            "  増えたもの (2 件)\n    人・組織・担当「担当者」 0 → 1 回 (後 1 行)\n    人・組織・担当「管理者」 0 → 1 回 (後 1 行)\n",
+            "    人・組織・担当の語は、主語や連絡・依頼の相手として新しく出たものです。原文にない人や担当を補っていないか確かめてください\n",
+        ] {
+            assert!(text.contains(part), "「{part}」がない:\n{text}");
+        }
+        let v = json_of(&r);
+        assert_eq!(v["hasConcerns"], true);
+        let added = v["facts"]["added"].as_array().unwrap();
+        assert_eq!(added.len(), 2);
+        assert!(
+            added
+                .iter()
+                .all(|f| f["kind"] == "actor" && f["suspicious"] == false)
+        );
+        assert_eq!(added[0]["key"], "担当");
+        assert_eq!(added[0]["text"], "担当者");
+        assert_eq!(added[0]["locationsIn"], "after");
+
+        // 消えただけなら、消えたものの見出しの案内で足り、注記は出さない
+        let text = text_of(&report(
+            "担当者が再起動します。\n",
+            "再起動してください。\n",
+        ));
+        assert!(
+            text.contains("    人・組織・担当「担当者」 1 → 0 回 (前 1 行)\n"),
+            "{text}"
+        );
+        assert!(!text.contains("新しく出たもの"), "{text}");
+    }
+
+    #[test]
     fn every_finding_names_its_lane_next_to_the_severity() {
         let doc = Document::markdown("さらに、手順を見直した。\n");
         let heading = |lane: Lane, signal: Option<Signal>, suffix: &str| {
@@ -689,7 +736,7 @@ mod tests {
             "効果があると言えるでしょう。\n\n数値は１２件。\n",
         );
         let v = json_of(&r);
-        assert_eq!(v["schemaVersion"], 3);
+        assert_eq!(v["schemaVersion"], 4);
         assert_eq!(v["kind"], "diff");
         assert_eq!(v["tool"]["name"], "noslop");
         assert_eq!(v["columnUnit"], "unicode-scalar");
