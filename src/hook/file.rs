@@ -67,9 +67,10 @@ fn review_file(
     let mut text = review.brief;
     text.push_str(KEEP_NOTE);
     if review.limited {
+        // claude-code と同じく、パスを引用し、フックのルールの選び方と設定を保ったコマンドで案内する
+        let whole = followup_command(&args.hook, &location, Followup::WholeFile(target));
         text.push_str(&format!(
-            "コミットしていない変更 (git の HEAD との差分) の行に重なる指摘だけを返しています。ファイル全体は `noslop check --format brief {}` で確認できます。\n",
-            review.name
+            "コミットしていない変更 (git の HEAD との差分) の行に重なる指摘だけを返しています。ファイル全体は `{whole}` で確認できます。\n"
         ));
     }
     Ok(Some(truncate_lines(&text, args.max_chars, Some(&command))))
@@ -77,7 +78,9 @@ fn review_file(
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::{DOC, MIXED_DOC, WEAK_DOC, omitted_followup, parse, workspace};
+    use super::super::testing::{
+        DOC, MIXED_DOC, WEAK_DOC, commit, git, git_available, omitted_followup, parse, workspace,
+    };
     use super::*;
 
     fn file_args(extra: &[&str]) -> FileHookArgs {
@@ -204,5 +207,44 @@ mod tests {
 
         assert_eq!(run(&["weak.md"]), None);
         assert!(run(&["--brief-limit", "unlimited", "weak.md"]).is_some());
+    }
+
+    /// 変わった行に絞ったときは、ファイル全体を見るコマンドを案内する。パスを引用し (空白を含むパスが
+    /// 2 語に分かれないように)、フックのルールの選び方を保つ。
+    #[test]
+    fn limited_note_quotes_the_path_and_keeps_the_rule_selection() {
+        if !git_available() {
+            return;
+        }
+        let dir = workspace(DOC);
+        std::fs::rename(dir.path().join("guide.md"), dir.path().join("my notes.md")).unwrap();
+        git(dir.path(), &["init", "-q"]);
+        commit(dir.path());
+        // 5 行目だけを書き換える (3 行目の指摘は変わっていない行に残る)
+        std::fs::write(
+            dir.path().join("my notes.md"),
+            DOC.replace("新しい段落です。", "書き換えた段落です。"),
+        )
+        .unwrap();
+        let text = review_file(
+            &file_args(&["--genre", "tech", "my notes.md"]),
+            Some(dir.path()),
+            &cli::Environment::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(text.contains("  - L5: "), "{text}");
+        assert!(!text.contains("L3:"), "変わっていない行は返さない: {text}");
+        let whole = text
+            .split("ファイル全体は `")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .unwrap_or_else(|| panic!("変わった行に絞った注記がありません: {text}"));
+        assert!(
+            whole.contains(
+                "noslop check --report brief --brief-limit unlimited --no-readability --genre tech -- 'my notes.md'"
+            ),
+            "{whole}"
+        );
     }
 }

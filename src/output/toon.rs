@@ -3,7 +3,7 @@
 //! JSON と同じデータを、インデントと表形式 (一様な object の配列は、項目名の見出し 1 行と
 //! 1 要素 1 行) で表す。同じ内容をより少ないトークンで LLM に渡すために使う。符号化は
 //! 公式の Rust 実装 [`toon-format`](https://github.com/toon-format/toon-rust) に任せる
-//! (対応する仕様は v4.1)。区切りはカンマ、インデントは 2。
+//! (対応する仕様は v4.4)。区切りはカンマ、インデントは 2。
 //!
 //! `toon-format` は `serde_json` の `preserve_order` を有効にするので、`serde_json::Map`
 //! (`json!` マクロ) で組み立てる JSON のキー順は、辞書順ではなく書いた順になる。

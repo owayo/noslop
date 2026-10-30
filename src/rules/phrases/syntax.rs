@@ -13,9 +13,9 @@ use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
 use crate::document::BlockKind;
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
+use crate::text::quotes::QuoteRanges;
 
 use super::engine::diagnostic;
-use super::quotes::QuoteRanges;
 
 // ---------------------------------------------------------------------------
 // P13 INANIMATE_SUBJECT

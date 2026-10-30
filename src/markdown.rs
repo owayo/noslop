@@ -305,10 +305,14 @@ struct Builder<'a> {
     html_map: TextMap,
     html_body: crate::html::HtmlBody,
     inline_html_body: crate::html::HtmlBody,
+    /// HTML ブロックの内側か。
+    in_html_block: bool,
     current: Option<Current>,
     quote_depth: usize,
     footnote_depth: usize,
     item_depth: usize,
+    /// 開いているリスト項目ごとの、項目の始まりの行内の HTML の状態。項目の終わりで戻す。
+    item_html_stack: Vec<crate::html::HtmlBody>,
     /// コードブロックの内側 (テキストを捨てる)。
     skip_depth: usize,
     /// 画像・自動リンクの内側 (プレースホルダに畳んだので中身を捨てる)。
@@ -329,10 +333,12 @@ impl<'a> Builder<'a> {
             html_map: TextMap::default(),
             html_body: crate::html::HtmlBody::default(),
             inline_html_body: crate::html::HtmlBody::default(),
+            in_html_block: false,
             current: None,
             quote_depth: 0,
             footnote_depth: 0,
             item_depth: 0,
+            item_html_stack: Vec::new(),
             skip_depth: 0,
             inline_skip: 0,
             mark_stack: Vec::new(),
@@ -402,6 +408,10 @@ impl<'a> Builder<'a> {
         match event {
             Event::Start(tag) => self.start(tag, range),
             Event::End(tag) => self.end(tag, range),
+            // リスト項目の中身より深く字下げした HTML ブロックでは、字下げの余りが原文の範囲を
+            // 持たない空白の Text として HTML ブロックの中に来る。本文として扱うと、HTML ブロックの
+            // 後ろの行までそのブロックに足され、ブロックが原文の順に並ばなくなる
+            Event::Text(t) if self.in_html_block && t.trim().is_empty() => {}
             Event::Text(t) => {
                 if !self.skipping() {
                     let source = self.source;
@@ -479,6 +489,7 @@ impl<'a> Builder<'a> {
             }
             Tag::HtmlBlock => {
                 self.flush();
+                self.in_html_block = true;
                 self.html_spans.push(Span::new(range.start, range.end));
                 self.html_text.clear();
                 self.html_map = TextMap::default();
@@ -487,6 +498,7 @@ impl<'a> Builder<'a> {
             Tag::Item => {
                 self.flush();
                 self.item_depth += 1;
+                self.item_html_stack.push(self.inline_html_body.clone());
             }
             Tag::FootnoteDefinition(_) => {
                 self.flush();
@@ -553,6 +565,7 @@ impl<'a> Builder<'a> {
                 self.skip_depth = self.skip_depth.saturating_sub(1);
             }
             TagEnd::HtmlBlock => {
+                self.in_html_block = false;
                 for mut block in self.html_body.read(&self.html_text) {
                     block.map = block.map.compose(&self.html_map);
                     block.span = self.html_map.to_source(block.span.range());
@@ -568,6 +581,11 @@ impl<'a> Builder<'a> {
             TagEnd::Item => {
                 self.flush();
                 self.item_depth = self.item_depth.saturating_sub(1);
+                // 詰まったリストの項目には段落の終わりが来ない。項目の中で開いて閉じていない行内の要素
+                // (hidden など) は、ブラウザと同じく項目の終わりで閉じ、次の項目と後ろの本文に持ち越さない。
+                // 戻すのは項目の始まりの状態なので、親の項目で開いた要素は、入れ子の子の項目が終わっても
+                // 続き、親の項目の終わりで閉じる
+                self.inline_html_body = self.item_html_stack.pop().unwrap_or_default();
             }
             TagEnd::FootnoteDefinition => {
                 self.flush();
@@ -1184,6 +1202,84 @@ mod tests {
                 b.iter().all(|b| !b.text.contains("除く本文")),
                 "{src}: {b:?}"
             );
+        }
+    }
+
+    /// 詰まったリストの項目には段落の終わりが来ないので、閉じていない行内の要素は項目の終わりで閉じる
+    /// (ブラウザも `</li>` で閉じる)。次の項目と、リストの後ろの段落は表示される本文。
+    #[test]
+    fn unclosed_inline_html_in_a_tight_list_item_ends_with_the_item() {
+        for tag in ["code", "span hidden", "template"] {
+            let src = format!("- 前文<{tag}>除く本文。\n- 次の項目の本文。\n\n後の段落の本文。\n");
+            let b = blocks(&src);
+            assert!(
+                b.iter().all(|b| !b.text.contains("除く本文")),
+                "{src}: {b:?}"
+            );
+            for kept in ["前文", "次の項目の本文", "後の段落の本文"] {
+                assert!(
+                    b.iter().any(|b| b.text.contains(kept)),
+                    "{kept}: {src}: {b:?}"
+                );
+            }
+        }
+    }
+
+    /// 親の項目で閉じていない行内の要素は、入れ子の子の項目にも続き、親の項目の終わりで閉じる
+    /// (子の項目の終わりで親の状態を消さない)。子の項目で開いた要素は、その子の項目の終わりで閉じる。
+    #[test]
+    fn unclosed_inline_html_in_a_parent_item_covers_every_nested_item() {
+        for tag in ["code", "span hidden", "template"] {
+            let src = format!(
+                "- 前文<{tag}>除く本文。\n  - 子の一つ目。\n  - 子の二つ目。\n- 次の項目の本文。\n"
+            );
+            let b = blocks(&src);
+            for hidden in ["除く本文", "子の一つ目", "子の二つ目"] {
+                assert!(
+                    b.iter().all(|b| !b.text.contains(hidden)),
+                    "{hidden}: {src}: {b:?}"
+                );
+            }
+            for kept in ["前文", "次の項目の本文"] {
+                assert!(
+                    b.iter().any(|b| b.text.contains(kept)),
+                    "{kept}: {src}: {b:?}"
+                );
+            }
+
+            let src = format!("- 親の本文。\n  - 子の前<{tag}>除く本文。\n  - 子の二つ目。\n");
+            let b = blocks(&src);
+            assert!(
+                b.iter().all(|b| !b.text.contains("除く本文")),
+                "{src}: {b:?}"
+            );
+            for kept in ["親の本文", "子の前", "子の二つ目"] {
+                assert!(
+                    b.iter().any(|b| b.text.contains(kept)),
+                    "{kept}: {src}: {b:?}"
+                );
+            }
+        }
+    }
+
+    /// 項目の中身より深く字下げした HTML ブロックでは、字下げの余りが原文の範囲を持たない空白として
+    /// HTML ブロックの中に来る。本文にしないので、ブロックは原文の順に重ならずに並ぶ (並びが崩れると、
+    /// ブロックの間の原文を切り出すルールが落ちていた)。
+    #[test]
+    fn indented_html_block_in_a_list_item_keeps_blocks_in_source_order() {
+        for indent in ["   ", "\t"] {
+            let src =
+                format!("- 項目の本文です。\n{indent}<!-- メモ -->補足です。\n  続きの文です。\n");
+            let b = blocks(&src);
+            for pair in b.windows(2) {
+                assert!(pair[0].span.end <= pair[1].span.start, "{src:?}: {b:?}");
+            }
+            for kept in ["項目の本文です", "補足です", "続きの文です"] {
+                assert!(
+                    b.iter().any(|b| b.text.contains(kept)),
+                    "{kept}: {src:?}: {b:?}"
+                );
+            }
         }
     }
 

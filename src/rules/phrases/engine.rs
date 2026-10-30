@@ -6,13 +6,12 @@
 
 use std::ops::Range;
 
-use super::quotes::QuoteRanges;
-
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Severity, Signal, Span};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
+use crate::text::quotes::QuoteRanges;
 
 /// 辞書の項目の照合方法。
 #[derive(Debug, Clone, Copy)]

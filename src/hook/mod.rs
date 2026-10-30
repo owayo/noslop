@@ -164,8 +164,6 @@ impl Reviewer {
 struct Review {
     /// 短い改稿指示。
     brief: String,
-    /// 表示名。
-    name: String,
     /// 変わった行に絞ったか (絞れなければファイル全体)。
     limited: bool,
 }
@@ -188,8 +186,7 @@ fn review(
     if !reviewer.selects(root, path) {
         return Ok(None);
     }
-    let name = display_name(path, cwd);
-    let Some(doc) = reviewer.read_document(path, name.clone())? else {
+    let Some(doc) = reviewer.read_document(path, display_name(path, cwd))? else {
         return Ok(None);
     };
     let scope = changed(&doc);
@@ -198,11 +195,7 @@ fn review(
     let Some(brief) = reviewer.brief(vec![file], Some(followup))? else {
         return Ok(None);
     };
-    Ok(Some(Review {
-        brief,
-        name,
-        limited,
-    }))
+    Ok(Some(Review { brief, limited }))
 }
 
 /// 表示名 (作業ディレクトリの中なら相対パス)。
@@ -383,6 +376,9 @@ fn followup_command(args: &HookArgs, cwd: &Path, target: Followup) -> String {
 /// フックのテストで共有する道具。
 #[cfg(test)]
 mod testing {
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
     use crate::cli;
 
     /// 独自ルールで「ユーザー様」を指摘する設定 (組み込みルールの増減で壊れないように)。
@@ -431,6 +427,54 @@ severity = "warning"
         std::fs::write(dir.path().join("noslop.toml"), CONFIG).unwrap();
         std::fs::write(dir.path().join("guide.md"), doc).unwrap();
         dir
+    }
+
+    /// テスト用の git。手元の git の設定 (署名・フック・既定のブランチ名・改行の変換) に左右されない
+    /// ように切る。
+    pub(super) fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=noslop",
+                "-c",
+                "user.email=you@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+                "-c",
+                "core.autocrlf=false",
+            ])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .expect("git を実行できません");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    pub(super) fn commit(dir: &Path) {
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "--no-verify", "-m", "c"]);
+    }
+
+    /// git を実行できるか (できない環境では、差分を見るテストを飛ばす)。
+    pub(super) fn git_available() -> bool {
+        let ok = Command::new("git")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !ok {
+            eprintln!("git を実行できないので、差分を見るテストを飛ばします");
+        }
+        ok
     }
 
     /// `noslop hook <sub> <extra...>` の引数を読む。

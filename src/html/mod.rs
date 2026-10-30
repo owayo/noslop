@@ -23,7 +23,7 @@ const OPTIONAL: &[&str] = &[
 const EXCLUDED: &[&str] = &["script", "style", "code", "pre", "template", "textarea"];
 
 /// 空行で分かれた HTML の要素を、Markdown の解析中だけ引き継ぐ。
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct HtmlBody {
     pending: String,
     excluded: bool,

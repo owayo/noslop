@@ -13,10 +13,10 @@ use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::document::MarkKind;
 use crate::morph::MorphToken;
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, option_usize, quote};
+use crate::text::quotes::QuoteRanges;
 use crate::text::{self, PLACEHOLDER};
 
 use super::engine::diagnostic;
-use super::quotes::QuoteRanges;
 
 // ---------------------------------------------------------------------------
 // P15 KANJI_RUN
