@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, Input, MatchKind};
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Severity, Signal, Span};
@@ -154,13 +154,57 @@ impl Matcher {
 
     /// 文のテキストから一致を探す。重なる一致は、先に始まり長いほうを 1 件だけ残す。
     pub fn find(&self, text: &str) -> Vec<Hit> {
+        self.find_except(text, |_| None)
+    }
+
+    /// 言及 (引用した語句など) として除く一致を除いて、一致を探す。
+    ///
+    /// `skip` は、除く一致なら、その言及の終わり (次の一致を探し始める位置) を返す (除かないなら
+    /// `None`)。除いた一致の開始位置から言及の終わりまでを言及の範囲とし、そこから始まる一致は
+    /// どの項目のものも除く (同じ言及の中の短い語句を拾い直さないように)。言及の範囲の後ろの一致は
+    /// 隠さない。言及の終わり (少なくとも除いた一致の開始位置の次の字) から探し直し、残した一致の
+    /// 間だけで重なりを解消する (引用の中の「単なる」から始まる一致が、引用の外の
+    /// 「単なる道具ではなく」を飲み込まないように)。
+    pub fn find_except(
+        &self,
+        text: &str,
+        skip: impl Fn(&Range<usize>) -> Option<usize>,
+    ) -> Vec<Hit> {
+        // 除いた一致 `range` の後ろで探し直す位置。`at` を、一致の開始位置の次の字から
+        // テキストの末尾までに収める (開始位置が末尾なら探し終える)
+        let resume = |range: &Range<usize>, at: usize| {
+            after_char(text, range.start).map(|next| at.clamp(next, text.len()))
+        };
+        // 除いた一致の言及の範囲 (開始位置から探し直す位置まで)
+        let mut mentions: Vec<Range<usize>> = Vec::new();
         let mut hits = Vec::new();
         if let Some(ac) = &self.literals {
-            for m in ac.find_iter(text) {
-                hits.push(Hit {
-                    range: m.start()..m.end(),
-                    entry: self.literal_entries[m.pattern().as_usize()],
-                });
+            let mut position = 0;
+            while let Some(m) = ac.find(Input::new(text).range(position..)) {
+                let range = m.start()..m.end();
+                let skipped = if range.is_empty() {
+                    Some(range.end)
+                } else {
+                    skip(&range)
+                };
+                match skipped {
+                    None => {
+                        position = range.end;
+                        hits.push(Hit {
+                            range,
+                            entry: self.literal_entries[m.pattern().as_usize()],
+                        });
+                    }
+                    Some(at) => {
+                        let Some(next) = resume(&range, at) else {
+                            break;
+                        };
+                        if !range.is_empty() {
+                            mentions.push(range.start..next);
+                        }
+                        position = next;
+                    }
+                }
             }
         }
         for r in &self.regexes {
@@ -172,12 +216,22 @@ impl Matcher {
                     if let Some(m) = caps.name(MATCH_GROUP)
                         && m.start() < m.end()
                     {
-                        hits.push(Hit {
-                            range: m.start()..m.end(),
-                            entry: r.entry,
-                        });
-                        // 後ろの条件は次の一致でも使えるよう、指した範囲の末尾から探す。
-                        next = m.end();
+                        let range = m.start()..m.end();
+                        match skip(&range) {
+                            None => {
+                                // 後ろの条件は次の一致でも使えるよう、指した範囲の末尾から探す。
+                                next = range.end;
+                                hits.push(Hit {
+                                    range,
+                                    entry: r.entry,
+                                });
+                            }
+                            // 範囲は空でないので、開始位置の次の字がある
+                            Some(at) => {
+                                next = resume(&range, at).unwrap_or(range.end);
+                                mentions.push(range.start..next);
+                            }
+                        }
                     }
                     if next > position {
                         position = next;
@@ -189,18 +243,44 @@ impl Matcher {
                     }
                 }
             } else {
-                for m in r.re.find_iter(text) {
-                    if m.start() < m.end() {
-                        hits.push(Hit {
-                            range: m.start()..m.end(),
-                            entry: r.entry,
-                        });
+                let mut position = 0;
+                while let Some(m) = r.re.find_at(text, position) {
+                    let range = m.start()..m.end();
+                    let skipped = if range.is_empty() {
+                        Some(range.end)
+                    } else {
+                        skip(&range)
+                    };
+                    match skipped {
+                        None => {
+                            position = range.end;
+                            hits.push(Hit {
+                                range,
+                                entry: r.entry,
+                            });
+                        }
+                        Some(at) => {
+                            let Some(next) = resume(&range, at) else {
+                                break;
+                            };
+                            if !range.is_empty() {
+                                mentions.push(range.start..next);
+                            }
+                            position = next;
+                        }
                     }
                 }
             }
         }
+        // 別の項目で見つけた一致も、言及の範囲から始まるものは除く
+        hits.retain(|h| !mentions.iter().any(|m| m.contains(&h.range.start)));
         select_non_overlapping(hits)
     }
+}
+
+/// `at` の次の文字の境界。`at` が末尾なら `None`。
+fn after_char(text: &str, at: usize) -> Option<usize> {
+    text[at..].chars().next().map(|c| at + c.len_utf8())
 }
 
 /// 重なる一致から、先に始まり長いものを優先して重ならない組を選ぶ。
@@ -257,7 +337,8 @@ pub(super) fn diagnostic(
 ///
 /// 同じブロック内で対応する引用符 (「」・『』・“”・二重引用符) の内側に完全に収まる一致と、
 /// 開き引用符の直後の一致は、語句への言及として除く ([`QuoteRanges`])。辞書の語句は書き手の
-/// 言い回しの癖を指すもので、引用した語句や発言は書き手の言い回しではないため。
+/// 言い回しの癖を指すもので、引用した語句や発言は書き手の言い回しではないため。除いた一致は、
+/// 重なる後ろの一致を隠さない ([`Matcher::find_except`])。
 pub(super) struct PhraseRule {
     spec: &'static PhraseSpec,
     matcher: Matcher,
@@ -320,14 +401,19 @@ impl Rule for PhraseRule {
                 .then(|| QuoteRanges::new(&block.text));
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
-                for hit in self.matcher.find(text) {
+                let offset = sentence.range.start;
+                // 引用の中の一致は除き、引用の閉じ (閉じない引用は一致の末尾) から探し直す
+                let hits = self.matcher.find_except(text, |r| {
+                    let quotes = quotes.as_ref()?;
+                    let abs = offset + r.start..offset + r.end;
+                    quotes
+                        .excludes(&abs)
+                        .then(|| quotes.resume_after(&abs).saturating_sub(offset))
+                });
+                for hit in hits {
                     let entry = &self.spec.entries[hit.entry];
                     let matched = &text[hit.range.clone()];
-                    let abs = (sentence.range.start + hit.range.start)
-                        ..(sentence.range.start + hit.range.end);
-                    if quotes.as_ref().is_some_and(|q| q.excludes(&abs)) {
-                        continue;
-                    }
+                    let abs = (offset + hit.range.start)..(offset + hit.range.end);
                     let message = self.spec.message.replace("{m}", &quote(matched));
                     out.push(
                         diagnostic(
@@ -371,6 +457,63 @@ mod tests {
     fn every_entry_is_matched() {
         let m = Matcher::new(ENTRIES);
         assert_eq!(m.find("晴れるでしょう").len(), 1);
+    }
+
+    #[test]
+    fn skipped_hits_do_not_hide_later_overlapping_hits() {
+        let texts = |text: &str, hits: &[Hit]| -> Vec<String> {
+            hits.iter()
+                .map(|h| text[h.range.clone()].to_string())
+                .collect()
+        };
+        // リテラル: 先に始まる長い一致を除き、返した位置 (その中の次の字) から探し直す
+        let m = Matcher::new(ENTRIES);
+        let text = "これはと言えるでしょう。";
+        let start = text.find("と言える").unwrap();
+        let skip = |r: &Range<usize>| (r.start == start).then_some(r.start);
+        assert_eq!(
+            texts(text, &m.find_except(text, skip)),
+            ["言える", "でしょう"]
+        );
+        // 返した位置が一致の末尾なら、一致の中は探し直さない
+        let skip = |r: &Range<usize>| (r.start == start).then_some(r.end);
+        assert!(m.find_except(text, skip).is_empty());
+        // 正規表現 (グループあり・なし): 引用の中の「単なる」から始まる一致を除いても、
+        // その一致に含まれていた後ろの「単なる」を拾う
+        const FRAMED: &[Entry] = &[Entry::re(r"単なる[^。]{1,25}?ではなく", Severity::Info)];
+        const GROUPED_FRAMED: &[Entry] = &[Entry::re(
+            r"(?:^|[^が])(?P<m>単なる[^。]{1,25}?ではなく)",
+            Severity::Info,
+        )];
+        let text = "「単なる作業」と、これは単なる道具ではなく、体験だ。";
+        let quoted = text.find("単なる").unwrap();
+        let closing = text.find('」').unwrap();
+        for entries in [FRAMED, GROUPED_FRAMED] {
+            let m = Matcher::new(entries);
+            let all = m.find(text);
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].range.start, quoted);
+            let skip = |r: &Range<usize>| (r.start == quoted).then_some(closing);
+            assert_eq!(
+                texts(text, &m.find_except(text, skip)),
+                ["単なる道具ではなく"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_skipped_mention_hides_shorter_hits_of_other_entries_inside_it() {
+        // リテラルの「することができる」を言及として除くと、その中から始まる正規表現の
+        // 「ことができる」も同じ言及として除く
+        const ENTRIES: &[Entry] = &[
+            Entry::lit("することができる", Severity::Info),
+            Entry::re(r"ことが(でき|出来)(る|ます)", Severity::Info),
+        ];
+        let m = Matcher::new(ENTRIES);
+        let text = "することができる。";
+        assert_eq!(m.find(text).len(), 1);
+        let skip = |r: &Range<usize>| (r.start == 0).then_some(r.end);
+        assert!(m.find_except(text, skip).is_empty());
     }
 
     #[test]
