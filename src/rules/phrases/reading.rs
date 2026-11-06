@@ -12,7 +12,7 @@ use regex::{Regex, RegexSet};
 use crate::diagnostic::{Diagnostic, Lane, Severity};
 use crate::document::MarkKind;
 use crate::morph::MorphToken;
-use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, option_usize, quote};
+use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, option_usize, quote, unknown_option};
 use crate::text::quotes::QuoteRanges;
 use crate::text::{self, PLACEHOLDER};
 
@@ -148,7 +148,7 @@ impl Rule for KanjiRun {
                 self.min_length = v;
                 Ok(())
             }
-            _ => Err(format!("P15 に `{key}` という設定項目はありません")),
+            _ => Err(unknown_option(self.meta(), key)),
         }
     }
 
@@ -597,7 +597,7 @@ impl Rule for NoChain {
                 self.min_chain = v;
                 Ok(())
             }
-            _ => Err(format!("P16 に `{key}` という設定項目はありません")),
+            _ => Err(unknown_option(self.meta(), key)),
         }
     }
 

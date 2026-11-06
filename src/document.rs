@@ -466,7 +466,7 @@ impl Document {
             0
         };
         let (mut blocks, directives) = match format {
-            SourceFormat::Markdown => crate::markdown::parse(&source),
+            SourceFormat::Markdown => crate::markdown::parse_document(&source),
             SourceFormat::PlainText => crate::plaintext::parse(&source),
             #[cfg(feature = "code")]
             SourceFormat::Code(language) => {
@@ -558,14 +558,14 @@ impl Document {
     ///
     /// 構造系のルールが 1000 字あたりの密度を測る母数と、`noslop calibrate` の 1000 字あたりの
     /// 件数に使う。front matter (題名・タグ・日付などのメタデータ) は読み手が読む本文ではないので、
-    /// 含めると front matter の長い文書ほど密度が低く出る。
+    /// 含めると front matter の長い文書ほど密度が低く出る。本文全体を包むフェンスがあれば、
+    /// 本文として読む中身だけを数える ([`crate::markdown::body`])。
     pub fn body_char_count(&self) -> usize {
-        let front_matter = match self.format {
-            SourceFormat::Markdown => crate::markdown::front_matter_len(&self.source),
-            SourceFormat::PlainText => 0,
-            SourceFormat::Code(_) => 0,
+        let body = match self.format {
+            SourceFormat::Markdown => crate::markdown::body(&self.source).range,
+            SourceFormat::PlainText | SourceFormat::Code(_) => 0..self.source.len(),
         };
-        self.source[front_matter..].chars().count()
+        self.source[body].chars().count()
     }
 
     /// 原文上の範囲の文字列。

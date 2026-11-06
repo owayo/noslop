@@ -33,6 +33,7 @@ use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
+use crate::document::Document;
 use crate::engine::{FileReport, RunReport};
 use crate::output::RenderOptions;
 
@@ -45,7 +46,7 @@ const LEAD_WIDTH: usize = 24;
 /// (`noslop diff` の件数の行も同じ順)。
 pub(crate) const LANES: [Lane; 3] = [Lane::Slop, Lane::Custom, Lane::Readability];
 
-fn severity_style(s: Severity) -> Style {
+pub(crate) fn severity_style(s: Severity) -> Style {
     match s {
         Severity::Error => AnsiColor::Red.on_default().bold(),
         Severity::Warning => AnsiColor::Yellow.on_default().bold(),
@@ -53,12 +54,39 @@ fn severity_style(s: Severity) -> Style {
     }
 }
 
-fn dim() -> Style {
+pub(crate) fn dim() -> Style {
     Style::new().dimmed()
 }
 
-fn bold() -> Style {
+pub(crate) fn bold() -> Style {
     Style::new().bold()
+}
+
+/// 指摘の見出し行 (`12:5  警告  [AI 臭さ]  P03 AI_CONJUNCTION [弱い手掛かり]`) を、改行を付けずに書く。
+///
+/// `noslop check` の端末出力と `noslop diff` で共有し、呼び名をそろえる。節の見出しが画面の外に
+/// 流れても、どのレーンの指摘かが分かるよう、どのレーンでも重大度の隣にレーン名を出す。AI 臭さの
+/// レーンの指摘は、末尾に淡色で手掛かりの強さを付ける。`prefix` は位置の前 (`前 ` など) に付ける。
+pub(crate) fn write_headline(
+    doc: &Document,
+    d: &Diagnostic,
+    prefix: &str,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let (line, col) = doc.line_col(d.span.start);
+    let (b, dm, sev) = (bold(), dim(), severity_style(d.severity));
+    write!(
+        out,
+        "  {dm}{prefix}{line}:{col}{dm:#}  {sev}{}{sev:#}  [{}]  {b}{}{b:#} {}",
+        d.severity.label_ja(),
+        d.lane.label_ja(),
+        d.rule_id,
+        d.rule_name
+    )?;
+    if let Some(signal) = d.signal {
+        write!(out, " {dm}[{}]{dm:#}", signal.label_ja())?;
+    }
+    Ok(())
 }
 
 /// 実行結果をすべて書き出す。
@@ -134,22 +162,9 @@ fn render_section_heading(
 
 fn render_diagnostic(file: &FileReport, d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
     let doc = &file.doc;
-    let (line, col) = doc.line_col(d.span.start);
     let sev = severity_style(d.severity);
     let dm = dim();
-    let b = bold();
-    // 節の見出しが画面の外に流れても、どのレーンの指摘かが分かるよう、各行にもレーン名を出す
-    write!(
-        out,
-        "  {dm}{line}:{col}{dm:#}  {sev}{}{sev:#}  [{}]  {b}{}{b:#} {}",
-        d.severity.label_ja(),
-        d.lane.label_ja(),
-        d.rule_id,
-        d.rule_name
-    )?;
-    if let Some(signal) = d.signal {
-        write!(out, " {dm}[{}]{dm:#}", signal.label_ja())?;
-    }
+    write_headline(doc, d, "", out)?;
     writeln!(out)?;
     writeln!(out, "    {}", d.message)?;
     if let Some(context) = d.context {

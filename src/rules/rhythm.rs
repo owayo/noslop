@@ -29,7 +29,8 @@ mod triads;
 use crate::diagnostic::Span;
 use crate::document::{Block, Document, MarkKind, Sentence};
 use crate::genre::Genre;
-use crate::rules::{Rule, RuleMeta, option_f64};
+// 子のモジュール (`rhythm/*.rs`) は、設定項目の補助関数を `super::` から読む
+use crate::rules::{Rule, option_count, option_f64_in, unknown_option};
 // 各ルールは `super::` から使う (文末と体言止めの判定は `noslop diff` と共有する)
 use crate::text::{is_nominal_ending, is_nounish, strip_sentence_end};
 
@@ -110,30 +111,6 @@ fn mean_sd(values: &[f64]) -> Option<(f64, f64)> {
     let mean = values.iter().sum::<f64>() / n;
     let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
     Some((mean, var.sqrt()))
-}
-
-/// 設定項目がないときのエラー文 (既定の `Rule::configure` と同じ書き方)。
-fn unknown_option(meta: &RuleMeta, key: &str) -> String {
-    format!("{} に `{key}` という設定項目はありません", meta.id)
-}
-
-/// 設定値を `lo..=hi` の数値として読む。
-fn option_f64_in(key: &str, value: &toml::Value, lo: f64, hi: f64) -> Result<f64, String> {
-    let v = option_f64(key, value)?;
-    if !(lo..=hi).contains(&v) {
-        return Err(format!(
-            "`{key}` には {lo} 以上 {hi} 以下の数値を指定してください"
-        ));
-    }
-    Ok(v)
-}
-
-/// 設定値を 1 以上の整数として読む。
-fn option_count(key: &str, value: &toml::Value) -> Result<usize, String> {
-    match crate::rules::option_usize(key, value)? {
-        0 => Err(format!("`{key}` には 1 以上の整数を指定してください")),
-        n => Ok(n),
-    }
 }
 
 #[cfg(test)]

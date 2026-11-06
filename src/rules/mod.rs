@@ -158,10 +158,7 @@ pub trait Rule: Send + Sync {
 
     /// 設定ファイルの `[rules.<ID>]` のうち、エンジンが扱う `enabled` / `severity` 以外のキーを受け取る。
     fn configure(&mut self, key: &str, _value: &toml::Value) -> Result<(), String> {
-        Err(format!(
-            "{} に `{key}` という設定項目はありません",
-            self.meta().id
-        ))
+        Err(unknown_option(self.meta(), key))
     }
 
     /// 設定できる項目と現在値 (`noslop explain` の表示用)。
@@ -287,6 +284,56 @@ pub fn option_usize(key: &str, value: &toml::Value) -> Result<usize, String> {
         toml::Value::Integer(i) if *i >= 0 => Ok(*i as usize),
         _ => Err(format!("`{key}` には 0 以上の整数を指定してください")),
     }
+}
+
+/// そのルールにない設定項目を指定されたときの誤りの文。ルールの `configure` が共有する
+/// (既定の [`Rule::configure`] も同じ文を返す)。
+pub(crate) fn unknown_option(meta: &RuleMeta, key: &str) -> String {
+    format!("{} に `{key}` という設定項目はありません", meta.id)
+}
+
+/// 設定値を 1 以上の整数として読む。
+pub(crate) fn option_count(key: &str, value: &toml::Value) -> Result<usize, String> {
+    match option_usize(key, value)? {
+        0 => Err(format!("`{key}` には 1 以上の整数を指定してください")),
+        n => Ok(n),
+    }
+}
+
+/// 設定値を `lo..=hi` の数値として読む。
+pub(crate) fn option_f64_in(
+    key: &str,
+    value: &toml::Value,
+    lo: f64,
+    hi: f64,
+) -> Result<f64, String> {
+    let v = option_f64(key, value)?;
+    if !(lo..=hi).contains(&v) {
+        return Err(format!(
+            "`{key}` には {lo} 以上 {hi} 以下の数値を指定してください"
+        ));
+    }
+    Ok(v)
+}
+
+/// 設定値を 0 以上の有限の数値として読む。
+pub(crate) fn option_positive(key: &str, value: &toml::Value) -> Result<f64, String> {
+    let v = option_f64(key, value)?;
+    if v < 0.0 || !v.is_finite() {
+        return Err(format!("`{key}` には 0 以上の数値を指定してください"));
+    }
+    Ok(v)
+}
+
+/// 設定値を 0 以上 1 以下の比率として読む。
+pub(crate) fn option_ratio(key: &str, value: &toml::Value) -> Result<f64, String> {
+    let v = option_positive(key, value)?;
+    if v > 1.0 {
+        return Err(format!(
+            "`{key}` には 0 以上 1 以下の数値を指定してください"
+        ));
+    }
+    Ok(v)
 }
 
 /// 診断のメッセージに引用する本文 (プレースホルダは「…」に置き換え、空白を詰める)。

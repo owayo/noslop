@@ -8,6 +8,7 @@
 use std::sync::LazyLock;
 
 mod relations;
+mod wrapped;
 
 use regex::Regex;
 
@@ -15,7 +16,10 @@ use crate::diagnostic::{Diagnostic, Lane, Severity, Signal, Span};
 use crate::document::{Block, BlockKind, MarkKind};
 use crate::genre::Genre;
 use crate::heading::HeadingShape;
-use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta, option_f64, option_usize, quote};
+use crate::rules::{
+    Fires, Measure, Rule, RuleContext, RuleMeta, option_count, option_positive, option_ratio,
+    quote, unknown_option,
+};
 use crate::text;
 
 /// 構造系の組み込みルール。構造のルールはジャンルで閾値を変えない (ジャンルの慣習との衝突は
@@ -34,37 +38,8 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(LabelStyle::new()),
         Box::new(relations::EnumerationCount),
         Box::new(relations::EmptySection),
+        Box::new(wrapped::WrappedDocument),
     ]
-}
-
-fn unknown_option(meta: &RuleMeta, key: &str) -> String {
-    format!("{} に `{key}` という設定項目はありません", meta.id)
-}
-
-fn option_count(key: &str, value: &toml::Value) -> Result<usize, String> {
-    match option_usize(key, value)? {
-        0 => Err(format!("`{key}` には 1 以上の整数を指定してください")),
-        n => Ok(n),
-    }
-}
-
-fn option_positive(key: &str, value: &toml::Value) -> Result<f64, String> {
-    let v = option_f64(key, value)?;
-    if v < 0.0 || !v.is_finite() {
-        return Err(format!("`{key}` には 0 以上の数値を指定してください"));
-    }
-    Ok(v)
-}
-
-/// 設定値を 0 以上 1 以下の比率として読む。
-fn option_ratio(key: &str, value: &toml::Value) -> Result<f64, String> {
-    let v = option_positive(key, value)?;
-    if v > 1.0 {
-        return Err(format!(
-            "`{key}` には 0 以上 1 以下の数値を指定してください"
-        ));
-    }
-    Ok(v)
 }
 
 /// ブロックの本文 (前後の空白を除く) と、その原文上の範囲。
@@ -1655,7 +1630,7 @@ mod tests {
     fn ids_lanes_signals_and_business_genre() {
         let rules = rules(Genre::General);
         let ids: Vec<_> = rules.iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=12).map(|n| format!("S{n:02}")).collect();
+        let expected: Vec<String> = (1..=13).map(|n| format!("S{n:02}")).collect();
         assert_eq!(ids, expected);
         for r in &rules {
             let id = r.meta().id;
@@ -1668,10 +1643,11 @@ mod tests {
                 },
                 "{id}"
             );
-            // 手掛かりの強さは、人の文書 440 本と生成文書 390 本で測った反応率から決めた値。
+            // 手掛かりの強さは、人の文書 440 本と生成文書 390 本で測った反応率から決めた値
+            // (S13 は標準の測定で測れないので、人の文書 444 本と 2026 年の生成文書で測った値)。
             // 読みやすさのレーンのルール (S11・S12) は持たない
             let signal = match id {
-                "S04" | "S06" | "S07" => Some(Signal::Strong),
+                "S04" | "S06" | "S07" | "S13" => Some(Signal::Strong),
                 "S01" | "S02" => Some(Signal::Moderate),
                 "S03" | "S05" | "S08" | "S09" | "S10" => Some(Signal::Weak),
                 _ => None,

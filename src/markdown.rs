@@ -15,7 +15,7 @@
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 
 use crate::diagnostic::Span;
@@ -132,13 +132,120 @@ pub(crate) fn lines_break_sentence(prev_line: &str, next_line: &str, hard: bool)
 ///
 /// `source` は先頭の BOM を除いた原文 ([`crate::document::Document::parse`] が除く)。
 /// 先頭の front matter の後ろだけを解析し、位置は原文上のバイト位置に戻す。
+/// コードのドキュメントコメントのように、文書の一部を Markdown として読むときに使う。
+/// 本文全体を包むフェンスを本文として読むのは [`parse_document`] だけ。
 pub fn parse(source: &str) -> (Vec<Block>, Vec<Directive>) {
+    parse_range(source, front_matter_len(source)..source.len())
+}
+
+/// Markdown の文書 (ファイル・標準入力) をブロックと抑制コメントに分ける。
+///
+/// [`body`] の範囲を解析する。本文全体が Markdown を包む 1 つのフェンスなら、その中身を
+/// 本文として読む。
+pub(crate) fn parse_document(source: &str) -> (Vec<Block>, Vec<Directive>) {
+    parse_range(source, body(source).range)
+}
+
+fn parse_range(source: &str, range: Range<usize>) -> (Vec<Block>, Vec<Directive>) {
     let mut builder = Builder::new(source);
-    let body = front_matter_len(source);
-    for (event, range) in Parser::new_ext(&source[body..], options()).into_offset_iter() {
-        builder.event(event, range.start + body..range.end + body);
+    let start = range.start;
+    for (event, r) in Parser::new_ext(&source[range], options()).into_offset_iter() {
+        builder.event(event, r.start + start..r.end + start);
     }
     builder.finish()
+}
+
+/// 文書の本文として読む範囲 ([`body`] が求める)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Body {
+    /// 本文として解析する原文上の範囲。
+    pub range: Range<usize>,
+    /// 本文全体を包んでいたフェンス。包んでいなければ `None`。
+    pub wrapper: Option<Wrapper>,
+}
+
+/// 本文全体を包むコードフェンス (```` ```markdown ```` から閉じのフェンスまで)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Wrapper {
+    /// 開きのフェンスの行 (改行を除く)。
+    pub opening: Span,
+    /// 閉じのフェンスの行 (改行を除く)。閉じがなく文書の終わりまで続くときは `None`。
+    pub closing: Option<Span>,
+}
+
+/// 文書の本文として読む範囲を求める。
+///
+/// 先頭の front matter ([`front_matter_len`]) の後ろが本文。本文が、前後の空行を除いて
+/// 1 つのフェンスだけでできていて、開きのフェンスが行頭から始まり、情報文字列の最初の語が
+/// `markdown` か `md` (大文字小文字を問わない) なら、フェンスの中身を本文とする。チャットの
+/// 応答をそのまま貼ると本文全体がフェンスに入り、コードとして読み飛ばされるため。
+///
+/// - 閉じは CommonMark の判定に従う (pulldown-cmark が閉じとみなす行だけ)。閉じがなければ
+///   文書の終わりまでを中身とし、行の末尾に付いた閉じらしい記号も中身のまま読む
+/// - 展開は 1 段だけ。中身にあるフェンス (外側より短いもの) はコードのまま読み飛ばす
+/// - 字下げしたフェンスは対象にしない (中身の行の字下げが外れ、原文のひと続きの範囲にならない)
+/// - 言語の指定のないフェンスは対象にしない (コード例・ログとの区別を測っていない)
+/// - 中身の先頭の front matter は、文書の先頭と同じように外す
+pub(crate) fn body(source: &str) -> Body {
+    let start = front_matter_len(source);
+    let Some((content, wrapper)) = wrapped_content(source, start) else {
+        return Body {
+            range: start..source.len(),
+            wrapper: None,
+        };
+    };
+    let inner = content.start + front_matter_len(&source[content.clone()]);
+    Body {
+        range: inner..content.end,
+        wrapper: Some(wrapper),
+    }
+}
+
+/// `start` から後ろが本文全体を包むフェンスなら、中身の範囲とフェンスを返す。
+fn wrapped_content(source: &str, start: usize) -> Option<(Range<usize>, Wrapper)> {
+    let rest = &source[start..];
+    // フェンスで始まらない文書 (ほとんどの文書) は解析しない
+    let first = rest.trim_start_matches(['\n', '\r', ' ', '\t']);
+    if !(first.starts_with("```") || first.starts_with("~~~")) {
+        return None;
+    }
+    let mut events = Parser::new_ext(rest, options()).into_offset_iter();
+    let (Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))), block) = events.next()? else {
+        return None;
+    };
+    let open = block.start;
+    if !rest[open..].starts_with(['`', '~']) || (open > 0 && !rest[..open].ends_with('\n')) {
+        return None;
+    }
+    let language = info.split_whitespace().next().unwrap_or_default();
+    if !language.eq_ignore_ascii_case("markdown") && !language.eq_ignore_ascii_case("md") {
+        return None;
+    }
+    let mut content: Option<Range<usize>> = None;
+    for (event, range) in events.by_ref() {
+        match event {
+            Event::Text(_) => {
+                content = Some(content.map_or(range.clone(), |c| c.start..range.end));
+            }
+            Event::End(TagEnd::CodeBlock) => break,
+            _ => return None,
+        }
+    }
+    // フェンスの後ろに別のブロックがあれば、本文全体を包んでいるとはいえない
+    if events.next().is_some() {
+        return None;
+    }
+    let content = content?;
+    let line = |r: Range<usize>| {
+        let text = rest[r.clone()].trim_end_matches(['\n', '\r']);
+        Span::new(start + r.start, start + r.start + text.len())
+    };
+    let opening = line(open..content.start);
+    let closing = (content.end < block.end).then(|| line(content.end..block.end));
+    Some((
+        start + content.start..start + content.end,
+        Wrapper { opening, closing },
+    ))
 }
 
 /// 文書の先頭にある front matter の長さ (閉じの行の改行まで含むバイト数)。なければ 0。
@@ -151,6 +258,8 @@ pub fn parse(source: &str) -> (Vec<Block>, Vec<Directive>) {
 /// - 閉じは行頭の `---` か `...` (TOML は `+++`)。ちょうど 3 字で、後ろはスペースだけ
 /// - 開きの次の行が空行か閉じの行なら front matter ではない (区切り線として読む)
 /// - 閉じの行がなければ front matter ではない (全体を本文として読む)
+/// - 開きと閉じの間に地の文の行 ([`prose_line`]) があれば front matter ではない。文書の先頭と
+///   途中に区切り線 (`---`) を引いた文書で、その間の本文を front matter として捨てないため
 pub(crate) fn front_matter_len(source: &str) -> usize {
     let bytes = source.as_bytes();
     let fence = match bytes.first() {
@@ -164,6 +273,8 @@ pub(crate) fn front_matter_len(source: &str) -> usize {
     }
     let mut pos = opening_end;
     let mut first = true;
+    // 複数行にわたる文字列 (YAML の二重引用符、TOML の """ と ''') の内側か
+    let mut in_string = false;
     while pos < bytes.len() {
         let line = &bytes[pos..];
         if let Some(len) = closing_line_len(line, fence) {
@@ -172,10 +283,59 @@ pub(crate) fn front_matter_len(source: &str) -> usize {
         if first && line_end_len(skip_blanks(line)).is_some() {
             return 0;
         }
+        let next = next_line_start(bytes, pos);
+        let text = String::from_utf8_lossy(&bytes[pos..next]);
+        let text = text.trim_end_matches(['\n', '\r']);
+        if !in_string && prose_line(text, fence) {
+            return 0;
+        }
+        if string_delimiters(text, fence) % 2 == 1 {
+            in_string = !in_string;
+        }
         first = false;
-        pos = next_line_start(bytes, pos);
+        pos = next;
     }
     0
+}
+
+/// front matter (YAML・TOML) の行としては書かない、日本語の地の文の行か。
+///
+/// YAML と TOML の値は `キー: 値`・`キー = 値` の形か、字下げした続きの行に書く。字下げがなく、
+/// コメント・リスト・表の見出しでもなく、キーの区切りを持たない日本語の行は、区切り線で
+/// 挟んだ本文の行とみなす。
+fn prose_line(line: &str, fence: u8) -> bool {
+    if line.starts_with([' ', '\t']) || !line.chars().any(text::is_japanese) {
+        return false;
+    }
+    let first = line.chars().next().unwrap_or_default();
+    if matches!(
+        first,
+        '#' | '-' | '[' | '{' | '?' | '!' | '&' | '*' | '|' | '>' | '"' | '\''
+    ) {
+        return false;
+    }
+    if fence == b'+' {
+        !line.contains('=')
+    } else {
+        !(line.contains(": ") || line.ends_with(':'))
+    }
+}
+
+/// 行の中の、複数行にわたる文字列の区切りの数 (YAML は前に `\` のない `"`、TOML は `"""` と `'''`)。
+fn string_delimiters(line: &str, fence: u8) -> usize {
+    if fence == b'+' {
+        return line.matches("\"\"\"").count() + line.matches("'''").count();
+    }
+    let mut count = 0;
+    let mut escaped = false;
+    for c in line.chars() {
+        match c {
+            '\\' => escaped = !escaped,
+            '"' if !escaped => count += 1,
+            _ => escaped = false,
+        }
+    }
+    count
 }
 
 /// front matter を閉じる行なら、その長さ (改行を含む)。
@@ -1046,6 +1206,121 @@ mod tests {
             &src[b[1].to_source(0..b[1].text.len()).range()],
             "さて、二。"
         );
+    }
+
+    #[test]
+    fn prose_between_marker_lines_at_the_top_is_not_front_matter() {
+        // 文書の先頭と途中に区切り線を引いた文書。間に地の文の行があれば front matter ではなく、
+        // 本文として読む (以前はその間の本文全体を捨てていた)
+        let src = "---\n# 報告\n\n皆様、こんにちは。今日は報告です。\n\n---\n\n以上です。\n";
+        assert_eq!(front_matter_len(src), 0);
+        assert_eq!(
+            outline(src),
+            [
+                "H1:報告",
+                "P:皆様、こんにちは。今日は報告です。",
+                "P:以上です。"
+            ]
+        );
+        // キーと値・コメント・リスト・字下げした続き・複数行の文字列は front matter の行
+        for src in [
+            "---\ntitle: 題\n# コメント\ntags:\n  - メモ\n- 一覧\n---\n本文。\n",
+            "---\ndescription: \"一行目\nそのまま続く二行目\"\n---\n本文。\n",
+            "+++\ndescription = \"\"\"\n説明の本文です。\n\"\"\"\n+++\n本文。\n",
+            "---\n題名: 表題\nまとめ:\n---\n本文。\n",
+        ] {
+            assert_eq!(outline(src), ["P:本文。"], "{src:?}");
+        }
+    }
+
+    /// 文書として読んだブロック ([`parse_document`]) を [`outline`] と同じ形で並べる。
+    fn document_outline(src: &str) -> Vec<String> {
+        parse_document(src)
+            .0
+            .iter()
+            .map(|b| match b.kind {
+                BlockKind::Heading(level) => format!("H{level}:{}", b.text),
+                BlockKind::Paragraph => format!("P:{}", b.text),
+                BlockKind::ListItem => format!("L:{}", b.text),
+                BlockKind::TableCell => format!("T:{}", b.text),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_fence_wrapping_the_whole_document_is_read_as_the_body() {
+        // 外側のフェンスだけを外し、中のコードブロックは読み飛ばす
+        let src = "\n````markdown\n# 題\n\n本文と言えるでしょう。\n\n```sh\nls\n```\n````\n\n";
+        assert_eq!(document_outline(src), ["H1:題", "P:本文と言えるでしょう。"]);
+        // ドキュメントコメントなどの読み方 (parse) では外さない
+        assert!(blocks(src).is_empty());
+        let doc = crate::document::Document::markdown(src);
+        let sentence = doc
+            .sentences
+            .iter()
+            .find(|s| doc.sentence_text(s) == "本文と言えるでしょう。")
+            .unwrap();
+        assert_eq!(sentence.span.start, src.find("本文").unwrap());
+        assert_eq!(doc.line_col(sentence.span.start), (5, 1));
+        let b = body(src);
+        let wrapper = b.wrapper.unwrap();
+        assert_eq!(&src[wrapper.opening.range()], "````markdown");
+        assert_eq!(&src[wrapper.closing.unwrap().range()], "````");
+        assert_eq!(
+            &src[b.range],
+            "# 題\n\n本文と言えるでしょう。\n\n```sh\nls\n```\n"
+        );
+        // 構造の解析も同じ範囲を読む
+        let tree = crate::structure::Structure::parse(&doc);
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|n| n.kind == crate::structure::NodeKind::Heading(1))
+        );
+        assert_eq!(tree.nodes[0].span.start, src.find("# 題").unwrap());
+    }
+
+    #[test]
+    fn wrapping_fences_in_other_forms() {
+        // 閉じがなければ文書の終わりまで。末尾に付いた閉じらしい記号は中身のまま読む
+        let unclosed = "```markdown\n# 題\n\nまとめると、こうです。```";
+        assert_eq!(
+            document_outline(unclosed),
+            ["H1:題", "P:まとめると、こうです。```"]
+        );
+        assert_eq!(body(unclosed).wrapper.unwrap().closing, None);
+        // 大文字・チルダ・情報文字列の続き・CRLF
+        for src in [
+            "```Markdown\n本文です。\n```\n",
+            "~~~md title=\"記事\"\n本文です。\n~~~\n",
+            "```md\r\n本文です。\r\n```\r\n",
+        ] {
+            assert_eq!(document_outline(src), ["P:本文です。"], "{src:?}");
+        }
+        // 外側と内側の front matter をどちらも外す
+        let src = "---\ntitle: x\n---\n```markdown\n---\ntitle: y\n---\n本文です。\n```\n";
+        assert_eq!(document_outline(src), ["P:本文です。"]);
+        assert_eq!(&src[body(src).range], "本文です。\n");
+    }
+
+    #[test]
+    fn fences_that_do_not_wrap_the_whole_document_stay_code() {
+        for src in [
+            "```\n本文です。\n```\n",
+            "```text\n本文です。\n```\n",
+            "  ```markdown\n  本文です。\n  ```\n",
+            "以下が記事です。\n\n```markdown\n本文です。\n```\n",
+            "```markdown\n本文です。\n```\n\n以上です。\n",
+            "```markdown\n本文です。\n\n```sh\nls\n```\n\n続きです。\n```\n",
+            "```markdown\n```\n",
+        ] {
+            assert_eq!(body(src).wrapper, None, "{src:?}");
+            assert_eq!(
+                format!("{:#?}", parse_document(src)),
+                format!("{:#?}", parse(src)),
+                "{src:?}"
+            );
+        }
     }
 
     #[test]

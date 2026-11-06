@@ -39,15 +39,18 @@ pub struct Structure {
 
 impl Structure {
     /// Markdownと同じfront matter・拡張構文を使う。推定したテキストの構造とは混ぜない。
+    /// 本文として読む範囲は文書の読み込みと同じ ([`crate::markdown::body`]。本文全体を
+    /// 包むフェンスがあれば、その中身)。
     pub fn parse(doc: &Document) -> Self {
         if doc.format != SourceFormat::Markdown {
             return Self::default();
         }
-        let body = crate::markdown::front_matter_len(&doc.source);
+        let range = crate::markdown::body(&doc.source).range;
+        let body = range.start;
         let mut result = Self {
             nodes: vec![Node {
                 kind: NodeKind::Document,
-                span: Span::new(body, doc.source.len()),
+                span: Span::new(range.start, range.end),
                 parent: None,
                 children: vec![],
                 block_ids: vec![],
@@ -55,7 +58,7 @@ impl Structure {
         };
         let mut stack = vec![Some(0)];
         for (event, range) in
-            Parser::new_ext(&doc.source[body..], crate::markdown::options()).into_offset_iter()
+            Parser::new_ext(&doc.source[range], crate::markdown::options()).into_offset_iter()
         {
             match event {
                 Event::Start(tag) => {

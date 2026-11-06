@@ -984,51 +984,18 @@ fn check(args: CheckArgs) -> u8 {
     };
 
     let report = if args.git_diff {
-        match check_changed(&args.paths, &walk_opts, &engine) {
-            Ok(report) => report,
-            Err(e) => return error(e),
-        }
+        check_changed(&args.paths, &walk_opts, &engine)
     } else {
-        let mut inputs = Vec::new();
-        let mut paths = Vec::new();
-        let mut stdin_used = false;
-        let paths_arg = if args.paths.is_empty() {
-            vec![PathBuf::from(".")]
-        } else {
-            args.paths.clone()
-        };
-        for path in &paths_arg {
-            if !is_stdin(path) {
-                paths.push(path.clone());
-            } else if !stdin_used {
-                stdin_used = true;
-                match read_stdin(args.stdin_filename.as_deref()) {
-                    Ok(input) => inputs.push(input),
-                    Err(e) => return error(e),
-                }
-            }
-        }
-        let collected = walk::collect(&paths, &walk_opts);
-        for dir in &collected.empty_dirs {
-            eprintln!(
-                "警告: {dir} には検査するファイルがありません (拡張子と、.gitignore などの除外の指定を確かめてください)"
-            );
-        }
-        inputs.extend(collected.files.into_iter().map(Input::Path));
-
-        let mut report = engine.run(inputs);
-        let mut errors: Vec<_> = collected
-            .errors
-            .into_iter()
-            .map(|e| crate::engine::FileError {
-                path: e.path,
-                message: e.message,
-            })
-            .collect();
-        errors.append(&mut report.errors);
-        errors.sort_by(|a, b| a.path.cmp(&b.path));
-        report.errors = errors;
-        report
+        check_paths(
+            &args.paths,
+            args.stdin_filename.as_deref(),
+            &walk_opts,
+            &engine,
+        )
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(e) => return error(e),
     };
 
     // 標準出力のロックは改行のたびにフラッシュするので、直接書くと整形済み JSON や
@@ -1055,6 +1022,56 @@ fn check(args: CheckArgs) -> u8 {
     } else {
         EXIT_OK
     }
+}
+
+/// 指定したパス (省くとカレントディレクトリ) と標準入力 (`-`。最初の 1 つだけ読む) を検査する。
+///
+/// 対象の列挙で読めなかったパスと、検査で読めなかったファイルの誤りを、パスの順にまとめて返す。
+/// 検査するファイルのないディレクトリは、警告を標準エラーに書く。
+fn check_paths(
+    paths: &[PathBuf],
+    stdin_filename: Option<&str>,
+    walk: &WalkOptions,
+    engine: &Engine,
+) -> Result<crate::engine::RunReport, String> {
+    let mut inputs = Vec::new();
+    let mut files = Vec::new();
+    let mut stdin_used = false;
+    let default = [PathBuf::from(".")];
+    let paths = if paths.is_empty() {
+        &default[..]
+    } else {
+        paths
+    };
+    for path in paths {
+        if !is_stdin(path) {
+            files.push(path.clone());
+        } else if !stdin_used {
+            stdin_used = true;
+            inputs.push(read_stdin(stdin_filename)?);
+        }
+    }
+    let collected = walk::collect(&files, walk);
+    for dir in &collected.empty_dirs {
+        eprintln!(
+            "警告: {dir} には検査するファイルがありません (拡張子と、.gitignore などの除外の指定を確かめてください)"
+        );
+    }
+    inputs.extend(collected.files.into_iter().map(Input::Path));
+
+    let mut report = engine.run(inputs);
+    let mut errors: Vec<_> = collected
+        .errors
+        .into_iter()
+        .map(|e| crate::engine::FileError {
+            path: e.path,
+            message: e.message,
+        })
+        .collect();
+    errors.append(&mut report.errors);
+    errors.sort_by(|a, b| a.path.cmp(&b.path));
+    report.errors = errors;
+    Ok(report)
 }
 
 /// 差分は対象の選択と指摘の絞り込みだけに使い、検査はファイル全体に当てる。

@@ -22,6 +22,7 @@ mod engine;
 mod jargon;
 mod location;
 mod markup;
+mod mere;
 mod permission;
 mod reading;
 mod stance;
@@ -70,6 +71,7 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(jargon::ActionJargon::new()),
         Box::new(PhraseRule::new(&closer::P27)),
         Box::new(permission::PermissiveAction),
+        Box::new(PhraseRule::new(&mere::P29)),
     ]
 }
 
@@ -81,7 +83,7 @@ mod tests {
     #[test]
     fn all_phrase_rules_are_registered_in_id_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=28).map(|n| format!("P{n:02}")).collect();
+        let expected: Vec<String> = (1..=29).map(|n| format!("P{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -165,7 +167,7 @@ mod tests {
 
     /// 語句辞書で動くルール (P27 は自前の条件も持つので、closer のテストで確かめる) と、
     /// 引用の外で拾われる語句。
-    const DICTIONARY_PHRASES: [(&str, &str); 15] = [
+    const DICTIONARY_PHRASES: [(&str, &str); 16] = [
         ("P01", "と言えるでしょう"),
         ("P02", "見ていきましょう"),
         ("P03", "このように"),
@@ -181,6 +183,7 @@ mod tests {
         ("P18", "ご質問ありがとうございます"),
         ("P19", "革命的"),
         ("P24", "地味に効く"),
+        ("P29", "単なる道具ではなく"),
     ];
 
     #[test]
@@ -327,7 +330,7 @@ mod tests {
                 .map(|r| (r.meta().lane, r.meta().signal))
                 .unwrap()
         };
-        for id in ["P01", "P06", "P08", "P18", "P20", "P22"] {
+        for id in ["P01", "P06", "P08", "P18", "P20", "P22", "P29"] {
             assert_eq!(get(id), (Lane::Slop, Some(Strong)), "{id}");
         }
         for id in ["P07", "P09", "P10", "P13", "P19", "P21", "P24", "P25"] {
@@ -341,8 +344,8 @@ mod tests {
         }
     }
 
-    /// 語句辞書で動くルールの定義 (P27 の closer、P22 の artifacts、P24 の effect を含む)。
-    fn phrase_specs() -> [&'static engine::PhraseSpec; 17] {
+    /// 語句辞書で動くルールの定義 (P27 の closer、P22 の artifacts、P24 の effect、P29 の mere を含む)。
+    fn phrase_specs() -> [&'static engine::PhraseSpec; 18] {
         [
             &catalog::P01,
             &catalog::P02,
@@ -361,6 +364,7 @@ mod tests {
             &artifacts::P22,
             &effect::P24,
             &closer::P27,
+            &mere::P29,
         ]
     }
 

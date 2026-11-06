@@ -30,7 +30,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.10.107", default-features = false, features = ["analyzer"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.11.102", default-features = false, features = ["analyzer"] }
 
 [features]
 default = ["cli", "bundled-dict"]
@@ -65,7 +65,7 @@ globset = { version = "0.4.20", optional = true }
 hasami = { workspace = true }
 ignore = { version = "0.4.33", optional = true }
 html5gum = { version = "0.8.4", default-features = false }
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.5", default-features = false }
 process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object"], optional = true }
 rayon = "1.12.0"
 regex = "1.13.1"

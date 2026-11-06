@@ -33,15 +33,15 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use anstyle::{AnsiColor, Style};
+use anstyle::AnsiColor;
 use serde::Serialize;
 
-use crate::diagnostic::{Diagnostic, Lane, Severity, Span};
+use crate::diagnostic::{Diagnostic, Lane, Span};
 use crate::document::Document;
 use crate::engine::FileReport;
 use crate::morph::{Method, MorphologyStatus};
 use crate::output::json::{COLUMN_UNIT, DiagnosticEntry, LaneCounts, Range, Tool, format_name};
-use crate::output::text::{Counts, LANES, excerpt};
+use crate::output::text::{Counts, LANES, bold, dim, excerpt, write_headline};
 use crate::output::toon;
 
 use super::DiffReport;
@@ -55,22 +55,6 @@ pub const DIFF_SCHEMA_VERSION: u32 = 4;
 
 /// 事実・偏りの位置として並べる行番号の上限。
 const MAX_LINES_SHOWN: usize = 5;
-
-fn severity_style(s: Severity) -> Style {
-    match s {
-        Severity::Error => AnsiColor::Red.on_default().bold(),
-        Severity::Warning => AnsiColor::Yellow.on_default().bold(),
-        Severity::Info => AnsiColor::Cyan.on_default(),
-    }
-}
-
-fn dim() -> Style {
-    Style::new().dimmed()
-}
-
-fn bold() -> Style {
-    Style::new().bold()
-}
 
 /// レーンごとの指摘の件数の前後 (`AI 臭さの指摘 3 → 1 件、読みやすさの指摘 13 → 13 件`)。
 ///
@@ -265,10 +249,8 @@ pub fn render_text(report: &DiffReport, out: &mut dyn Write) -> io::Result<()> {
 
 /// 指摘 1 件を、位置の行と抜粋で書く。`detailed` なら説明と直し方の案も書く。
 ///
-/// 見出し行は `12:5  警告  [AI 臭さ]  P03 AI_CONJUNCTION` の形で、どのレーンでも重大度の
-/// 隣にレーン名を出す (`noslop check` の端末出力と同じ呼び名)。AI 臭さのレーンの指摘は、末尾に
-/// 淡色で手掛かりの強さ (`[強い手掛かり]` など) を付ける。`prefix` は位置の前 (`前 ` など)、
-/// `suffix` は見出し行の末尾に付ける。
+/// 見出し行は `noslop check` の端末出力と同じ形 ([`write_headline`]。`12:5  警告  [AI 臭さ]  P03
+/// AI_CONJUNCTION`)。`prefix` は位置の前 (`前 ` など)、`suffix` は見出し行の末尾に付ける。
 fn write_diagnostic(
     doc: &Document,
     d: &Diagnostic,
@@ -277,19 +259,9 @@ fn write_diagnostic(
     detailed: bool,
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    let (line, col) = doc.line_col(d.span.start);
-    let (b, dm, sev) = (bold(), dim(), severity_style(d.severity));
-    write!(
-        out,
-        "  {dm}{prefix}{line}:{col}{dm:#}  {sev}{}{sev:#}  [{}]  {b}{}{b:#} {}",
-        d.severity.label_ja(),
-        d.lane.label_ja(),
-        d.rule_id,
-        d.rule_name
-    )?;
-    if let Some(signal) = d.signal {
-        write!(out, " {dm}[{}]{dm:#}", signal.label_ja())?;
-    }
+    let (line, _) = doc.line_col(d.span.start);
+    let dm = dim();
+    write_headline(doc, d, prefix, out)?;
     writeln!(out, "{suffix}")?;
     if detailed {
         writeln!(out, "    {}", d.message)?;
@@ -548,7 +520,7 @@ fn build(report: &DiffReport) -> Report<'_> {
 mod tests {
     use super::*;
     use crate::config::CustomRuleConfig;
-    use crate::diagnostic::{Lane, Signal};
+    use crate::diagnostic::{Lane, Severity, Signal};
     use crate::diff::{compare, lint_pair};
     use crate::document::SourceFormat;
     use crate::engine::{Engine, EngineOptions, Input};
