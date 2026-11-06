@@ -1277,6 +1277,10 @@ fn calibrate(args: CalibrateArgs) -> u8 {
 }
 
 /// `rules` / `explain` 用のエンジン (選択は設定ファイルとジャンルだけで決める)。
+///
+/// 一覧と説明は文書を検査しないので、形態素解析の辞書を探しも読みもしない。手元の share
+/// ディレクトリに読めない辞書 (古い形式の配布辞書など) があっても、一覧と `docs/rules.md` の
+/// 生成を止めないため。
 fn listing_engine(config_args: &ConfigArgs, genre: Option<Genre>) -> Result<Engine, ConfigError> {
     let env = Environment::from_process();
     let cfg = load_config(config_args, &env)?;
@@ -1284,6 +1288,7 @@ fn listing_engine(config_args: &ConfigArgs, genre: Option<Genre>) -> Result<Engi
     if let Some(genre) = genre {
         options.genre = genre;
     }
+    options.morphology.mode = crate::morph::MorphologyMode::Off;
     Engine::new(options)
 }
 

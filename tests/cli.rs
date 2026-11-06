@@ -1104,6 +1104,38 @@ fn rules_lists_builtin_and_custom_rules() {
 }
 
 #[test]
+fn rules_and_explain_do_not_read_the_dictionary() {
+    // share ディレクトリに読めない配布辞書 (古い形式のまま残った辞書など) がある環境
+    let share = tempfile::tempdir().unwrap();
+    fs::write(
+        share.path().join("ipadic-neologd-sudachi.hsd"),
+        b"not a dictionary",
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        &["rules", "--format", "markdown", "--no-config"][..],
+        &["explain", "P16", "--no-config"],
+    ] {
+        noslop()
+            .current_dir(dir.path())
+            .env("HASAMI_DATA_DIR", share.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+    // 文書の検査は、これまでどおり読めない辞書を設定の誤りにする
+    noslop()
+        .current_dir(dir.path())
+        .env("HASAMI_DATA_DIR", share.path())
+        .args(["check", "--no-config", "--stdin-filename", "a.md", "-"])
+        .write_stdin("本文です。\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("ipadic-neologd-sudachi.hsd"));
+}
+
+#[test]
 fn explain_shows_rule_details_and_rejects_unknown_rules() {
     let dir = workspace();
     noslop()

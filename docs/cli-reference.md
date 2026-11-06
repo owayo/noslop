@@ -133,7 +133,7 @@ noslop check --git-diff docs/ guide.md --format brief
 | `noslop dict list` | `--dir <DIR>` | 取得済みかを確かめる場所（既定は share ディレクトリ） |
 | `noslop calibrate` | `--human <PATH>` / `--ai <PATH>`（必須・繰り返し可）、`--genre`、`--target-fp`、`--holdout`、`-f, --format <text\|json\|markdown>` | コーパスでの測り方。手順は [docs/calibration.md](../docs/calibration.md) |
 
-`noslop rules` の「強さ」の列（JSON は `signal`）は、AI 臭さのルールが持つ手掛かりの強さです。読みやすさのルールと独自ルールは強さを持たず、`-`（JSON は `null`）になります。`noslop explain` は、強さとその意味を「手掛かり」の行に示します。
+`noslop rules` の「強さ」の列（JSON は `signal`）は、AI 臭さのルールが持つ手掛かりの強さです。読みやすさのルールと独自ルールは強さを持たず、`-`（JSON は `null`）になります。`noslop explain` は、強さとその意味を「手掛かり」の行に示します。どちらも文書を検査しないので、形態素解析の辞書を探しも読みもしません。share ディレクトリに古い形式の配布辞書が残っていても使えます。
 
 ### 終了コード
 
