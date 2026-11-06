@@ -2635,6 +2635,50 @@ fn share_specs_point_to_the_share_directory() {
     );
 }
 
+/// 古い形式の配布辞書を share:<名前> で指定したときは、CLI と設定ファイルの両方で取り直しを案内する。
+#[test]
+fn outdated_shared_dictionaries_explain_how_to_download_again() {
+    let share = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let name = noslop::dictionaries::RECOMMENDED;
+    let filename = format!("{name}.hsd");
+    let dictionary = share.path().join(&filename);
+    write_dictionary(&dictionary);
+    // 辞書の形式の版だけを v5 に戻し、旧形式の読み込みエラーを再現する。
+    let mut bytes = fs::read(&dictionary).unwrap();
+    bytes[8..12].copy_from_slice(&5u32.to_le_bytes());
+    fs::write(&dictionary, bytes).unwrap();
+    assert!(matches!(
+        hasami::Dictionary::load(&dictionary),
+        Err(hasami::DictError::UnsupportedVersion(5))
+    ));
+    let doc = project.path().join("doc.md");
+    fs::write(&doc, DOC_NO_CHAIN).unwrap();
+
+    for spec in [format!("share:{name}"), format!("share:{filename}")] {
+        let config = project.path().join("noslop.toml");
+        fs::write(&config, format!("[morphology]\ndictionary = \"{spec}\"\n")).unwrap();
+        for from_cli in [true, false] {
+            let mut cmd = noslop();
+            cmd.env("HASAMI_DATA_DIR", share.path())
+                .current_dir(project.path())
+                .args(["check", "--only-rules", "P16"])
+                .arg(&doc);
+            if from_cli {
+                cmd.args(["--no-config", "--dict", &spec]);
+            }
+            cmd.assert()
+                .code(2)
+                .stderr(predicate::str::contains("dictionary format v5"))
+                .stderr(predicate::str::contains(dictionary.to_string_lossy()))
+                .stderr(predicate::str::contains(format!(
+                    "`noslop dict download {name}`"
+                )))
+                .stderr(predicate::str::contains("自動で選んだ辞書").not());
+        }
+    }
+}
+
 /// 辞書を指定しないとき (auto) は、share ディレクトリの配布辞書を hasami の推奨順で選ぶ。
 /// bundled なら share ディレクトリに辞書があっても同梱の辞書。選んだ辞書が読めなければ設定の誤り。
 #[test]

@@ -325,7 +325,7 @@ pub fn resolve(
         DictionaryChoice::Share(name) => {
             let path = dictionaries::resolve_share(search.share_dir.as_deref(), name)
                 .map_err(|e| e.to_string())?;
-            load_file(&path)?
+            load_share(&path, ShareSelection::Explicit(name))?
         }
         DictionaryChoice::Bundled => bundled()?,
         DictionaryChoice::Auto => match auto(search, requested)? {
@@ -401,7 +401,7 @@ fn auto(
 ) -> Result<Option<Morphology>, String> {
     match auto_pick(search) {
         AutoPick::HasamiDict(path) => load_file(&path).map(Some),
-        AutoPick::Share(path) => load_chosen(&path).map(Some),
+        AutoPick::Share(path) => load_share(&path, ShareSelection::Auto).map(Some),
         AutoPick::Bundled => bundled().map(Some),
         AutoPick::Nothing if requested == MorphologyMode::Auto => Ok(None),
         AutoPick::Nothing => {
@@ -423,17 +423,36 @@ fn load_file(path: &Path) -> Result<Morphology, String> {
         .map_err(|e| format!("形態素解析の辞書を読めません: {}: {e}", path.display()))
 }
 
-/// share ディレクトリから自動で選んだ辞書を読む。読めなければ、取り直すか辞書を指定するよう案内する。
-fn load_chosen(path: &Path) -> Result<Morphology, String> {
+/// share ディレクトリの辞書の選び方。読めないときの案内に使う。
+#[derive(Debug, Clone, Copy)]
+enum ShareSelection<'a> {
+    Auto,
+    Explicit(&'a str),
+}
+
+/// share ディレクトリの辞書を読み、失敗時には選んだ経緯と対処を添える。
+fn load_share(path: &Path, selection: ShareSelection<'_>) -> Result<Morphology, String> {
     load_file(path).map_err(|e| {
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let download = match dictionaries::find(name) {
-            Some(dict) => format!("`noslop dict download {}` で取り直すか、", dict.name),
-            None => String::new(),
-        };
-        format!(
-            "{e} (share ディレクトリから自動で選んだ辞書です。{download}[morphology] の dictionary か --dict で使う辞書を指定してください)"
-        )
+        let distributed = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(dictionaries::find);
+        match selection {
+            ShareSelection::Auto => {
+                let download = distributed
+                    .map(|dict| format!("`noslop dict download {}` で取り直すか、", dict.name))
+                    .unwrap_or_default();
+                format!(
+                    "{e} (share ディレクトリから自動で選んだ辞書です。{download}[morphology] の dictionary か --dict で使う辞書を指定してください)"
+                )
+            }
+            ShareSelection::Explicit(name) => {
+                let download = distributed
+                    .map(|dict| format!("。`noslop dict download {}` で取り直してください", dict.name))
+                    .unwrap_or_default();
+                format!("{e} (share:{name} で指定した辞書です{download})")
+            }
+        }
     })
 }
 
@@ -739,6 +758,62 @@ mod tests {
             err.contains("`noslop dict download ipadic-neologd-sudachi`"),
             "{err}"
         );
+        assert!(
+            err.ends_with(
+                " (share ディレクトリから自動で選んだ辞書です。`noslop dict download ipadic-neologd-sudachi` で取り直すか、[morphology] の dictionary か --dict で使う辞書を指定してください)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unreadable_shared_dictionaries_keep_their_selection_and_recovery_hint() {
+        let share = tempfile::tempdir().unwrap();
+        for name in [dictionaries::RECOMMENDED, "custom"] {
+            let filename = format!("{name}.hsd");
+            let path = share.path().join(&filename);
+            fs::write(&path, b"not a dictionary").unwrap();
+            for spec in [name, &filename] {
+                for mode in [MorphologyMode::Auto, MorphologyMode::Required] {
+                    let mut o = options(mode, DictionaryChoice::Share(spec.into()));
+                    o.search.share_dir = Some(share.path().to_path_buf());
+                    let err = resolve(&o, true).unwrap_err();
+                    assert!(err.contains(&path.display().to_string()), "{err}");
+                    assert!(err.contains(&format!("share:{spec}")), "{err}");
+                    assert!(!err.contains("自動で選んだ辞書"), "{err}");
+                    let expected = if name == dictionaries::RECOMMENDED {
+                        format!(
+                            " (share:{spec} で指定した辞書です。`noslop dict download {name}` で取り直してください)"
+                        )
+                    } else {
+                        format!(" (share:{spec} で指定した辞書です)")
+                    };
+                    assert!(err.ends_with(&expected), "{err}");
+                    if name == dictionaries::RECOMMENDED {
+                        assert!(
+                            err.contains(&format!("`noslop dict download {name}`")),
+                            "{err}"
+                        );
+                    } else {
+                        assert!(!err.contains("noslop dict download"), "{err}");
+                    }
+                }
+            }
+            // 同じファイルでも、パスや HASAMI_DICT で指定したときは配布辞書とはみなさない。
+            let explicit = options(
+                MorphologyMode::Required,
+                DictionaryChoice::File(path.clone()),
+            );
+            let mut from_env = options(MorphologyMode::Auto, DictionaryChoice::Auto);
+            from_env.search.hasami_dict = Some(path.clone());
+            from_env.search.share_dir = Some(share.path().to_path_buf());
+            for o in [explicit, from_env] {
+                let err = resolve(&o, true).unwrap_err();
+                assert!(err.contains(&path.display().to_string()), "{err}");
+                assert!(!err.contains("noslop dict download"), "{err}");
+                assert!(!err.contains("share:"), "{err}");
+            }
+        }
     }
 
     /// 同梱の辞書は、依存の hasami と同じリリースの IPAdic (出所と更新の手順は dict/README.md)。
