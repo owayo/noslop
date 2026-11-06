@@ -442,6 +442,7 @@ fn fragments_document(
         format: SourceFormat::PlainText,
         kind: DocumentKind::Fragments,
         lines: LineIndex::new(&source),
+        body: crate::markdown::Body::whole(&source),
         source,
         bom_len: 0,
         blocks,

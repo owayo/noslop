@@ -138,12 +138,15 @@ pub fn parse(source: &str) -> (Vec<Block>, Vec<Directive>) {
     parse_range(source, front_matter_len(source)..source.len())
 }
 
-/// Markdown の文書 (ファイル・標準入力) をブロックと抑制コメントに分ける。
+/// Markdown の文書 (ファイル・標準入力) をブロックと抑制コメントに分け、本文の範囲も返す。
 ///
-/// [`body`] の範囲を解析する。本文全体が Markdown を包む 1 つのフェンスなら、その中身を
-/// 本文として読む。
-pub(crate) fn parse_document(source: &str) -> (Vec<Block>, Vec<Directive>) {
-    parse_range(source, body(source).range)
+/// [`body`] の範囲を解析する。本文全体が Markdown を包むフェンスなら、その中身を本文として
+/// 読む。本文の範囲は文書 ([`crate::document::Document::body`]) に残し、構造の解析・字数・S13 が
+/// 同じ範囲を使う。
+pub(crate) fn parse_document(source: &str) -> (Vec<Block>, Vec<Directive>, Body) {
+    let body = body(source);
+    let (blocks, directives) = parse_range(source, body.range.clone());
+    (blocks, directives, body)
 }
 
 fn parse_range(source: &str, range: Range<usize>) -> (Vec<Block>, Vec<Directive>) {
@@ -164,6 +167,16 @@ pub(crate) struct Body {
     pub wrapper: Option<Wrapper>,
 }
 
+impl Body {
+    /// 原文の全体を本文とする (テキスト・コード・断片の集まりの文書)。
+    pub(crate) fn whole(source: &str) -> Self {
+        Self {
+            range: 0..source.len(),
+            wrapper: None,
+        }
+    }
+}
+
 /// 本文全体を包むコードフェンス (```` ```markdown ```` から閉じのフェンスまで)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Wrapper {
@@ -182,7 +195,11 @@ pub(crate) struct Wrapper {
 ///
 /// - 閉じは CommonMark の判定に従う (pulldown-cmark が閉じとみなす行だけ)。閉じがなければ
 ///   文書の終わりまでを中身とし、行の末尾に付いた閉じらしい記号も中身のまま読む
-/// - 展開は 1 段だけ。中身にあるフェンス (外側より短いもの) はコードのまま読み飛ばす
+/// - 外側と同じ長さのフェンスでコードブロックを入れ子にして、内側の閉じで外側も閉じてしまう
+///   形は、最後の行が外側を閉じるフェンスで、間の中身のフェンスがすべて対になるときだけ包んだ
+///   文書とみなす ([`nested_content`])
+/// - 展開は 1 段だけ。中身にあるフェンスはコードのまま読み飛ばす
+/// - フェンスの後ろに空白以外の原文 (段落・見出し・HTML・参照リンクの定義) があれば対象にしない
 /// - 字下げしたフェンスは対象にしない (中身の行の字下げが外れ、原文のひと続きの範囲にならない)
 /// - 言語の指定のないフェンスは対象にしない (コード例・ログとの区別を測っていない)
 /// - 中身の先頭の front matter は、文書の先頭と同じように外す
@@ -221,6 +238,10 @@ fn wrapped_content(source: &str, start: usize) -> Option<(Range<usize>, Wrapper)
     if !language.eq_ignore_ascii_case("markdown") && !language.eq_ignore_ascii_case("md") {
         return None;
     }
+    let line = |r: Range<usize>| {
+        let text = rest[r.clone()].trim_end_matches(['\n', '\r']);
+        Span::new(start + r.start, start + r.start + text.len())
+    };
     let mut content: Option<Range<usize>> = None;
     for (event, range) in events.by_ref() {
         match event {
@@ -231,21 +252,110 @@ fn wrapped_content(source: &str, start: usize) -> Option<(Range<usize>, Wrapper)
             _ => return None,
         }
     }
-    // フェンスの後ろに別のブロックがあれば、本文全体を包んでいるとはいえない
-    if events.next().is_some() {
-        return None;
+    // フェンスの後ろに別のブロックや、イベントを出さない原文 (参照リンクの定義) があれば、
+    // 1 つのフェンスが本文全体を包んでいるとはいえない。内側のフェンスで外側が閉じた形だけを
+    // 確かめ直す
+    if events.next().is_some() || !is_blank(&rest[block.end..]) {
+        let (content, closing) = nested_content(rest, open)?;
+        return Some((
+            start + content.start..start + content.end,
+            Wrapper {
+                opening: line(open..content.start),
+                closing: Some(line(closing)),
+            },
+        ));
     }
     let content = content?;
-    let line = |r: Range<usize>| {
-        let text = rest[r.clone()].trim_end_matches(['\n', '\r']);
-        Span::new(start + r.start, start + r.start + text.len())
-    };
     let opening = line(open..content.start);
     let closing = (content.end < block.end).then(|| line(content.end..block.end));
     Some((
         start + content.start..start + content.end,
         Wrapper { opening, closing },
     ))
+}
+
+/// 空白と改行だけか。
+fn is_blank(text: &str) -> bool {
+    text.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
+}
+
+/// 外側と同じ長さのフェンスでコードブロックを入れ子にして、内側の閉じで外側も閉じてしまった
+/// 形なら、中身の範囲と、外側を閉じる最後の行の範囲を返す (どちらも `rest` 上の位置)。
+///
+/// `open` は開きのフェンスの位置。次の条件をすべて満たすときだけ、包んだ文書とみなす。
+///
+/// - 最後の空でない行が、開きと同じ記号を開き以上の数だけ並べた裸のフェンス (字下げは 3 字まで)
+/// - 間の中身を単独の Markdown として読むと、フェンスのコードブロックがすべて閉じる
+/// - 間の中身に、言語を指定したコードブロックが 1 つ以上ある
+///
+/// 生成した応答では、```` ```markdown ```` の中に ```` ```bash ```` のようなコードブロックを
+/// 入れ子にして、最後の行で外側を閉じる。先頭に Markdown の見本を置き、本文とコードを続けた
+/// 文書では、見本の閉じのフェンスが中身の側に残るので、中身のフェンスが対にならない。
+fn nested_content(rest: &str, open: usize) -> Option<(Range<usize>, Range<usize>)> {
+    let fence = rest[open..].chars().next()?;
+    let fence_len = rest[open..].chars().take_while(|&c| c == fence).count();
+    let content_start = open + rest[open..].find('\n')? + 1;
+    let end = rest.trim_end_matches([' ', '\t', '\r', '\n']).len();
+    let close_start = rest[..end].rfind('\n').map_or(0, |i| i + 1);
+    if close_start <= content_start {
+        return None;
+    }
+    let close_line = &rest[close_start..end];
+    let marks = close_line.trim_start_matches(' ');
+    if close_line.len() - marks.len() > 3
+        || marks.chars().count() < fence_len
+        || !marks.chars().all(|c| c == fence)
+    {
+        return None;
+    }
+    let content = content_start..close_start;
+    if is_blank(&rest[content.clone()]) || !fences_pair_up(&rest[content.clone()]) {
+        return None;
+    }
+    Some((content, close_start..end))
+}
+
+/// Markdown として読んだとき、フェンスのコードブロックがすべて閉じ、言語を指定したものを含むか。
+///
+/// 閉じたかどうかは pulldown-cmark の判定で決める。閉じのフェンスの行はコードの本文
+/// (`Event::Text`) に入らないので、ブロックの原文の範囲が本文の後ろまで続いていれば閉じている。
+/// 閉じないブロックは文書やコンテナの終わりまで続き、最後の行まで本文になる (字下げが 4 字以上の
+/// フェンスの行など、閉じに見えても閉じにならない行を含む)。本文のないブロックは、開きの行だけ
+/// なら閉じていない。
+fn fences_pair_up(markdown: &str) -> bool {
+    let mut with_language = false;
+    // 開いているフェンスのブロックの原文の範囲と、その本文の末尾
+    let mut open: Option<(Range<usize>, Option<usize>)> = None;
+    for (event, range) in Parser::new_ext(markdown, options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                with_language |= !info.trim().is_empty();
+                open = Some((range, None));
+            }
+            Event::Text(_) => {
+                if let Some((_, text_end)) = open.as_mut() {
+                    *text_end = Some(range.end);
+                }
+            }
+            // 字下げのコードブロックの終わりでは、開いているフェンスのブロックがない
+            Event::End(TagEnd::CodeBlock) => {
+                let Some((block, text_end)) = open.take() else {
+                    continue;
+                };
+                let closed = match text_end {
+                    Some(end) => end < block.end,
+                    None => markdown[block]
+                        .trim_end_matches(['\n', '\r'])
+                        .contains('\n'),
+                };
+                if !closed {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    with_language
 }
 
 /// 文書の先頭にある front matter の長さ (閉じの行の改行まで含むバイト数)。なければ 0。
@@ -258,8 +368,11 @@ fn wrapped_content(source: &str, start: usize) -> Option<(Range<usize>, Wrapper)
 /// - 閉じは行頭の `---` か `...` (TOML は `+++`)。ちょうど 3 字で、後ろはスペースだけ
 /// - 開きの次の行が空行か閉じの行なら front matter ではない (区切り線として読む)
 /// - 閉じの行がなければ front matter ではない (全体を本文として読む)
-/// - 開きと閉じの間に地の文の行 ([`prose_line`]) があれば front matter ではない。文書の先頭と
-///   途中に区切り線 (`---`) を引いた文書で、その間の本文を front matter として捨てないため
+/// - YAML は、開きと閉じの間に地の文の行 ([`prose_line`]) があれば front matter ではない。
+///   文字列とフロー (`[` `{`) の続きの行とコメントは地の文とみなさない ([`YamlLines`])。
+///   文書の先頭と途中に区切り線 (`---`) を引いた文書で、その間の本文を front matter として
+///   捨てないため
+/// - TOML は、開きと閉じの間が TOML の表として読めなければ front matter ではない
 pub(crate) fn front_matter_len(source: &str) -> usize {
     let bytes = source.as_bytes();
     let fence = match bytes.first() {
@@ -273,24 +386,27 @@ pub(crate) fn front_matter_len(source: &str) -> usize {
     }
     let mut pos = opening_end;
     let mut first = true;
-    // 複数行にわたる文字列 (YAML の二重引用符、TOML の """ と ''') の内側か
-    let mut in_string = false;
+    let mut yaml = YamlLines::default();
     while pos < bytes.len() {
         let line = &bytes[pos..];
         if let Some(len) = closing_line_len(line, fence) {
-            return if first { 0 } else { pos + len };
+            if first {
+                return 0;
+            }
+            if fence == b'+' && toml::from_str::<toml::Table>(&source[opening_end..pos]).is_err() {
+                return 0;
+            }
+            return pos + len;
         }
         if first && line_end_len(skip_blanks(line)).is_some() {
             return 0;
         }
         let next = next_line_start(bytes, pos);
-        let text = String::from_utf8_lossy(&bytes[pos..next]);
-        let text = text.trim_end_matches(['\n', '\r']);
-        if !in_string && prose_line(text, fence) {
-            return 0;
-        }
-        if string_delimiters(text, fence) % 2 == 1 {
-            in_string = !in_string;
+        if fence == b'-' {
+            let text = String::from_utf8_lossy(&bytes[pos..next]);
+            if yaml.prose(text.trim_end_matches(['\n', '\r'])) {
+                return 0;
+            }
         }
         first = false;
         pos = next;
@@ -298,12 +414,11 @@ pub(crate) fn front_matter_len(source: &str) -> usize {
     0
 }
 
-/// front matter (YAML・TOML) の行としては書かない、日本語の地の文の行か。
+/// YAML の front matter の行としては書かない、日本語の地の文の行か。
 ///
-/// YAML と TOML の値は `キー: 値`・`キー = 値` の形か、字下げした続きの行に書く。字下げがなく、
-/// コメント・リスト・表の見出しでもなく、キーの区切りを持たない日本語の行は、区切り線で
-/// 挟んだ本文の行とみなす。
-fn prose_line(line: &str, fence: u8) -> bool {
+/// YAML の値は `キー: 値` の形か、字下げした続きの行に書く。字下げがなく、コメント・リスト・
+/// 表の見出しでもなく、キーの区切りを持たない日本語の行は、区切り線で挟んだ本文の行とみなす。
+fn prose_line(line: &str) -> bool {
     if line.starts_with([' ', '\t']) || !line.chars().any(text::is_japanese) {
         return false;
     }
@@ -314,28 +429,114 @@ fn prose_line(line: &str, fence: u8) -> bool {
     ) {
         return false;
     }
-    if fence == b'+' {
-        !line.contains('=')
-    } else {
-        !(line.contains(": ") || line.ends_with(':'))
-    }
+    !(line.contains(": ") || line.ends_with(':'))
 }
 
-/// 行の中の、複数行にわたる文字列の区切りの数 (YAML は前に `\` のない `"`、TOML は `"""` と `'''`)。
-fn string_delimiters(line: &str, fence: u8) -> usize {
-    if fence == b'+' {
-        return line.matches("\"\"\"").count() + line.matches("'''").count();
+/// YAML の front matter を行ごとに読み、引用符の文字列・フロー (`[` `{`)・ブロックスカラー
+/// (`|` `>`) の内側かを追う。
+///
+/// 値の書き方を完全には解釈しない。地の文の行の判定 ([`prose_line`]) を、複数行にわたる値の
+/// 続きの行に当てないためだけに使う。
+///
+/// - 引用符・開き括弧・ブロックスカラーの記号は、値の書き始め (行頭、後ろに空白が続く `-`・`:`・
+///   `?` の後、フローの中の開き括弧と `,` の後) にあるときだけ数える。`Bob's`・`foo-[bar` の
+///   ような値の途中の記号は、文字列やフローの始まりにしない
+/// - 値の前のアンカー (`&名前`) とタグ (`!!str` など) は読み飛ばし、その後ろも値の書き始めとする
+/// - 二重引用符の中は `\` でエスケープし、単一引用符の中は `''` を 1 字の `'` として読む
+/// - ブロックスカラーの本文 (始めた行より深く字下げした行と空行) は、記号を解釈しない
+/// - 文字列の外で、行頭か空白の後にある `#` から行末までをコメントとして読み飛ばす
+#[derive(Debug, Default)]
+struct YamlLines {
+    /// 開いている引用符 (`"` か `'`)。
+    quote: Option<char>,
+    /// 開いているフローの括弧の深さ。
+    flow: usize,
+    /// ブロックスカラーの本文の中なら、それを始めた行の字下げ。
+    block: Option<usize>,
+}
+
+impl YamlLines {
+    /// 1 行を読み、地の文の行 ([`prose_line`]) なら真を返す。状態を行末の時点に進める。
+    fn prose(&mut self, line: &str) -> bool {
+        let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+        if let Some(parent) = self.block {
+            if line.trim().is_empty() || indent > parent {
+                return false;
+            }
+            self.block = None;
+        }
+        if self.quote.is_none() && self.flow == 0 && prose_line(line) {
+            return true;
+        }
+        self.read(line, indent);
+        false
     }
-    let mut count = 0;
-    let mut escaped = false;
-    for c in line.chars() {
-        match c {
-            '\\' => escaped = !escaped,
-            '"' if !escaped => count += 1,
-            _ => escaped = false,
+
+    /// 1 行の記号を読んで、行末の時点の状態に進める。
+    fn read(&mut self, line: &str, indent: usize) {
+        let mut chars = line.char_indices().peekable();
+        let mut value_start = true;
+        let mut after_space = true;
+        while let Some((i, c)) = chars.next() {
+            match self.quote {
+                Some('"') => {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => self.quote = None,
+                        _ => {}
+                    }
+                    after_space = false;
+                    continue;
+                }
+                Some(_) => {
+                    if c == '\'' && chars.next_if(|&(_, n)| n == '\'').is_none() {
+                        self.quote = None;
+                    }
+                    after_space = false;
+                    continue;
+                }
+                None => {}
+            }
+            let indicator = chars.peek().is_none_or(|&(_, n)| matches!(n, ' ' | '\t'));
+            match c {
+                ' ' | '\t' => {
+                    after_space = true;
+                    continue;
+                }
+                '#' if after_space => return,
+                '"' | '\'' if value_start => {
+                    self.quote = Some(c);
+                    value_start = false;
+                }
+                '[' | '{' if value_start => self.flow += 1,
+                ']' | '}' if self.flow > 0 => {
+                    self.flow -= 1;
+                    value_start = false;
+                }
+                ',' if self.flow > 0 => value_start = true,
+                '-' | '?' | ':' if indicator => value_start = true,
+                // アンカーとタグの名前を読み飛ばす。後ろの値はまだ書き始め
+                '&' | '!' if value_start => {
+                    while chars.next_if(|&(_, n)| !matches!(n, ' ' | '\t')).is_some() {}
+                }
+                // ブロックスカラー (`|`・`>`・`|-`・`>+2` など。後ろはコメントだけ)
+                '|' | '>' if value_start => {
+                    let rest = line[i + c.len_utf8()..]
+                        .trim_start_matches(|n: char| matches!(n, '-' | '+') || n.is_ascii_digit())
+                        .trim_start();
+                    if rest.is_empty() || rest.starts_with('#') {
+                        self.block = Some(indent);
+                        return;
+                    }
+                    value_start = false;
+                }
+                _ => value_start = false,
+            }
+            after_space = false;
         }
     }
-    count
 }
 
 /// front matter を閉じる行なら、その長さ (改行を含む)。
@@ -1228,8 +1429,32 @@ mod tests {
             "---\ndescription: \"一行目\nそのまま続く二行目\"\n---\n本文。\n",
             "+++\ndescription = \"\"\"\n説明の本文です。\n\"\"\"\n+++\n本文。\n",
             "---\n題名: 表題\nまとめ:\n---\n本文。\n",
+            // 単一引用符の文字列 ('' は 1 字の ') とフローの配列の続きの行
+            "---\ndescription: '一行目\n本文と言えるでしょう。\n最後の行''s'\n\n---\n本文。\n",
+            "---\ntags: [\n本文と言えるでしょう。\n]\n---\n本文。\n",
+            "---\nmeta: {note: \"一行目\n本文と言えるでしょう。\"}\n---\n本文。\n",
+            // コメントの中の引用符は文字列を始めない
+            "---\n# \"\ndescription: \"一行目\n本文と言えるでしょう。\n最後の行\"\n---\n本文。\n",
+            "+++\n# \"\"\"\ndescription = \"\"\"\n本文と言えるでしょう。\n\"\"\"\n+++\n本文。\n",
+            // 値の途中の引用符 (Bob's) は文字列を始めない
+            "---\ntitle: Bob's メモ\n---\n本文。\n",
+            // ブロックスカラーの本文の記号は解釈しない。アンカーとタグの後ろの引用符は文字列の始まり
+            "---\ndescription: |\n  \"引用の開始\ntitle: \"一行目\n二行目\"\n---\n本文。\n",
+            "---\ndescription: &desc \"一行目\n二行目\"\n---\n本文。\n",
+            "---\ndescription: !!str \"一行目\n二行目\"\n---\n本文。\n",
         ] {
             assert_eq!(outline(src), ["P:本文。"], "{src:?}");
+        }
+        // 値の途中の引用符の後ろでも、地の文の行を見落とさない。TOML は表として読めなければ
+        // front matter ではない
+        for src in [
+            "---\ntitle: Bob's メモ\nこれは本文です。\n---\n本文。\n",
+            // 値の途中の -[ はフローを始めない
+            "---\n値: foo-[bar\n\nこれは検査対象の本文です。\n---\n本文。\n",
+            "+++\nこれは本文です。\n+++\n本文。\n",
+            "+++\ntitle = \"題\"\nこれは本文です。\n+++\n本文。\n",
+        ] {
+            assert_eq!(front_matter_len(src), 0, "{src:?}");
         }
     }
 
@@ -1304,6 +1529,34 @@ mod tests {
     }
 
     #[test]
+    fn nested_fences_that_close_the_wrapper_early_are_unwrapped() {
+        // 外側と同じ長さの ```sh の閉じで、CommonMark では外側も閉じる。最後の行を外側の閉じと
+        // みなし、間を本文として読む (中のコードブロックは読み飛ばす)
+        let src = "```markdown\n# 題\n\n本文です。\n\n```sh\nls\n```\n\n続きです。\n```\n";
+        assert_eq!(
+            document_outline(src),
+            ["H1:題", "P:本文です。", "P:続きです。"]
+        );
+        let b = body(src);
+        assert_eq!(
+            &src[b.range],
+            "# 題\n\n本文です。\n\n```sh\nls\n```\n\n続きです。\n"
+        );
+        let wrapper = b.wrapper.unwrap();
+        assert_eq!(&src[wrapper.opening.range()], "```markdown");
+        let closing = wrapper.closing.unwrap();
+        assert_eq!(closing.start, src.rfind("```").unwrap());
+        // リストの中で字下げしたコードブロックと、CRLF・末尾の空白
+        let src =
+            "```markdown\r\n1. 手順\r\n   ```bash\r\n   make\r\n   ```\r\n2. 次\r\n```  \r\n\r\n";
+        assert_eq!(document_outline(src), ["L:手順", "L:次"]);
+        assert_eq!(
+            &src[body(src).wrapper.unwrap().closing.unwrap().range()],
+            "```"
+        );
+    }
+
+    #[test]
     fn fences_that_do_not_wrap_the_whole_document_stay_code() {
         for src in [
             "```\n本文です。\n```\n",
@@ -1311,12 +1564,26 @@ mod tests {
             "  ```markdown\n  本文です。\n  ```\n",
             "以下が記事です。\n\n```markdown\n本文です。\n```\n",
             "```markdown\n本文です。\n```\n\n以上です。\n",
-            "```markdown\n本文です。\n\n```sh\nls\n```\n\n続きです。\n```\n",
+            // 参照リンクの定義はイベントを出さないが、フェンスの後ろの原文
+            "```markdown\n本文です。\n```\n\n[x]: https://example.com\n",
+            // 先頭に見本を置き、本文とコードが続く (間のフェンスが対にならない)
+            "```markdown\n# 見本\n```\n\n本文です。\n\n```sh\nls\n```\n",
+            "```markdown\n# 見本\n```\n\n本文です。\n\n```sh\nls\n```\n\n続きです。\n\n```py\nx\n```\n",
+            // 間のフェンスは対になるが、言語を指定したコードブロックがない
+            "```markdown\n# 見本\n```\nコード\n```\n本文です。\n```\n",
+            // 閉じに見えても閉じにならない行 (字下げ 4 字・タブ) で終わる、閉じないブロックがある
+            "```markdown\n~~~sh\necho ok\n~~~\n```\n\nこれは本文です。\n\n```text\n    ```\n```\n",
+            "```markdown\n~~~sh\necho ok\n~~~\n```\n\nこれは本文です。\n\n```text\n\t```\n```\n",
+            // 最後の行が短すぎてフェンスにならない
+            "```markdown\n本文。\n```sh\nls\n```\n続き。\n``\n",
+            // 最後の行が外側と別の記号のフェンス
+            "```markdown\n本文です。\n\n```sh\nls\n```\n\n続きです。\n~~~\n",
             "```markdown\n```\n",
         ] {
             assert_eq!(body(src).wrapper, None, "{src:?}");
+            let (blocks, directives, _) = parse_document(src);
             assert_eq!(
-                format!("{:#?}", parse_document(src)),
+                format!("{:#?}", (blocks, directives)),
                 format!("{:#?}", parse(src)),
                 "{src:?}"
             );

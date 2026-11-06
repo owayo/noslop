@@ -39,13 +39,13 @@ pub struct Structure {
 
 impl Structure {
     /// Markdownと同じfront matter・拡張構文を使う。推定したテキストの構造とは混ぜない。
-    /// 本文として読む範囲は文書の読み込みと同じ ([`crate::markdown::body`]。本文全体を
-    /// 包むフェンスがあれば、その中身)。
+    /// 本文として読む範囲は、文書の読み込みで求めた範囲 (本文全体を包むフェンスがあれば、
+    /// その中身) を使う。
     pub fn parse(doc: &Document) -> Self {
         if doc.format != SourceFormat::Markdown {
             return Self::default();
         }
-        let range = crate::markdown::body(&doc.source).range;
+        let range = doc.body.range.clone();
         let body = range.start;
         let mut result = Self {
             nodes: vec![Node {

@@ -431,6 +431,11 @@ pub struct Document {
     pub blocks: Vec<Block>,
     pub sentences: Vec<Sentence>,
     pub directives: Vec<Directive>,
+    /// 本文として読んだ範囲と、本文全体を包んでいたフェンス ([`crate::markdown::body`])。
+    ///
+    /// Markdown は先頭の front matter と、本文全体を包むフェンスを除いた範囲。テキストとコードは
+    /// 原文の全体。読み込みで 1 度だけ求め、構造の解析・本文の字数・S13 が同じ範囲を使う。
+    pub(crate) body: crate::markdown::Body,
 }
 
 impl Document {
@@ -465,12 +470,18 @@ impl Document {
         } else {
             0
         };
-        let (mut blocks, directives) = match format {
+        let whole = crate::markdown::Body::whole(&source);
+        let (mut blocks, directives, body) = match format {
             SourceFormat::Markdown => crate::markdown::parse_document(&source),
-            SourceFormat::PlainText => crate::plaintext::parse(&source),
+            SourceFormat::PlainText => {
+                let (blocks, directives) = crate::plaintext::parse(&source);
+                (blocks, directives, whole)
+            }
             #[cfg(feature = "code")]
             SourceFormat::Code(language) => {
-                crate::code::parse_with_options(&source, language, options)
+                let (blocks, directives) =
+                    crate::code::parse_with_options(&source, language, options);
+                (blocks, directives, whole)
             }
             #[cfg(not(feature = "code"))]
             SourceFormat::Code(language) => return Err(ParseError::CodeUnavailable(language)),
@@ -487,6 +498,7 @@ impl Document {
             blocks,
             sentences,
             directives,
+            body,
         })
     }
 
@@ -559,13 +571,9 @@ impl Document {
     /// 構造系のルールが 1000 字あたりの密度を測る母数と、`noslop calibrate` の 1000 字あたりの
     /// 件数に使う。front matter (題名・タグ・日付などのメタデータ) は読み手が読む本文ではないので、
     /// 含めると front matter の長い文書ほど密度が低く出る。本文全体を包むフェンスがあれば、
-    /// 本文として読む中身だけを数える ([`crate::markdown::body`])。
+    /// 本文として読む中身だけを数える ([`Document::body`])。
     pub fn body_char_count(&self) -> usize {
-        let body = match self.format {
-            SourceFormat::Markdown => crate::markdown::body(&self.source).range,
-            SourceFormat::PlainText | SourceFormat::Code(_) => 0..self.source.len(),
-        };
-        self.source[body].chars().count()
+        self.source[self.body.range.clone()].chars().count()
     }
 
     /// 原文上の範囲の文字列。
