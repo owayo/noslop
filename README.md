@@ -299,7 +299,7 @@ make ci      # CI と同じ検査 (書き換えない)
 `make` でターゲットの一覧を表示します。リリースは GitHub Actions で行います (**Actions → Release → Run workflow**)。
 <!-- standard:dev:end -->
 
-辞書を同梱しないビルドのテスト、ルール一覧の再生成、辞書目録の検証、リリースの仕組みとロードマップは [開発とリリース](docs/development.md) を参照してください。
+語句照合の性能測定を含む開発手順と、リリースの仕組み・ロードマップは [開発とリリース](docs/development.md) を参照してください。
 
 ## ライセンス
 

@@ -151,3 +151,7 @@ required-features = ["cli"]
 [[test]]
 name = "stop_hook"
 required-features = ["cli"]
+
+[[bench]]
+name = "phrase_matching"
+harness = false

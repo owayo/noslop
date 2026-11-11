@@ -46,6 +46,12 @@ make ci      # CI と同じ検査
 
 cargo のコマンドには `--locked` を付け、`Cargo.lock` のとおりに依存を解決します。依存を足した直後など、`Cargo.lock` を更新したいときは `CARGO_FLAGS=` を付けます。mise を使わない場合は `SYSTEM_TOOLS=1` を付けると、`PATH` 上のツールで動きます（ツールの版はそろいません）。
 
+### 語句照合の性能を比べる
+
+`mise exec -- cargo bench --locked --bench phrase_matching` で、P02 の検査時間を CSV に出します。文書の解析と照合器の構築は計測に含めません。短文、100 段落、引用と指摘対象が交互に並ぶ長い一文（200 組・2,000 組）を使い、指摘件数も確認します。
+
+最初の 3 標本をウォームアップとして捨て、続く 7 標本で 1 回の検査にかかったナノ秒を記録します。変更前後でツールチェーン・依存・入力をそろえ、中央値とばらつきを比べてください。この測定は語句照合に範囲を絞っているため、CLI 全体の所要時間を表すものではありません。CI の合否には実行時間の閾値を使いません。
+
 ## リリース
 
 同梱辞書の本体 (`dict/ipadic.hsd`) は Git で管理しません。`dict/bundled.json` の版・大きさ・SHA-256 を固定情報として、`make setup`・`make build`・`make release` が準備します。make のない環境では `cargo run --locked -p noslop-xtask -- prepare` が同じ処理を行います。準備は本体をビルドせず、取得済みなら照合だけです。追跡ファイルは書き換えません。`cargo run --locked -p noslop-xtask -- check` は通信せず照合します。Cargo のビルド中にも本体を照合し、欠落・不一致なら準備のコマンドを案内して止めます。`--no-default-features` なら本体は不要です。

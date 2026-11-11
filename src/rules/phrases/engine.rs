@@ -178,33 +178,34 @@ impl Matcher {
         // 除いた一致の言及の範囲 (開始位置から探し直す位置まで)
         let mut mentions: Vec<Range<usize>> = Vec::new();
         let mut hits = Vec::new();
+        // 照合方法によらず、空の一致・言及の除外・再開位置を同じ手順で扱う。
+        let mut record = |range: Range<usize>, entry: usize| {
+            if range.is_empty() {
+                return resume(&range, range.end);
+            }
+            match skip(&range) {
+                None => {
+                    let next = range.end;
+                    hits.push(Hit { range, entry });
+                    Some(next)
+                }
+                Some(at) => {
+                    let next = resume(&range, at)?;
+                    mentions.push(range.start..next);
+                    Some(next)
+                }
+            }
+        };
         if let Some(ac) = &self.literals {
             let mut position = 0;
             while let Some(m) = ac.find(Input::new(text).range(position..)) {
-                let range = m.start()..m.end();
-                let skipped = if range.is_empty() {
-                    Some(range.end)
-                } else {
-                    skip(&range)
+                let Some(next) = record(
+                    m.start()..m.end(),
+                    self.literal_entries[m.pattern().as_usize()],
+                ) else {
+                    break;
                 };
-                match skipped {
-                    None => {
-                        position = range.end;
-                        hits.push(Hit {
-                            range,
-                            entry: self.literal_entries[m.pattern().as_usize()],
-                        });
-                    }
-                    Some(at) => {
-                        let Some(next) = resume(&range, at) else {
-                            break;
-                        };
-                        if !range.is_empty() {
-                            mentions.push(range.start..next);
-                        }
-                        position = next;
-                    }
-                }
+                position = next;
             }
         }
         for r in &self.regexes {
@@ -216,22 +217,8 @@ impl Matcher {
                     if let Some(m) = caps.name(MATCH_GROUP)
                         && m.start() < m.end()
                     {
-                        let range = m.start()..m.end();
-                        match skip(&range) {
-                            None => {
-                                // 後ろの条件は次の一致でも使えるよう、指した範囲の末尾から探す。
-                                next = range.end;
-                                hits.push(Hit {
-                                    range,
-                                    entry: r.entry,
-                                });
-                            }
-                            // 範囲は空でないので、開始位置の次の字がある
-                            Some(at) => {
-                                next = resume(&range, at).unwrap_or(range.end);
-                                mentions.push(range.start..next);
-                            }
-                        }
+                        // 後ろの条件は次の一致でも使えるよう、指した範囲の末尾から探す。
+                        next = record(m.start()..m.end(), r.entry).unwrap_or(m.end());
                     }
                     if next > position {
                         position = next;
@@ -245,36 +232,14 @@ impl Matcher {
             } else {
                 let mut position = 0;
                 while let Some(m) = r.re.find_at(text, position) {
-                    let range = m.start()..m.end();
-                    let skipped = if range.is_empty() {
-                        Some(range.end)
-                    } else {
-                        skip(&range)
+                    let Some(next) = record(m.start()..m.end(), r.entry) else {
+                        break;
                     };
-                    match skipped {
-                        None => {
-                            position = range.end;
-                            hits.push(Hit {
-                                range,
-                                entry: r.entry,
-                            });
-                        }
-                        Some(at) => {
-                            let Some(next) = resume(&range, at) else {
-                                break;
-                            };
-                            if !range.is_empty() {
-                                mentions.push(range.start..next);
-                            }
-                            position = next;
-                        }
-                    }
+                    position = next;
                 }
             }
         }
-        // 別の項目で見つけた一致も、言及の範囲から始まるものは除く
-        hits.retain(|h| !mentions.iter().any(|m| m.contains(&h.range.start)));
-        select_non_overlapping(hits)
+        select_non_overlapping(hits, mentions)
     }
 }
 
@@ -284,7 +249,7 @@ fn after_char(text: &str, at: usize) -> Option<usize> {
 }
 
 /// 重なる一致から、先に始まり長いものを優先して重ならない組を選ぶ。
-pub(super) fn select_non_overlapping(mut hits: Vec<Hit>) -> Vec<Hit> {
+fn select_non_overlapping(mut hits: Vec<Hit>, mut mentions: Vec<Range<usize>>) -> Vec<Hit> {
     hits.sort_by(|a, b| {
         a.range
             .start
@@ -292,6 +257,23 @@ pub(super) fn select_non_overlapping(mut hits: Vec<Hit>) -> Vec<Hit> {
             .then(b.range.end.cmp(&a.range.end))
             .then(a.entry.cmp(&b.entry))
     });
+    // 別の項目で見つけた一致も、言及の範囲から始まるものは除く。
+    // 両方を開始位置順にたどり、重なる言及の終点は最大値を保つ。
+    // 一致ごとに全言及を探し直さず、各言及を一度だけ読む。
+    if !mentions.is_empty() {
+        mentions.sort_unstable_by_key(|m| m.start);
+        let mut next = 0;
+        let mut end = 0;
+        hits.retain(|hit| {
+            while let Some(mention) = mentions.get(next)
+                && mention.start <= hit.range.start
+            {
+                end = end.max(mention.end);
+                next += 1;
+            }
+            hit.range.start >= end
+        });
+    }
     let mut out: Vec<Hit> = Vec::with_capacity(hits.len());
     for hit in hits {
         if out
@@ -514,6 +496,55 @@ mod tests {
         assert_eq!(m.find(text).len(), 1);
         let skip = |r: &Range<usize>| (r.start == 0).then_some(r.end);
         assert!(m.find_except(text, skip).is_empty());
+    }
+
+    #[test]
+    fn mentions_from_different_matchers_can_overlap_and_arrive_out_of_order() {
+        const ENTRIES: &[Entry] = &[
+            Entry::lit("AA", Severity::Info),
+            Entry::lit("EE", Severity::Info),
+            Entry::lit("FF", Severity::Info),
+            Entry::re("BB", Severity::Info),
+            Entry::re("(?P<m>CC)", Severity::Info),
+            Entry::re("DD", Severity::Info),
+        ];
+        let text = "AA BB CC DD EE FF";
+        let hits = Matcher::new(ENTRIES).find_except(text, |range| match range.start {
+            0 => Some(9),
+            3 => Some(15),
+            12 => Some(14),
+            _ => None,
+        });
+        // 先に集めた 12..14 の範囲も、後で集める 3..15 に含まれる。
+        // 終点の 15 から始まる一致は残す。
+        assert_eq!(hits.len(), 1);
+        assert_eq!(&text[hits[0].range.clone()], "FF");
+        assert_eq!(hits[0].entry, 2);
+    }
+
+    #[test]
+    fn empty_matches_do_not_call_skip_and_resumption_is_bounded() {
+        for entry in [
+            Entry::lit("", Severity::Info),
+            Entry::re("", Severity::Info),
+        ] {
+            assert!(
+                Matcher::new(&[entry])
+                    .find_except("日本語", |_| panic!("空の一致は除外の判定に渡さない"))
+                    .is_empty()
+            );
+        }
+        for entry in [
+            Entry::lit("日本", Severity::Info),
+            Entry::re("日本", Severity::Info),
+            Entry::re("(?P<m>日本)", Severity::Info),
+        ] {
+            assert!(
+                Matcher::new(&[entry])
+                    .find_except("日本語日本", |_| Some(usize::MAX))
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
