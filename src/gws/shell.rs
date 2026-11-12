@@ -547,13 +547,21 @@ fn ansi_c(text: &str) -> Option<String> {
                 bytes.push(u8::try_from(n & 0xff).ok()?);
             }
             'x' => {
-                let n = hex_digits(&mut chars, 2)?;
-                bytes.push(u8::try_from(n).ok()?);
+                if let Some(n) = hex_digits(&mut chars, 2) {
+                    bytes.push(u8::try_from(n).ok()?);
+                } else {
+                    bytes.extend_from_slice(b"\\x");
+                }
             }
             'u' | 'U' => {
-                let n = hex_digits(&mut chars, if e == 'u' { 4 } else { 8 })?;
-                let c = char::from_u32(n)?;
-                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                if let Some(n) = hex_digits(&mut chars, if e == 'u' { 4 } else { 8 }) {
+                    let c = char::from_u32(n)?;
+                    bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                } else {
+                    // 数字がないときは、Bash が残すバックスラッシュと文字を保つ。
+                    bytes.push(b'\\');
+                    bytes.push(e as u8);
+                }
             }
             'c' => {
                 let c = chars.next()?;
@@ -710,6 +718,21 @@ mod tests {
             only(r"gws docs +write --text $'\xff\0検査しない'"),
             vec![s("docs"), s("+write"), s("--text"), Arg::Unknown]
         );
+    }
+
+    #[test]
+    fn ansi_c_numeric_escapes_without_digits_remain_static_literal_text() {
+        for escape in [r"\x", r"\u", r"\U"] {
+            for suffix in ["", "Z末尾。"] {
+                let value = format!("本文{escape}{suffix}");
+                let command = format!("gws docs +write --text $'{value}'");
+                assert_eq!(
+                    only(&command),
+                    vec![s("docs"), s("+write"), s("--text"), s(&value)],
+                    "{command}"
+                );
+            }
+        }
     }
 
     #[test]

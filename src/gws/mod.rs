@@ -449,6 +449,20 @@ mod tests {
     }
 
     #[test]
+    fn docs_writes_keep_ansi_c_numeric_escapes_without_digits() {
+        for escape in [r"\x", r"\u", r"\U"] {
+            let value = format!("本文{escape}Z末尾。");
+            let command = format!("gws docs +write --document D1 --text $'{value}'");
+            let write = one(&command);
+            assert!(write.exact);
+            assert_eq!(
+                labels(&write),
+                vec![("--text", value.as_str(), ValueKind::Prose, false)]
+            );
+        }
+    }
+
+    #[test]
     fn docs_batch_update_reads_insert_and_replace_texts() {
         let json = r#"{"requests":[
             {"insertText":{"text":"一つ目","location":{"index":1}}},

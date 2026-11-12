@@ -98,6 +98,54 @@ fn raw_and_multiline_delimiters_are_not_part_of_the_text() {
 }
 
 #[test]
+fn ruby_braced_unicode_reads_multiple_characters_at_the_complete_escape_range() {
+    for separator in [" ", "  "] {
+        let escape = format!("\\u{{{separator}4fdd{separator}5b58{separator}}}");
+        let source = format!("message = \"{escape}します。\"");
+        let d = doc(&source, CodeLanguage::Ruby);
+        assert_eq!(
+            texts(&source, CodeLanguage::Ruby),
+            ["保存します。"],
+            "{source:?}"
+        );
+        let block = &d.blocks[0];
+        assert_eq!(d.slice(block.to_source(0..6)), escape);
+        assert_eq!(d.slice(block.to_source(6..9)), "し");
+    }
+    for source in [
+        r#"message = "保\u{ }存します。""#,
+        r#"message = %Q(\u{4fdd 5b58}します。)"#,
+        "message = <<TEXT\n\\u{4fdd 5b58}します。\nTEXT\n",
+    ] {
+        assert_eq!(texts(source, CodeLanguage::Ruby), ["保存します。"]);
+    }
+    let d = doc(r#"message = "保\u{ }存します。""#, CodeLanguage::Ruby);
+    assert_eq!(d.slice(d.blocks[0].to_source(3..6)), "存");
+    for source in [
+        r#"message = '\u{4fdd 5b58}します。'"#,
+        r#"message = %q(\u{4fdd 5b58}します。)"#,
+    ] {
+        assert_eq!(
+            texts(source, CodeLanguage::Ruby),
+            [r"\u{4fdd 5b58}します。"]
+        );
+    }
+}
+
+#[test]
+fn ruby_unicode_sequences_reach_sentence_rules_at_the_original_escape_range() {
+    let source = r#"message = "この点は\u{975e 5e38}に重要です。""#;
+    let engine = crate::engine::Engine::new(crate::engine::EngineOptions::default()).unwrap();
+    let report = engine.lint(doc(source, CodeLanguage::Ruby));
+    let finding = report
+        .diagnostics
+        .iter()
+        .find(|d| d.rule_id == "P06")
+        .expect("復号した語句を検査する");
+    assert_eq!(report.doc.slice(finding.span), r"\u{975e 5e38}に重要");
+}
+
+#[test]
 fn interpolation_keeps_static_parts_and_expression_strings_independent() {
     use CodeLanguage::*;
     for (lang, src) in [

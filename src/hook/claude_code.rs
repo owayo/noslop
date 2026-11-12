@@ -184,8 +184,46 @@ fn patch_lines(patch: &Value) -> Option<ChangedLines> {
     Some(lines)
 }
 
-/// Edit / MultiEdit の `new_string` が入った行。位置を 1 つに決められないとき (同じ文字列が
-/// ほかにもある、削除だけの編集、別のフックが整形して見つからない) は `None`。
+/// 重なった出現も含めて列挙する。長い反復文字列でも同じ接頭辞を読み直さない。
+fn overlapping_starts<'a>(source: &'a str, text: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let needle = text.as_bytes();
+    let mut prefix = vec![0; needle.len()];
+    let mut matched = 0;
+    for at in 1..needle.len() {
+        while matched > 0 && needle[at] != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if needle[at] == needle[matched] {
+            matched += 1;
+        }
+        prefix[at] = matched;
+    }
+    let mut matched = 0;
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        if needle.is_empty() {
+            return None;
+        }
+        while let Some(&byte) = source.as_bytes().get(at) {
+            while matched > 0 && byte != needle[matched] {
+                matched = prefix[matched - 1];
+            }
+            if byte == needle[matched] {
+                matched += 1;
+            }
+            at += 1;
+            if matched == needle.len() {
+                let start = at - matched;
+                matched = prefix[matched - 1];
+                return Some(start);
+            }
+        }
+        None
+    })
+}
+
+/// Edit / MultiEdit の `new_string` の候補行。一括置換では全候補の行を返す。
+/// 通常の置換で位置が一意でない場合、削除だけの編集、整形などで見つからない場合は `None`。
 fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
     let replace_all = |v: &Value| v.get("replace_all").and_then(Value::as_bool) == Some(true);
     let mut edits: Vec<(&str, bool)> = Vec::new();
@@ -207,14 +245,19 @@ fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
         if text.trim().is_empty() {
             return None;
         }
-        let starts: Vec<usize> = source.match_indices(text).map(|(i, _)| i).collect();
-        if starts.is_empty() || (starts.len() > 1 && !all) {
+        // 既存の本文と挿入部分をまたぐ一致が先に現れる場合も、挿入した行を落とさない。
+        let mut starts = overlapping_starts(source, text);
+        let first = starts.next()?;
+        if !all && starts.next().is_some() {
             return None;
         }
-        for start in starts {
+        let mut covered_until = 0;
+        for start in std::iter::once(first).chain(starts) {
             let first = doc.lines.line(start);
             let last = doc.lines.line(start + text.len() - 1);
-            lines.extend(first..=last);
+            // 開始位置も終点も単調に増える。同じ行を候補ごとに何度も集合へ追加しない。
+            lines.extend(first.max(covered_until + 1)..=last);
+            covered_until = last;
         }
     }
     Some(lines)
@@ -381,6 +424,51 @@ mod tests {
         )
         .unwrap();
         assert!(ctx.contains("L1:") && !ctx.contains("L5:"), "{ctx}");
+    }
+
+    #[test]
+    fn overlapping_edit_matches_do_not_choose_an_ambiguous_change_location() {
+        let doc = Document::plain_text("同じ行。\n同じ行。\n同じ行。\n");
+        let mut input = json!({"new_string": "同じ行。\n同じ行。"});
+        assert_eq!(inserted_lines(&input, &doc), None);
+        input["replace_all"] = json!(true);
+        assert_eq!(
+            inserted_lines(&input, &doc),
+            Some(BTreeSet::from([1, 2, 3]))
+        );
+    }
+
+    #[test]
+    fn overlapping_starts_preserve_utf8_positions_and_prefix_fallbacks() {
+        for (source, text, expected) in [
+            ("ははは。", "はは", vec![0, 3]),
+            ("abababaca", "ababaca", vec![2]),
+            ("abcabc", "abc", vec![0, 3]),
+            ("日本語", "語句", vec![]),
+            ("", "語", vec![]),
+            ("日本語", "", vec![]),
+        ] {
+            assert_eq!(
+                overlapping_starts(source, text).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let source = "あ".repeat(20_000);
+        let text = "あ".repeat(10_000);
+        let starts: Vec<_> = overlapping_starts(&source, &text).collect();
+        assert_eq!(starts.len(), 10_001);
+        assert_eq!(starts[0], 0);
+        assert_eq!(starts[10_000], 30_000);
+    }
+
+    #[test]
+    fn replace_all_collects_the_union_of_long_overlapping_line_ranges() {
+        let doc = Document::plain_text("a\n".repeat(20_000));
+        let input = json!({"new_string": "a\n".repeat(10_000), "replace_all": true});
+        let lines = inserted_lines(&input, &doc).unwrap();
+        assert_eq!(lines.len(), 20_000);
+        assert_eq!(lines.first(), Some(&1));
+        assert_eq!(lines.last(), Some(&20_000));
     }
 
     #[test]
