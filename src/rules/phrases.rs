@@ -71,7 +71,7 @@ pub fn rules(_genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(jargon::ActionJargon::new()),
         Box::new(PhraseRule::new(&closer::P27)),
         Box::new(permission::PermissiveAction),
-        Box::new(PhraseRule::new(&mere::P29)),
+        Box::new(mere::rule()),
     ]
 }
 

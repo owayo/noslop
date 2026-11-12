@@ -4,6 +4,7 @@
 //! ルールの値から変えることもできる。
 //! ルールは項目の並び ([`PhraseSpec`]) を持ち、文ごとに一致を探して診断にする。
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, Input, MatchKind};
@@ -114,6 +115,8 @@ pub(super) struct Matcher {
     /// Aho-Corasick のパターン番号 → 項目の添字。
     literal_entries: Vec<usize>,
     regexes: Vec<RegexEntry>,
+    /// 重なる追加項目より先に採る、先頭の項目数 (0 なら開始位置と長さで選ぶ)。
+    preferred_entries: usize,
 }
 
 impl Matcher {
@@ -149,6 +152,7 @@ impl Matcher {
             literals,
             literal_entries,
             regexes,
+            preferred_entries: 0,
         }
     }
 
@@ -185,7 +189,13 @@ impl Matcher {
             }
             match skip(&range) {
                 None => {
-                    let next = range.end;
+                    // 追加の正規表現が長い範囲を拾っても、その途中から始まる候補を失わない。
+                    // 既存の一致との優先順位を決めるのは、すべて集めてからにする。
+                    let next = if self.preferred_entries > 0 && entry >= self.preferred_entries {
+                        after_char(text, range.start)?
+                    } else {
+                        range.end
+                    };
                     hits.push(Hit { range, entry });
                     Some(next)
                 }
@@ -239,7 +249,7 @@ impl Matcher {
                 }
             }
         }
-        select_non_overlapping(hits, mentions)
+        select_non_overlapping(hits, mentions, self.preferred_entries)
     }
 }
 
@@ -249,7 +259,11 @@ fn after_char(text: &str, at: usize) -> Option<usize> {
 }
 
 /// 重なる一致から、先に始まり長いものを優先して重ならない組を選ぶ。
-fn select_non_overlapping(mut hits: Vec<Hit>, mut mentions: Vec<Range<usize>>) -> Vec<Hit> {
+fn select_non_overlapping(
+    mut hits: Vec<Hit>,
+    mut mentions: Vec<Range<usize>>,
+    preferred_entries: usize,
+) -> Vec<Hit> {
     hits.sort_by(|a, b| {
         a.range
             .start
@@ -273,6 +287,25 @@ fn select_non_overlapping(mut hits: Vec<Hit>, mut mentions: Vec<Range<usize>>) -
             }
             hit.range.start >= end
         });
+    }
+    if preferred_entries > 0 {
+        // 安定ソートで、先頭の項目を従来どおりの開始位置・長さの順に先に採る。
+        // 後から読む追加項目は開始位置が前にも戻るので、直前の一致との比較では足りない。
+        hits.sort_by_key(|hit| hit.entry >= preferred_entries);
+        let mut selected: BTreeMap<usize, Hit> = BTreeMap::new();
+        for hit in hits {
+            // 採った区間は重ならず、終点も単調に増える。候補の終点より前で始まる最後の
+            // 区間だけを見れば重なりが分かり、全区間を毎回探さずに済む。
+            if selected
+                .range(..hit.range.end)
+                .next_back()
+                .is_some_and(|(_, prior)| prior.range.end > hit.range.start)
+            {
+                continue;
+            }
+            selected.insert(hit.range.start, hit);
+        }
+        return selected.into_values().collect();
     }
     let mut out: Vec<Hit> = Vec::with_capacity(hits.len());
     for hit in hits {
@@ -337,6 +370,13 @@ impl PhraseRule {
             exclude_quoted_mentions: true,
             closing_paragraphs: None,
         }
+    }
+
+    /// 重なる追加項目が、先頭の `count` 項目の範囲や強さを置き換えないようにする。
+    /// 先頭の項目どうしは従来どおり最長を選ぶ。追加項目は正規表現で定義する。
+    pub fn prefer_first(mut self, count: usize) -> Self {
+        self.matcher.preferred_entries = count;
+        self
     }
 
     /// 引用の内側の一致も数える (辞書の照合だけを確かめるテスト向け)。
