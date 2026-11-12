@@ -222,8 +222,8 @@ fn overlapping_starts<'a>(source: &'a str, text: &'a str) -> impl Iterator<Item 
     })
 }
 
-/// Edit / MultiEdit の `new_string` が入った行。位置を 1 つに決められないとき (同じ文字列が
-/// ほかにもある (重なった出現も含む)、削除だけの編集、別のフックが整形して見つからない) は `None`。
+/// Edit / MultiEdit の `new_string` の候補行。一括置換では全候補の行を返す。
+/// 通常の置換で位置が一意でない場合、削除だけの編集、整形などで見つからない場合は `None`。
 fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
     let replace_all = |v: &Value| v.get("replace_all").and_then(Value::as_bool) == Some(true);
     let mut edits: Vec<(&str, bool)> = Vec::new();
@@ -251,10 +251,13 @@ fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
         if !all && starts.next().is_some() {
             return None;
         }
+        let mut covered_until = 0;
         for start in std::iter::once(first).chain(starts) {
             let first = doc.lines.line(start);
             let last = doc.lines.line(start + text.len() - 1);
-            lines.extend(first..=last);
+            // 開始位置も終点も単調に増える。同じ行を候補ごとに何度も集合へ追加しない。
+            lines.extend(first.max(covered_until + 1)..=last);
+            covered_until = last;
         }
     }
     Some(lines)
@@ -456,6 +459,16 @@ mod tests {
         assert_eq!(starts.len(), 10_001);
         assert_eq!(starts[0], 0);
         assert_eq!(starts[10_000], 30_000);
+    }
+
+    #[test]
+    fn replace_all_collects_the_union_of_long_overlapping_line_ranges() {
+        let doc = Document::plain_text("a\n".repeat(20_000));
+        let input = json!({"new_string": "a\n".repeat(10_000), "replace_all": true});
+        let lines = inserted_lines(&input, &doc).unwrap();
+        assert_eq!(lines.len(), 20_000);
+        assert_eq!(lines.first(), Some(&1));
+        assert_eq!(lines.last(), Some(&20_000));
     }
 
     #[test]
