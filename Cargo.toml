@@ -30,7 +30,7 @@ resolver = "3"
 
 # 本体・テスト・辞書の準備で、同じリリースを使う。
 [workspace.dependencies]
-hasami = { git = "https://github.com/owayo/hasami", tag = "v26.11.102", default-features = false, features = ["analyzer"] }
+hasami = { git = "https://github.com/owayo/hasami", tag = "v26.11.103", default-features = false, features = ["analyzer"] }
 
 [features]
 default = ["cli", "bundled-dict"]
@@ -64,7 +64,7 @@ globset = { version = "0.4.21", optional = true }
 # タグで入れる。既定の feature (cli) は辞書の構築と CLI の依存を引くので切る
 hasami = { workspace = true }
 ignore = { version = "0.4.34", optional = true }
-html5gum = { version = "0.9.0", default-features = false }
+html5gum = { version = "0.9.1", default-features = false }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object"], optional = true }
 rayon = "1.12.0"
@@ -77,11 +77,11 @@ sha2 = { version = "0.11.1", optional = true }
 thiserror = "2.0.21"
 # 既定の feature (cli) は TUI の依存を引くので切る
 toon-format = { version = "0.7.0", default-features = false }
-toml = "1.1.8"
+toml = "1.2.1"
 # コードのコメントの取り出しと、gws のコマンドの解析 (Bash)。code で全言語をまとめて有効にする。
 # 文法の crate は tree-sitter 0.27 で読める版に固定する (上げるときは文法ごとに tree-sitter の ABI の
 # 対応を確かめる)
-tree-sitter = { version = "0.27.1", optional = true }
+tree-sitter = { version = "0.27.2", optional = true }
 tree-sitter-bash = { version = "=0.25.1", optional = true }
 tree-sitter-c = { version = "=0.24.2", optional = true }
 tree-sitter-c-sharp = { version = "=0.23.5", optional = true }
