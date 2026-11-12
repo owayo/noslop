@@ -184,6 +184,44 @@ fn patch_lines(patch: &Value) -> Option<ChangedLines> {
     Some(lines)
 }
 
+/// 重なった出現も含めて列挙する。長い反復文字列でも同じ接頭辞を読み直さない。
+fn overlapping_starts<'a>(source: &'a str, text: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let needle = text.as_bytes();
+    let mut prefix = vec![0; needle.len()];
+    let mut matched = 0;
+    for at in 1..needle.len() {
+        while matched > 0 && needle[at] != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if needle[at] == needle[matched] {
+            matched += 1;
+        }
+        prefix[at] = matched;
+    }
+    let mut matched = 0;
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        if needle.is_empty() {
+            return None;
+        }
+        while let Some(&byte) = source.as_bytes().get(at) {
+            while matched > 0 && byte != needle[matched] {
+                matched = prefix[matched - 1];
+            }
+            if byte == needle[matched] {
+                matched += 1;
+            }
+            at += 1;
+            if matched == needle.len() {
+                let start = at - matched;
+                matched = prefix[matched - 1];
+                return Some(start);
+            }
+        }
+        None
+    })
+}
+
 /// Edit / MultiEdit の `new_string` が入った行。位置を 1 つに決められないとき (同じ文字列が
 /// ほかにもある (重なった出現も含む)、削除だけの編集、別のフックが整形して見つからない) は `None`。
 fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
@@ -207,14 +245,11 @@ fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
         if text.trim().is_empty() {
             return None;
         }
-        let mut starts = source.match_indices(text).map(|(i, _)| i);
+        // 既存の本文と挿入部分をまたぐ一致が先に現れる場合も、挿入した行を落とさない。
+        let mut starts = overlapping_starts(source, text);
         let first = starts.next()?;
-        if !all {
-            // 一括置換の列挙とは違い、位置の一意性には重なった出現も数える。
-            let next = first + text.chars().next()?.len_utf8();
-            if source[next..].contains(text) {
-                return None;
-            }
+        if !all && starts.next().is_some() {
+            return None;
         }
         for start in std::iter::once(first).chain(starts) {
             let first = doc.lines.line(start);
@@ -394,7 +429,33 @@ mod tests {
         let mut input = json!({"new_string": "同じ行。\n同じ行。"});
         assert_eq!(inserted_lines(&input, &doc), None);
         input["replace_all"] = json!(true);
-        assert_eq!(inserted_lines(&input, &doc), Some(BTreeSet::from([1, 2])));
+        assert_eq!(
+            inserted_lines(&input, &doc),
+            Some(BTreeSet::from([1, 2, 3]))
+        );
+    }
+
+    #[test]
+    fn overlapping_starts_preserve_utf8_positions_and_prefix_fallbacks() {
+        for (source, text, expected) in [
+            ("ははは。", "はは", vec![0, 3]),
+            ("abababaca", "ababaca", vec![2]),
+            ("abcabc", "abc", vec![0, 3]),
+            ("日本語", "語句", vec![]),
+            ("", "語", vec![]),
+            ("日本語", "", vec![]),
+        ] {
+            assert_eq!(
+                overlapping_starts(source, text).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let source = "あ".repeat(20_000);
+        let text = "あ".repeat(10_000);
+        let starts: Vec<_> = overlapping_starts(&source, &text).collect();
+        assert_eq!(starts.len(), 10_001);
+        assert_eq!(starts[0], 0);
+        assert_eq!(starts[10_000], 30_000);
     }
 
     #[test]
