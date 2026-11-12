@@ -109,6 +109,26 @@ fn claims_need_evidence_and_reader_effect_and_questions() {
 }
 
 #[test]
+fn overlapping_citations_count_only_nonoverlapping_occurrences() {
+    let mut evidence = [Evidence {
+        block_id: 0,
+        quote: "はは".into(),
+        occurrence: None,
+    }];
+    let (request, _) = fixture("ははは。");
+    let mut citations = vec![];
+    collect_evidence(&request, "test", &evidence, &mut citations).unwrap();
+    assert_eq!(citations[0].span, Span::new(0, 6));
+    evidence[0].occurrence = Some(2);
+    assert!(collect_evidence(&request, "test", &evidence, &mut vec![]).is_err());
+
+    let (request, _) = fixture("はははは。");
+    let mut citations = vec![];
+    collect_evidence(&request, "test", &evidence, &mut citations).unwrap();
+    assert_eq!(citations[0].span, Span::new(6, 12));
+}
+
+#[test]
 fn profile_typos_and_extra_response_fields_are_errors() {
     assert!(serde_json::from_str::<Profile>(r#"{"purpos":"案内"}"#).is_err());
     let (_, response) = fixture("案内です。");

@@ -185,7 +185,7 @@ fn patch_lines(patch: &Value) -> Option<ChangedLines> {
 }
 
 /// Edit / MultiEdit の `new_string` が入った行。位置を 1 つに決められないとき (同じ文字列が
-/// ほかにもある、削除だけの編集、別のフックが整形して見つからない) は `None`。
+/// ほかにもある (重なった出現も含む)、削除だけの編集、別のフックが整形して見つからない) は `None`。
 fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
     let replace_all = |v: &Value| v.get("replace_all").and_then(Value::as_bool) == Some(true);
     let mut edits: Vec<(&str, bool)> = Vec::new();
@@ -207,11 +207,16 @@ fn inserted_lines(input: &Value, doc: &Document) -> Option<BTreeSet<usize>> {
         if text.trim().is_empty() {
             return None;
         }
-        let starts: Vec<usize> = source.match_indices(text).map(|(i, _)| i).collect();
-        if starts.is_empty() || (starts.len() > 1 && !all) {
-            return None;
+        let mut starts = source.match_indices(text).map(|(i, _)| i);
+        let first = starts.next()?;
+        if !all {
+            // 一括置換の列挙とは違い、位置の一意性には重なった出現も数える。
+            let next = first + text.chars().next()?.len_utf8();
+            if source[next..].contains(text) {
+                return None;
+            }
         }
-        for start in starts {
+        for start in std::iter::once(first).chain(starts) {
             let first = doc.lines.line(start);
             let last = doc.lines.line(start + text.len() - 1);
             lines.extend(first..=last);
@@ -381,6 +386,15 @@ mod tests {
         )
         .unwrap();
         assert!(ctx.contains("L1:") && !ctx.contains("L5:"), "{ctx}");
+    }
+
+    #[test]
+    fn overlapping_edit_matches_do_not_choose_an_ambiguous_change_location() {
+        let doc = Document::plain_text("同じ行。\n同じ行。\n同じ行。\n");
+        let mut input = json!({"new_string": "同じ行。\n同じ行。"});
+        assert_eq!(inserted_lines(&input, &doc), None);
+        input["replace_all"] = json!(true);
+        assert_eq!(inserted_lines(&input, &doc), Some(BTreeSet::from([1, 2])));
     }
 
     #[test]

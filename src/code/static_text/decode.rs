@@ -164,6 +164,9 @@ fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, Stri
             Rust | JavaScript | TypeScript | Tsx | Ruby | Php | Swift | Lua
         )
     {
+        if lang == Ruby {
+            return ruby_unicode(s);
+        }
         // 数字以外が現れたら打ち切る。不正なエスケープごとに遠くの閉じ括弧を探さない。
         let digits = &tail[2..];
         let len = digits.bytes().take_while(u8::is_ascii_hexdigit).count();
@@ -251,6 +254,34 @@ fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, Stri
         return Some((prefix_len + digits, char::from_u32(value)?.to_string()));
     }
     None
+}
+
+/// Ruby は一つの波括弧に複数の符号位置を書ける。空の波括弧は空文字列になる。
+fn ruby_unicode(s: &str) -> Option<(usize, String)> {
+    let mut at = 3;
+    let mut value = String::new();
+    loop {
+        // LF は許されない。VT は Rust の is_ascii_whitespace には含まれない。
+        let whitespace = |b: &u8| matches!(b, b' ' | b'\t' | b'\r' | 0x0b | 0x0c);
+        at += s.get(at..)?.bytes().take_while(whitespace).count();
+        if s.as_bytes().get(at) == Some(&b'}') {
+            return Some((at + 1, value));
+        }
+        let digits = s
+            .get(at..)?
+            .bytes()
+            .take_while(u8::is_ascii_hexdigit)
+            .count();
+        if !(1..=6).contains(&digits) {
+            return None;
+        }
+        value.push(char::from_u32(hex(&s[at..], digits)?)?);
+        at += digits;
+        let next = s.as_bytes().get(at)?;
+        if *next != b'}' && !whitespace(next) {
+            return None;
+        }
+    }
 }
 
 /// Rust・TOML の行継続は字下げと後続の空行も除く。Unicode の空白は本文に残す。
@@ -406,6 +437,50 @@ fn append_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruby_braced_unicode_checks_each_codepoint_and_separator() {
+        for separator in [" ", "\t", "\r", "\u{b}", "\u{c}"] {
+            let source = format!("\\u{{{separator}4fdd{separator}5b58{separator}}}");
+            assert_eq!(
+                escape(&source, CodeLanguage::Ruby, 1),
+                Some((source.len(), "保存".to_string())),
+                "{source:?}"
+            );
+        }
+        for (source, expected) in [
+            (r"\u{4fdd 5b58}", "保存"),
+            (r"\u{}", ""),
+            (r"\u{ }", ""),
+            (r"\u{0 10ffff}", "\0\u{10ffff}"),
+        ] {
+            assert_eq!(
+                escape(source, CodeLanguage::Ruby, 1),
+                Some((source.len(), expected.to_string())),
+                "{source}"
+            );
+        }
+        for source in [
+            r"\u{4fdd +5b58}",
+            r"\u{4fdd D800}",
+            r"\u{4fdd 110000}",
+            r"\u{0004fdd}",
+            r"\u{4_fdd}",
+            r"\u{4fdd 5b58",
+            "\\u{4fdd\n5b58}",
+            "\\u{4fdd\u{a0}5b58}",
+            "\\u{4fdd\u{3000}5b58}",
+        ] {
+            assert_eq!(escape(source, CodeLanguage::Ruby, 1), None, "{source}");
+        }
+        for lang in [
+            CodeLanguage::Rust,
+            CodeLanguage::JavaScript,
+            CodeLanguage::Swift,
+        ] {
+            assert_eq!(escape(r"\u{4fdd 5b58}", lang, 1), None, "{lang:?}");
+        }
+    }
 
     #[test]
     fn braced_unicode_requires_hex_digits_before_the_closing_brace() {
