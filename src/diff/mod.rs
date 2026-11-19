@@ -124,10 +124,13 @@ pub fn compare(
 ///
 /// 1. fingerprint (ルール ID・一致テキスト・文脈の先頭から作る、行番号に依存しない識別子) が
 ///    同じもの → 継続。多重集合として扱い、同じ文が繰り返されても件数分だけ 1 対 1 にする
-/// 2. 文単位の指摘で、ルールと一致テキスト (空白を除く) が同じもの → 書き換えても残った
-/// 3. 文書・見出し単位の指摘 (文脈を持たず、代表位置の文が改稿で変わる) で、同じルールのもの
+/// 2. 改稿後に抑制コメントで隠れた指摘で、fingerprint が同じもの → 抑制して残した。同じ文を
+///    残したことが確かなので、3・4 の緩い対応より先に取る (同じ語句を含む新しい文の指摘が、
+///    改稿前の指摘と組になって「書き換えても残った」に隠れないように)
+/// 3. 文単位の指摘で、ルールと一致テキスト (空白を除く) が同じもの → 書き換えても残った
+/// 4. 文書・見出し単位の指摘 (文脈を持たず、代表位置の文が改稿で変わる) で、同じルールのもの
 ///    → 継続
-/// 4. 改稿後に抑制コメントで隠れた指摘と 1・2 のキーで対応するもの → 抑制して残した
+/// 5. 改稿後に抑制コメントで隠れた指摘と 3 のキーで対応するもの → 抑制して残した
 ///
 /// どれにも対応しなかった改稿前の指摘が解消、改稿後の指摘が新規になる。
 fn match_findings(before: &FileReport, after: &FileReport) -> FindingChanges {
@@ -154,14 +157,14 @@ fn match_findings(before: &FileReport, after: &FileReport) -> FindingChanges {
         fingerprint_b,
         fingerprint_a,
     );
-    let mut carried_over = pair_by(&mut rest_before, &mut rest_after, phrase_b, phrase_a);
-    persisting.extend(pair_by(&mut rest_before, &mut rest_after, rule_b, rule_a));
     let mut suppressed = pair_by(
         &mut rest_before,
         &mut suppressed_after,
         fingerprint_b,
         fingerprint_a,
     );
+    let mut carried_over = pair_by(&mut rest_before, &mut rest_after, phrase_b, phrase_a);
+    persisting.extend(pair_by(&mut rest_before, &mut rest_after, rule_b, rule_a));
     suppressed.extend(pair_by(
         &mut rest_before,
         &mut suppressed_after,
@@ -341,6 +344,29 @@ mod tests {
         assert_eq!(r.findings.suppressed.len(), 1);
         assert!(r.findings.resolved.is_empty());
         assert!(r.findings.new.is_empty());
+    }
+
+    /// 抑制コメントを付けて残した文は改稿前と同じ文なので、同じ語句を含む新しい文より先に、
+    /// 改稿前の指摘と対応づける。新しい文の指摘を「書き換えても残った」にして隠さない。
+    #[test]
+    fn a_kept_sentence_with_a_suppression_comment_does_not_hide_a_new_finding() {
+        let before = "効果があると言えるでしょう。\n";
+        let after = "<!-- noslop-disable-next-line X01 -- 引用のため -->\n効果があると言えるでしょう。\n\n手順は簡単だと言えるでしょう。\n";
+        let r = diff(before, after);
+        assert_eq!(r.findings.suppressed.len(), 1);
+        let (i, j) = r.findings.suppressed[0];
+        assert_eq!(
+            r.before.diagnostics[i].fingerprint,
+            r.after.diagnostics[j].fingerprint
+        );
+        assert_eq!(r.findings.new.len(), 1);
+        let new = &r.after.diagnostics[r.findings.new[0]];
+        assert_eq!(new.rule_id, "X01");
+        assert!(new.span.start > after.find("手順").unwrap());
+        assert!(r.findings.carried_over.is_empty());
+        assert!(r.findings.persisting.is_empty());
+        assert!(r.findings.resolved.is_empty());
+        assert!(r.has_concerns());
     }
 
     #[test]
