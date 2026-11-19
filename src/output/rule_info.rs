@@ -112,14 +112,17 @@ pub(crate) fn rules_markdown(engine: &Engine) -> String {
     s.push_str(&format!("ジャンル `{genre}` での既定の状態です。\n\n"));
     s.push_str("| ID | 名前 | 日本語名 | レーン | 手掛かりの強さ | 既定の重大度 | 既定で有効 |\n");
     s.push_str("|---|---|---|---|---|---|---|\n");
+    // 独自ルールの ID・名前は設定の文字列なので、表の列を区切る `|` を打ち消す (GFM ではコードスパンや
+    // リンクの中の `|` も列の区切りになり、`\|` が `|` として表示される)
+    let cell = |value: &str| value.replace('|', "\\|");
     for e in engine.entries() {
         let m = e.rule.meta();
         s.push_str(&format!(
             "| [{id}](#{anchor}) | `{name}` | {title} | {lane} | {signal} | {sev} | {enabled} |\n",
-            id = m.id,
-            anchor = m.id.to_ascii_lowercase(),
-            name = m.name,
-            title = m.title,
+            id = cell(m.id),
+            anchor = cell(&m.id.to_ascii_lowercase()),
+            name = cell(m.name),
+            title = cell(m.title),
             lane = m.lane.as_str(),
             signal = m.signal.map_or("-", Signal::level_ja),
             sev = m.default_severity.as_str(),
@@ -260,6 +263,56 @@ mod tests {
         );
         let p03 = listing.lines().find(|l| l.starts_with("P03 ")).unwrap();
         assert!(p03.contains(" 弱い ") && p03.contains("有効"), "{p03}");
+    }
+
+    /// 独自ルールの ID・名前・日本語名に `|` があっても、表の列がずれない (GFM ではコードスパンの中の
+    /// `|` も列の区切りになる)。
+    #[test]
+    fn pipes_in_custom_rule_values_stay_in_their_table_cells() {
+        use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+
+        let engine = Engine::with_rules(
+            Vec::new(),
+            EngineOptions {
+                custom: vec![crate::config::CustomRuleConfig {
+                    id: "X|1".into(),
+                    name: Some("A|B".into()),
+                    pattern: "ユーザー様".into(),
+                    regex: false,
+                    message: "「ユーザー様」と書いています".into(),
+                    hint: None,
+                    severity: None,
+                    lane: None,
+                }],
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap();
+        let markdown = rules_markdown(&engine);
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut cell: Option<String> = None;
+        for event in Parser::new_ext(&markdown, crate::markdown::options()) {
+            match event {
+                Event::Start(Tag::TableHead | Tag::TableRow) => rows.push(Vec::new()),
+                Event::Start(Tag::TableCell) => cell = Some(String::new()),
+                Event::Text(text) | Event::Code(text) => {
+                    if let Some(c) = cell.as_mut() {
+                        c.push_str(&text);
+                    }
+                }
+                Event::End(TagEnd::TableCell) => {
+                    rows.last_mut().unwrap().extend(cell.take());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(rows.len(), 2, "{markdown}");
+        assert_eq!(rows[0].len(), 7, "{markdown}");
+        assert_eq!(
+            rows[1],
+            ["X|1", "A|B", "A|B", "custom", "-", "warning", "✓"],
+            "{markdown}"
+        );
     }
 
     #[test]
