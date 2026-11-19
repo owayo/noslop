@@ -4,7 +4,7 @@
 //! 地の文 ([`crate::document::Document::prose_sentences`]) で、校正に使った条件
 //! (見出し・リスト・引用・表を除いた本文) に合わせている。改行で並べた「ラベル: 値」の行
 //! ([`crate::document::Sentence::label_value`]) も母集団に入れない。
-//! R21 だけは、見出しと独立した短い段落を対象にする。
+//! R21 だけは、見出しと独立した短い段落を対象にする。R22 は既定では随筆だけで動き (明示的に有効にすればほかのジャンルでも動く)、地の文を約 1,300 字の窓に分けて数える。
 
 mod action_closer;
 mod antithesis;
@@ -21,6 +21,7 @@ mod length;
 mod nominal_lists;
 mod overcorrection;
 mod paragraphs;
+mod phrase_cluster;
 mod self_answer;
 mod slogans;
 mod style;
@@ -58,6 +59,7 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
         Box::new(action_closer::ClosingCallToAction),
         Box::new(style::MixedWritingStyle::default()),
         Box::new(slogans::RepeatedShortSlogan::default()),
+        Box::new(phrase_cluster::EssayPhraseCluster::default()),
     ]
 }
 
@@ -122,9 +124,9 @@ mod tests {
     use crate::rules::testing::{self, assert_measures_agree};
 
     /// measure を実装しているルール。R10・R11・R15・R19 は閾値を持たない。
-    const MEASURED: [&str; 17] = [
+    const MEASURED: [&str; 18] = [
         "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R12", "R13", "R14", "R16",
-        "R17", "R18", "R20", "R21",
+        "R17", "R18", "R20", "R21", "R22",
     ];
 
     fn rule_by_id(id: &str) -> Box<dyn Rule> {
@@ -229,6 +231,9 @@ mod tests {
         let alternating: Vec<usize> = (0..20).map(|i| [10, 40][i % 2]).collect();
         let clustered: Vec<usize> = (0..20).map(|i| 10 + (i / 5) * 10).collect();
         vec![
+            // R22 (同じ窓の 2 系統と、1 系統だけの例)
+            "駅の階段の途中で立ち止まった。\n\n空は静かに暮れていった。\n".into(),
+            "駅の階段の途中で立ち止まった。\n".into(),
             // R21 (短い宣言の反復と、回数が足りない例)
             "## 点検を、仕組みで続ける\n\n小さな記録が示す、次の一手\n\n待っている間に、機会は失われる\n".into(),
             "点検を、仕組みで続ける\n\n小さな記録が示す、次の一手\n".into(),
@@ -341,7 +346,7 @@ mod tests {
     #[test]
     fn rule_ids_are_in_order() {
         let ids: Vec<_> = rules(Genre::General).iter().map(|r| r.meta().id).collect();
-        let expected: Vec<String> = (1..=21).map(|n| format!("R{n:02}")).collect();
+        let expected: Vec<String> = (1..=22).map(|n| format!("R{n:02}")).collect();
         assert_eq!(ids, expected);
     }
 
@@ -353,7 +358,7 @@ mod tests {
             for rule in rules(genre) {
                 let m = rule.meta();
                 let signal = match m.id {
-                    "R01" | "R05" | "R07" | "R09" | "R17" | "R18" => Some(Signal::Strong),
+                    "R01" | "R05" | "R07" | "R09" | "R17" | "R18" | "R22" => Some(Signal::Strong),
                     "R06" | "R10" | "R15" | "R16" | "R19" | "R21" => Some(Signal::Moderate),
                     "R08" | "R11" | "R12" | "R13" => Some(Signal::Weak),
                     _ => None,
