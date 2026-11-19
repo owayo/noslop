@@ -2,7 +2,7 @@
 //!
 //! 改稿で事実を落としていないか、原文にない事実 (とくに数字) や人・担当を足していないかを
 //! 確かめるための手掛かりを取り出す。表記の揺れ (全角と半角、漢数字と算用数字、
-//! 「ヶ月」と「か月」) は正規化してから比べる。
+//! 「ヶ月」と「か月」、時刻の「13:00」と「13時」、「6割」と「60%」) は正規化してから比べる。
 
 mod actors;
 
@@ -10,11 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::LazyLock;
 
+use hasami::CoarsePos;
+use pulldown_cmark::{Event, LinkType, Parser, Tag};
 use regex::Regex;
 use serde::Serialize;
 
 use crate::diagnostic::Span;
-use crate::document::{Block, Document, MarkKind};
+use crate::document::{Block, Document, MarkKind, SourceFormat};
 use crate::morph::{DocMorphology, Morphology};
 
 /// 事実の種類。並び順は出力の順 (数字・日付を先に出す)。
@@ -100,29 +102,75 @@ pub struct FactChanges {
 
 static DATE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?P<y>[0-9０-９]{4})\s*[年/／\-－]\s*(?P<m>[0-9０-９]{1,2})\s*[月/／\-－]\s*(?P<d>[0-9０-９]{1,2})\s*日?",
+        // 「日」がないときは、後ろの空白を日付の表記に含めない
+        r"(?P<y>[0-9０-９]{4})\s*[年/／\-－]\s*(?P<m>[0-9０-９]{1,2})\s*[月/／\-－]\s*(?P<d>[0-9０-９]{1,2})(?:\s*日)?",
         r"|(?P<y2>[0-9０-９]{4})\s*年\s*(?P<m2>[0-9０-９]{1,2})\s*月",
         r"|(?P<m3>[0-9０-９]{1,2})\s*月\s*(?P<d3>[0-9０-９]{1,2})\s*日",
     ))
     .expect("date regex")
 });
 
-/// 数字に続けて取り込む単位・助数詞 (長いものを先に並べる)。
-const UNIT_PATTERN: &str = "万円|億円|兆円|年間|年代|か月|ヶ月|カ月|ヵ月|箇月|週間|日間|時間|分間|秒間|ページ|キロ|%|％|円|年|月|週|日|時|分|秒|歳|人|名|件|回|倍|割|個|本|社|台|点|字|文|行|章|節|頁|万|億|兆|kg|km|cm|mm|MB|GB|TB|KB|ms";
+/// 数字に続けて取り込む単位・助数詞 (長いものを先に並べる)。算用数字と漢数字で同じものを使う。
+///
+/// 万・億・兆は単位ではなく桁で、単位の前に置く (算用数字は [`NUMBER_RE`] の任意の部分、漢数字は
+/// 数の字の一部)。「3万人」を「3万」で止めて「人」を落とさないため。
+const UNIT_PATTERN: &str = "年間|年代|か月|ヶ月|カ月|ヵ月|箇月|週間|日間|時間|分間|秒間|ページ|キロ|%|％|円|年|月|週|日|時|分|秒|歳|人|名|件|回|倍|割|個|本|社|台|点|字|文|行|章|節|頁|kg|km|cm|mm|MB|GB|TB|KB|ms";
+
+/// 漢数字の字 (数字・位取りの字・桁の字)。
+const KANJI_NUMERALS: &str = "〇一二三四五六七八九十百千万億兆";
 
 static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"[0-9０-９]+(?:[.,．，][0-9０-９]+)*(?:{UNIT_PATTERN})?"
+        r"[0-9０-９]+(?:[.,．，][0-9０-９]+)*[万億兆]?(?:{UNIT_PATTERN})?"
     ))
     .expect("number regex")
 });
 
 /// 漢数字は助数詞が続くときだけ数値とみなす (「一部」「一方」「統一」を拾わないため)。
 static KANJI_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"[{KANJI_NUMERALS}]+(?:{UNIT_PATTERN})")).expect("kanji number regex")
+});
+
+/// 時と分をコロンで区切った時刻 (「13:00」「9:05:30」)。秒は比べない。
+static CLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?P<h>[0-9０-９]{1,2})[:：](?P<m>[0-9０-９]{2})(?:[:：][0-9０-９]{2})?")
+        .expect("clock regex")
+});
+
+/// 「N時」に続く分 (「30分」「三十分」) か「半」。
+static CLOCK_MINUTES_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"[〇一二三四五六七八九十百千万億]+(?:万円|億円|年間|か月|ヶ月|カ月|ヵ月|箇月|週間|日間|時間|分間|ページ|円|年|月|週|日|時|分|秒|歳|人|名|件|回|倍|割|個|本|社|台|点|字|文|行|章|節)",
+        r"^(?:\s*(?P<m>[0-9０-９]{1,2})\s*分|(?P<k>[〇一二三四五六七八九十]{1,3})分|(?P<half>半))",
     )
-    .expect("kanji number regex")
+    .expect("clock minutes regex")
+});
+
+/// 時間の長さに続く語。「十分」の後ろにあれば、「じゅうぶん」ではなく「10 分」と読む
+/// (「十分後」「十分ほど」「十分でも」)。「だけ」は「十分だけど」と区別できないので入れない。
+const DURATION_FOLLOWERS: &[&str] = &[
+    "後",
+    "前",
+    "程",
+    "ほど",
+    "くらい",
+    "ぐらい",
+    "以",
+    "おき",
+    "ごと",
+    "毎",
+    "弱",
+    "強",
+    "余",
+    "足らず",
+    "でも",
+    "しか",
+    "ずつ",
+];
+
+/// 「一人ひとり」「1人1人」「一日一日」のような、1 を重ねて「それぞれ」を表す言い回し。数として
+/// 数えず、算用数字と漢数字のどちらで書いても同じに扱う。
+static ONE_BY_ONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[1１一](?:人(?:[1１一]人|ひとり)|日[1１一]日)").expect("one by one regex")
 });
 
 static LATIN_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -148,8 +196,9 @@ pub fn extract(doc: &Document) -> ExtractedFacts {
 pub fn extract_with_morphology(doc: &Document, morphology: Option<&Morphology>) -> ExtractedFacts {
     let mut facts = Vec::new();
     let morph = morphology.map(|m| m.for_document(doc));
+    let references = reference_links(doc);
     for block in &doc.blocks {
-        extract_block(doc, block, morph.as_ref(), &mut facts);
+        extract_block(doc, block, morph.as_ref(), &references, &mut facts);
         actors::extract_block(doc, block, &mut facts);
     }
     facts.sort_by_key(|f| (f.span.start, f.kind));
@@ -157,6 +206,38 @@ pub fn extract_with_morphology(doc: &Document, morphology: Option<&Morphology>) 
         facts,
         actors: actors::presence(doc),
     }
+}
+
+/// 参照形式のリンク (`[資料][doc]`・`[doc][]`・`[doc]`) の原文上の範囲と、定義で解決した行き先。
+///
+/// 参照形式のリンクの原文には行き先の URL がない。インラインのリンクと同じくリンクを使うごとに
+/// 行き先を数えるため、ブロックを組み立てたときと同じ記法の設定で本文を読み直す。範囲は、
+/// ブロックのリンクの装飾 ([`MarkKind::Link`]) の原文上の範囲と同じになる。Markdown の文書だけが
+/// 対象で、リンクのない文書は読み直さない。
+fn reference_links(doc: &Document) -> BTreeMap<Span, String> {
+    let has_links = doc
+        .blocks
+        .iter()
+        .any(|b| b.marks.iter().any(|m| m.kind == MarkKind::Link));
+    if doc.format != SourceFormat::Markdown || !has_links {
+        return BTreeMap::new();
+    }
+    let body = doc.body.range.clone();
+    let offset = body.start;
+    Parser::new_ext(&doc.source[body], crate::markdown::options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| match event {
+            Event::Start(Tag::Link {
+                link_type: LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut,
+                dest_url,
+                ..
+            }) => Some((
+                Span::new(range.start + offset, range.end + offset),
+                dest_url.into_string(),
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 種類が文脈で入れ替わらないよう、英字・長いカタカナの語は文字種による抽出に任せる。
@@ -168,36 +249,95 @@ fn is_surface_word(word: &str) -> bool {
             && !word.chars().all(|c| c == 'ー'))
 }
 
-/// ブロックの解析用テキスト上の固有名詞の範囲。原文への対応は採用するときに取る。
-fn proper_ranges(doc: &Document, block: &Block, morph: &DocMorphology<'_>) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    for index in block.sentences.clone() {
-        let sentence = &doc.sentences[index];
-        let Some(tokens) = morph.sentence(index) else {
-            continue;
-        };
-        for token in tokens
-            .iter()
-            .filter(|t| t.pos == hasami::CoarsePos::ProperNoun)
-        {
-            let range =
-                sentence.range.start + token.range.start..sentence.range.start + token.range.end;
-            if !is_surface_word(&block.text[range.clone()]) {
-                ranges.push(range);
-            }
+/// ブロックの形態素 (解析用テキスト上の範囲と粗い品詞) と、解析できた文の範囲。
+///
+/// 辞書がないときは空。原文への対応は、事実として採用するときに取る。
+#[derive(Default)]
+struct BlockTokens {
+    tokens: Vec<(Range<usize>, CoarsePos)>,
+    analyzed: Vec<Range<usize>>,
+}
+
+impl BlockTokens {
+    fn read(doc: &Document, block: &Block, morph: &DocMorphology<'_>) -> Self {
+        let mut out = Self::default();
+        for index in block.sentences.clone() {
+            let sentence = &doc.sentences[index];
+            let Some(tokens) = morph.sentence(index) else {
+                continue;
+            };
+            let base = sentence.range.start;
+            out.analyzed.push(sentence.range.clone());
+            out.tokens.extend(
+                tokens
+                    .iter()
+                    .map(|t| (base + t.range.start..base + t.range.end, t.pos)),
+            );
         }
+        out
     }
-    ranges
+
+    /// 固有名詞の範囲 (英字・長いカタカナの語は除く)。
+    fn proper(&self, text: &str) -> Vec<Range<usize>> {
+        self.tokens
+            .iter()
+            .filter(|(range, pos)| {
+                *pos == CoarsePos::ProperNoun && !is_surface_word(&text[range.clone()])
+            })
+            .map(|(range, _)| range.clone())
+            .collect()
+    }
+
+    /// `range` の頭の字を含む形態素。`range` を含む文を解析していなければ `None`。
+    fn at(&self, range: &Range<usize>) -> Option<&(Range<usize>, CoarsePos)> {
+        self.analyzed
+            .iter()
+            .any(|s| s.start <= range.start && range.end <= s.end)
+            .then(|| {
+                self.tokens
+                    .iter()
+                    .find(|(token, _)| token.start <= range.start && range.start < token.end)
+            })
+            .flatten()
+    }
+}
+
+/// 漢数字と助数詞の一致が、数を表さない語の一部か (「十分 (じゅうぶん)」「一時的」「万年筆」)。
+///
+/// 万・億・兆で始まるもの (「万年筆」「万人」「数万円」) は数にしない。辞書があれば形態素の境目で
+/// 見て、一致の頭が語の途中にあるもの (「不十分」) と、一致をまるごと含んで後ろへ続く 1 語
+/// (「万年筆」「一時期」「一人前」) を外す。数詞と助数詞に分かれずに 1 語になった「十分」「一時」も
+/// 外す。数詞でない 1 語でも、「五月」「十二月」のような月は外さない。辞書がないとき・文を解析
+/// できなかったときは、前後の字で「十分 (じゅうぶん)」「不十分」「一時的」「一時期」を外す。どちらでも、
+/// 「十分」の後ろに時間の長さに続く語 (後・ほど・以内など) があれば「10 分」と読む。
+fn is_non_numeral_word(text: &str, range: &Range<usize>, tokens: &BlockTokens) -> bool {
+    let word = &text[range.clone()];
+    if word.starts_with(['万', '億', '兆']) {
+        return true;
+    }
+    let rest = &text[range.end..];
+    let minutes = word == "十分" && DURATION_FOLLOWERS.iter().any(|f| rest.starts_with(f));
+    let ambiguous = matches!(word, "十分" | "一時") && !minutes;
+    match tokens.at(range) {
+        Some((token, pos)) => {
+            token.start < range.start
+                || token.end > range.end
+                || (token.end == range.end && *pos != CoarsePos::Numeral && ambiguous)
+        }
+        None => (word == "十分" && ambiguous) || (word == "一時" && rest.starts_with(['的', '期'])),
+    }
 }
 
 fn extract_block(
     doc: &Document,
     block: &Block,
     morph: Option<&DocMorphology<'_>>,
+    references: &BTreeMap<Span, String>,
     out: &mut Vec<Fact>,
 ) {
     let text = block.text.as_str();
-    let proper = morph.map_or_else(Vec::new, |m| proper_ranges(doc, block, m));
+    let tokens = morph.map_or_else(BlockTokens::default, |m| BlockTokens::read(doc, block, m));
+    let proper = tokens.proper(text);
     let mut taken: Vec<Range<usize>> = Vec::new();
     let push = |out: &mut Vec<Fact>, kind: FactKind, range: Range<usize>, key: String| {
         out.push(Fact {
@@ -208,25 +348,47 @@ fn extract_block(
         });
     };
 
-    // URL (本文に書かれたもの)。英字の語として重ねて数えないよう範囲を控える
+    // URL (本文に書かれたもの)。英字の語として重ねて数えないよう範囲を控え、リンクの原文から
+    // 同じ位置の URL を重ねて数えないよう原文上の範囲も控える
+    let mut body_urls: Vec<Span> = Vec::new();
     for m in URL_RE.find_iter(text) {
         let url = trim_url(m.as_str());
         let range = m.start()..m.start() + url.len();
+        body_urls.push(block.to_source(range.clone()));
         push(out, FactKind::Url, range.clone(), url.to_string());
         taken.push(range);
     }
-    // リンクの URL (解析用テキストには残らないので原文から読む)
+    // リンクの URL。行き先は解析用テキストに残らないので、リンクを使うごとに原文から読む
+    let url_fact = |url: &str, span: Span| Fact {
+        kind: FactKind::Url,
+        text: url.to_string(),
+        key: url.to_string(),
+        span,
+    };
     for mark in block.marks.iter().filter(|m| m.kind == MarkKind::Link) {
-        let src = doc.slice(mark.span);
-        for m in URL_RE.find_iter(src) {
+        let reference = references.get(&mark.span);
+        // 表示テキストの原文上の範囲 (自動リンクでは、表示と行き先を兼ねる URL の全体)
+        let shown = block.to_source(mark.range.clone());
+        for m in URL_RE.find_iter(doc.slice(mark.span)) {
             let url = trim_url(m.as_str());
             let start = mark.span.start + m.start();
-            out.push(Fact {
-                kind: FactKind::Url,
-                text: url.to_string(),
-                key: url.to_string(),
-                span: Span::new(start, start + url.len()),
-            });
+            let span = Span::new(start, start + url.len());
+            let in_text = shown.start <= span.start && span.end <= shown.end;
+            // 表示テキストの URL は本文として数えた。参照形式のリンクのラベルは行き先ではない
+            let counted = in_text
+                && body_urls
+                    .iter()
+                    .any(|b| b.start < span.end && span.start < b.end);
+            if counted || (!in_text && reference.is_some()) {
+                continue;
+            }
+            out.push(url_fact(url, span));
+        }
+        // 参照形式のリンクの行き先は定義にあるので、リンクを使った位置で数える
+        if let Some(dest) = reference {
+            for m in URL_RE.find_iter(dest) {
+                out.push(url_fact(trim_url(m.as_str()), mark.span));
+            }
         }
     }
 
@@ -252,25 +414,75 @@ fn extract_block(
     }
     taken.extend(dates);
 
+    // 時刻 (「13:00」)。数字が前後に続くもの (「123:45」「1:234」) と、英字に接するもの
+    // (日時の書式の「T06:50」) は時刻にしない。前のコロンは見出しの区切り (「期間：14:30」) なので見ない
+    let mut clocks: Vec<Range<usize>> = Vec::new();
+    let joined =
+        |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit() || matches!(c, '０'..='９'));
+    for caps in CLOCK_RE.captures_iter(text) {
+        let range = caps.get(0).expect("group 0").range();
+        if overlaps(&taken, &range)
+            || touches_ascii_letter(text, &range)
+            || joined(text[..range.start].chars().next_back())
+            || joined(text[range.end..].chars().next())
+        {
+            continue;
+        }
+        let part = |name: &str| ascii_digits(&caps[name]).parse::<u64>().ok();
+        let (Some(hour), Some(minute)) = (part("h"), part("m")) else {
+            continue;
+        };
+        if hour > MAX_CLOCK_HOUR || minute > 59 {
+            continue;
+        }
+        push(
+            out,
+            FactKind::Number,
+            range.clone(),
+            clock_key(hour, minute),
+        );
+        clocks.push(range);
+    }
+    taken.extend(clocks);
+    // 「一人ひとり」「1人1人」は数として数えない (範囲だけを控え、数値の抽出から外す)
+    let one_by_one: Vec<Range<usize>> = ONE_BY_ONE_RE
+        .find_iter(text)
+        .map(|m| m.range())
+        .filter(|range| !overlaps(&taken, range))
+        .collect();
+    taken.extend(one_by_one);
+
     // 算用数字 (英字に接しているものは製品名・版番号の一部として英字の語に回す)
     for m in NUMBER_RE.find_iter(text) {
-        let range = m.range();
+        let mut range = m.range();
         if overlaps(&taken, &range) || touches_ascii_letter(text, &range) {
             continue;
         }
         let (number, unit) = split_unit(m.as_str());
-        let key = number_key(number, unit);
+        let hour = (unit == "時")
+            .then(|| ascii_digits(number).parse::<u64>().ok())
+            .flatten();
+        let key = match hour {
+            Some(hour) if hour <= MAX_CLOCK_HOUR => {
+                let (len, minute) = clock_minutes(&text[range.end..]);
+                range.end += len;
+                clock_key(hour, minute)
+            }
+            _ => number_key(number, unit),
+        };
         push(out, FactKind::Number, range.clone(), key);
         taken.push(range);
     }
     // 漢数字 + 助数詞
     for m in KANJI_NUMBER_RE.find_iter(text) {
-        let range = m.range();
-        // 「四日市」「二本松」のような固有名詞の一部を漢数字の数値にしない。
+        let mut range = m.range();
+        // 「四日市」「二本松」のような固有名詞の一部と、「十分 (じゅうぶん)」「万年筆」のような
+        // 数を表さない語の一部を、漢数字の数値にしない
         if overlaps(&taken, &range)
             || proper
                 .iter()
                 .any(|p| p.start <= range.start && range.end <= p.end)
+            || is_non_numeral_word(text, &range, &tokens)
         {
             continue;
         }
@@ -278,7 +490,18 @@ fn extract_block(
         let Some(value) = kanji_to_number(number) else {
             continue;
         };
-        let key = format!("{value}{}", normalize_unit(unit));
+        let key = if unit == "時" && value <= MAX_CLOCK_HOUR {
+            let (len, minute) = clock_minutes(&text[range.end..]);
+            range.end += len;
+            clock_key(value, minute)
+        } else if unit == "割" {
+            let Some(percent) = value.checked_mul(10) else {
+                continue;
+            };
+            format!("{percent}%")
+        } else {
+            format!("{value}{}", normalize_unit(unit))
+        };
         push(out, FactKind::Number, range.clone(), key);
         taken.push(range);
     }
@@ -379,19 +602,46 @@ fn split_unit(s: &str) -> (&str, &str) {
     (&s[..end], &s[end..])
 }
 
-/// 漢数字の部分と助数詞に分ける (「三万円」は「三万」と「円」。万・億は数に含める)。
+/// 漢数字の部分と助数詞に分ける (「三万円」は「三万」と「円」。万・億・兆は数に含める)。
 fn split_kanji_unit(s: &str) -> (&str, &str) {
     let end = s
         .char_indices()
-        .find(|&(_, c)| !"〇一二三四五六七八九十百千万億".contains(c))
+        .find(|&(_, c)| !KANJI_NUMERALS.contains(c))
         .map_or(s.len(), |(i, _)| i);
     (&s[..end], &s[end..])
+}
+
+/// 時刻とみなす「N時」「H:MM」の時の上限 (深夜の「25時」のような書き方を含める)。
+const MAX_CLOCK_HOUR: u64 = 48;
+
+/// 時刻のキー (「13:00」「13時」「13時00分」を同じにし、「13時半」は「13:30」にする)。
+fn clock_key(hour: u64, minute: u64) -> String {
+    format!("{hour}:{minute:02}")
+}
+
+/// 「N時」の後ろの分 (「30分」「三十分」) か「半」の字数 (バイト) と、その分。なければ (0, 0)。
+fn clock_minutes(rest: &str) -> (usize, u64) {
+    let Some(caps) = CLOCK_MINUTES_RE.captures(rest) else {
+        return (0, 0);
+    };
+    let minute = if let Some(m) = caps.name("m") {
+        ascii_digits(m.as_str()).parse().ok()
+    } else if let Some(k) = caps.name("k") {
+        kanji_to_number(k.as_str())
+    } else {
+        Some(30)
+    };
+    match minute {
+        Some(minute) if minute < 60 => (caps.get(0).expect("group 0").end(), minute),
+        _ => (0, 0),
+    }
 }
 
 /// 算用数字の値を正規化したキーにする。
 ///
 /// 桁区切りを除き、全角を半角にそろえ、単位の頭の「万」「億」「兆」は数に掛ける
-/// (「3万円」「三万円」「30000円」を同じキーにするため)。
+/// (「3万円」「三万円」「30000円」を同じキーにするため)。割は 10 倍して % にする
+/// (「6割」と「60%」を同じキーにするため)。
 fn number_key(number: &str, unit: &str) -> String {
     let digits = ascii_digits(number)
         .replace(['，', ','], "")
@@ -400,6 +650,11 @@ fn number_key(number: &str, unit: &str) -> String {
         .iter()
         .find_map(|&(prefix, places)| unit.strip_prefix(prefix).map(|r| (places, r)))
         .unwrap_or((0, unit));
+    let (places, rest) = if rest == "割" {
+        (places + 1, "%")
+    } else {
+        (places, rest)
+    };
     // 節番号や単位のない番号では、1.10 と 1.1 は別の識別子になり得る。
     let value = if places == 0 && matches!(rest, "" | "章" | "節" | "行" | "頁" | "ページ") {
         let trimmed = digits.trim_start_matches('0');
@@ -483,6 +738,7 @@ fn kanji_to_number(s: &str) -> Option<u64> {
             '千' => 1000,
             '万' => 10_000,
             '億' => 100_000_000,
+            '兆' => 1_000_000_000_000,
             _ => return None,
         };
         if unit >= 10_000 {
@@ -771,6 +1027,195 @@ mod tests {
         assert_eq!(k, vec![(FactKind::Number, "240日".to_string())]);
     }
 
+    fn number_keys(doc: &str) -> Vec<String> {
+        keys(doc)
+            .into_iter()
+            .filter(|(kind, _)| *kind == FactKind::Number)
+            .map(|(_, key)| key)
+            .collect()
+    }
+
+    /// 前後の文書の数値の増減 (消えたキー, 増えたキー)。
+    fn number_changes(before: &str, after: &str) -> (Vec<String>, Vec<String>) {
+        let changes = compare(
+            &extract(&Document::markdown(before)),
+            &extract(&Document::markdown(after)),
+        );
+        let numbers = |list: &[FactChange]| -> Vec<String> {
+            list.iter()
+                .filter(|c| c.kind == FactKind::Number)
+                .map(|c| c.key.clone())
+                .collect()
+        };
+        (numbers(&changes.removed), numbers(&changes.added))
+    }
+
+    /// 万・億・兆は桁として値に掛け、後ろの単位は落とさない (「3万人」は「30000人」と同じ値)。
+    #[test]
+    fn magnitudes_scale_the_value_and_keep_the_following_unit() {
+        assert_eq!(
+            number_keys("参加は3万人、見学は３万件、予算は1.5億円、5万年前、上限は2兆だった。\n"),
+            [
+                "30000人",
+                "30000件",
+                "150000000円",
+                "50000年",
+                "2000000000000"
+            ]
+        );
+        assert_eq!(
+            number_changes("参加者は3万人だった。", "参加者は30000人だった。"),
+            (vec![], vec![])
+        );
+        assert_eq!(
+            number_changes("参加者は3万人だった。", "参加者は3万件だった。"),
+            (vec!["30000人".to_string()], vec!["30000件".to_string()])
+        );
+    }
+
+    /// 漢数字は算用数字と同じ単位・助数詞と桁 (兆を含む) で読み、表記を変えただけの数値を増減にしない。
+    #[test]
+    fn kanji_numbers_share_the_units_and_magnitudes_of_arabic_numbers() {
+        for (before, after) in [
+            ("3秒間待つ。", "三秒間待つ。"),
+            ("3頁を見る。", "三頁を見る。"),
+            ("予算は1兆円だ。", "予算は一兆円だ。"),
+            ("1990年代の話だ。", "千九百九十年代の話だ。"),
+            ("5キロ歩いた。", "五キロ歩いた。"),
+            ("3万人が来た。", "三万人が来た。"),
+        ] {
+            assert_eq!(
+                number_changes(before, after),
+                (vec![], vec![]),
+                "{before} → {after}"
+            );
+            assert_eq!(
+                number_keys(before),
+                number_keys(after),
+                "{before} → {after}"
+            );
+        }
+        assert_eq!(kanji_to_number("一兆二千億"), Some(1_200_000_000_000));
+    }
+
+    /// 「十分 (じゅうぶん)」「一時的」「万年筆」のような、漢数字で始まる数でない語は数値にしない。
+    /// 辞書がなければ前後の字で見る。時間の長さに続く語があれば、「十分」は「10 分」と読む。
+    #[test]
+    fn kanji_inside_words_that_are_not_numbers_are_not_counted() {
+        assert_eq!(
+            number_keys(
+                "準備は十分だ。十分に学ぶ。不十分な点がある。一時的に止める。一時期だけ。万年筆で書く。数万円かかる。\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            number_keys(
+                "十分後に出る。十分ほど待つ。十分でもよい。十分間待つ。午後一時に集まる。一月に出る。\n"
+            ),
+            ["10分", "10分", "10分", "10分間", "1:00", "1月"]
+        );
+        assert_eq!(
+            number_changes("準備は十分だ。", "準備は十分に整った。"),
+            (vec![], vec![])
+        );
+        // 1 を重ねて「それぞれ」を表す言い回しは、算用数字でも漢数字でも数えない
+        assert_eq!(
+            number_keys(
+                "皆さん一人ひとりと、みなさん1人1人と、一人一人と、一日一日を大切にする。\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            number_changes("みなさん1人1人の場です。", "皆さん一人ひとりの場です。"),
+            (vec![], vec![])
+        );
+        assert_eq!(number_keys("参加者は一人だった。\n"), ["1人"]);
+    }
+
+    /// 辞書があれば形態素の境目で見る。1 語になった「十分」「一時」、語の途中の漢数字、一致を
+    /// 含んで後ろへ続く 1 語は数ではない。数詞でない 1 語でも月は数で、数詞と助数詞に分かれた
+    /// ものも数。
+    #[test]
+    fn kanji_numbers_follow_the_word_boundaries_of_the_dictionary() {
+        let numbers = |morph: &Morphology, source: &str| -> Vec<String> {
+            extract_with_morphology(&Document::plain_text(source), Some(morph))
+                .facts
+                .into_iter()
+                .filter(|f| f.kind == FactKind::Number)
+                .map(|f| f.key)
+                .collect()
+        };
+        let words = crate::morph::testing::morphology(&[
+            ("十分", "名詞,形容動詞語幹,*,*"),
+            ("不十分", "名詞,形容動詞語幹,*,*"),
+            ("一時", "名詞,副詞可能,*,*"),
+            ("一時期", "名詞,副詞可能,*,*"),
+            ("一人前", "名詞,一般,*,*"),
+            ("一月", "名詞,副詞可能,*,*"),
+            ("後", "名詞,接尾,副詞可能,*"),
+            ("的", "名詞,接尾,形容動詞語幹,*"),
+            ("二", "名詞,数,*,*"),
+            ("時", "名詞,接尾,助数詞,*"),
+        ]);
+        assert_eq!(
+            numbers(
+                &words,
+                "十分に学ぶ。不十分な点だ。一時的に止める。一時期だけ。一人前だ。"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            numbers(&words, "一月に出る。十分後に出る。二時に出る。"),
+            ["1月", "10分", "2:00"]
+        );
+        let split = crate::morph::testing::morphology(&[
+            ("約", "接頭詞,数接続,*,*"),
+            ("十", "名詞,数,*,*"),
+            ("分", "名詞,接尾,助数詞,*"),
+        ]);
+        assert_eq!(numbers(&split, "約十分で着く。"), ["10分"]);
+    }
+
+    /// 時刻は「13:00」「13時」「13時00分」を同じキーにし、「13時半」は「13:30」にする。
+    #[test]
+    fn clock_times_share_a_key_across_notations() {
+        assert_eq!(
+            number_keys(
+                "会議は13:00〜17:00、9時、9時05分、9時半、九時三十分、十三時、8:05:30に始めた。\n"
+            ),
+            [
+                "13:00", "17:00", "9:00", "9:05", "9:30", "9:30", "13:00", "8:05"
+            ]
+        );
+        // 見出しの区切りのコロンの後ろの時刻も読む
+        assert_eq!(number_keys("期間：14:30 〜 15:31\n"), ["14:30", "15:31"]);
+        assert_eq!(
+            number_changes(
+                "毎週水曜日の午後（13:00〜17:00）は会議を入れない。",
+                "毎週水曜日の13時〜17時は会議を入れない。"
+            ),
+            (vec![], vec![])
+        );
+        // 時間の長さ・分が 1 桁の比・桁が続くものは時刻にしない
+        assert_eq!(
+            number_keys("3時間かかった。比は16:9だ。値は1:234だ。\n"),
+            ["3時間", "16", "9", "1", "234"]
+        );
+    }
+
+    /// 割は 10 倍して % と同じキーにする。
+    #[test]
+    fn wari_is_compared_as_percent() {
+        assert_eq!(
+            number_keys("約6割、六割、2.5割、60%、６０％を見た。\n"),
+            ["60%", "60%", "25%", "60%", "60%"]
+        );
+        assert_eq!(
+            number_changes("稼働時間を約6割減らす。", "稼働時間を約60%減らす。"),
+            (vec![], vec![])
+        );
+    }
+
     #[test]
     fn dates_are_taken_before_numbers() {
         let k = keys("2026年9月24日と2026-09-25と9月3日に公開した。\n");
@@ -781,6 +1226,25 @@ mod tests {
             .collect();
         assert_eq!(dates, vec!["2026-09-24", "2026-09-25", "--09-03"]);
         assert!(!k.iter().any(|(kind, _)| *kind == FactKind::Number));
+    }
+
+    /// 「日」のない日付は、後ろの空白を表記と位置に含めない。
+    #[test]
+    fn dates_without_the_day_suffix_do_not_take_the_following_space() {
+        let doc = Document::markdown(
+            "公開は 2026/9/24 に決めた。候補は 2026/9/25日 と 2026-9-26 日だった。\n",
+        );
+        let dates: Vec<(String, String)> = extract(&doc)
+            .facts
+            .into_iter()
+            .filter(|f| f.kind == FactKind::Date)
+            .map(|f| (f.text.clone(), doc.slice(f.span).to_string()))
+            .collect();
+        let expected = ["2026/9/24", "2026/9/25日", "2026-9-26 日"];
+        assert_eq!(
+            dates,
+            expected.map(|d| (d.to_string(), d.to_string())).to_vec()
+        );
     }
 
     #[test]
@@ -797,6 +1261,116 @@ mod tests {
             !k.iter()
                 .any(|(kind, key)| *kind == FactKind::Number && key == "3")
         );
+    }
+
+    /// 文書の URL の (キー, 原文の範囲の文字列)。
+    fn urls(source: &str) -> Vec<(String, String)> {
+        let doc = Document::markdown(source);
+        extract(&doc)
+            .facts
+            .into_iter()
+            .filter(|f| f.kind == FactKind::Url)
+            .map(|f| (f.key, doc.slice(f.span).to_string()))
+            .collect()
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|&(key, text)| (key.to_string(), text.to_string()))
+            .collect()
+    }
+
+    /// リンクの表示テキストに書いた URL は本文として 1 回、行き先は 1 回数える。同じ位置の URL を、
+    /// 本文とリンクの原文の両方から重ねて数えない。
+    #[test]
+    fn a_url_shown_as_the_link_text_is_not_counted_twice() {
+        let a = "https://example.com/a";
+        assert_eq!(
+            urls("詳細は [https://example.com/a](https://example.com/a) を見る。\n"),
+            pairs(&[(a, a), (a, a)])
+        );
+        // 自動リンクは表示テキストと行き先が同じ文字なので 1 回
+        assert_eq!(
+            urls("詳細は <https://example.com/a> を見る。\n"),
+            pairs(&[(a, a)])
+        );
+        // 表示テキストの URL に本文が続いても、行き先は数える (本文の URL の原文の範囲は、
+        // 表示テキストの先頭から本文の続きまでなので、間の行き先を含む)
+        assert_eq!(
+            urls("詳細は [https://example.com/a](https://example.com/a)/b を見る。\n"),
+            pairs(&[
+                (
+                    "https://example.com/a/b",
+                    "https://example.com/a](https://example.com/a)/b"
+                ),
+                (a, a),
+            ])
+        );
+        let changes = compare(
+            &extract(&Document::markdown(
+                "詳細は [https://example.com/a](https://example.com/a) を見る。\n",
+            )),
+            &extract(&Document::markdown("詳細は資料を見る。\n")),
+        );
+        assert_eq!(changes.removed.len(), 1);
+        assert_eq!(
+            (
+                changes.removed[0].before_count,
+                changes.removed[0].after_count
+            ),
+            (2, 0)
+        );
+    }
+
+    /// 参照形式のリンクは、定義で解決した行き先の URL を、リンクを使うごとに数える (インラインの
+    /// リンクと同じ)。定義だけで使わない URL と、URL に見えるラベルは数えない。
+    #[test]
+    fn reference_links_count_the_resolved_destination_at_each_use() {
+        let doc = "https://example.com/doc";
+        assert_eq!(
+            urls("詳細は[資料][doc]を見る。\n\n[doc]: https://example.com/doc\n"),
+            pairs(&[(doc, "[資料][doc]")])
+        );
+        // 省略形 (`[doc][]`・`[doc]`) も同じ。使わない定義は数えない
+        let source = "[doc][]と[doc]を見る。\n\n[doc]: https://example.com/doc\n[unused]: https://example.com/unused\n";
+        let parsed = Document::markdown(source);
+        let found: Vec<(String, usize)> = extract(&parsed)
+            .facts
+            .into_iter()
+            .filter(|f| f.kind == FactKind::Url)
+            .map(|f| (f.key, f.span.start))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (doc.to_string(), 0),
+                (doc.to_string(), source.find("と[").unwrap() + "と".len())
+            ]
+        );
+        // ラベルは行き先ではない
+        assert_eq!(
+            urls(
+                "[資料][https://example.com/label]を見る。\n\n[https://example.com/label]: https://example.com/doc\n"
+            ),
+            pairs(&[(doc, "[資料][https://example.com/label]")])
+        );
+
+        // インラインのリンクを参照形式に書き換えても、2 回使った参照リンクをインラインに戻しても、
+        // URL の回数は変わらない
+        let inline = "[手順](https://example.com/doc)と[資料](https://example.com/doc)を見る。\n";
+        let reference = "[手順][doc]と[資料][doc]を見る。\n\n[doc]: https://example.com/doc\n";
+        assert_eq!(urls(inline).len(), 2);
+        assert_eq!(urls(reference).len(), 2);
+        for (before, after) in [(inline, reference), (reference, inline)] {
+            let changes = compare(
+                &extract(&Document::markdown(before)),
+                &extract(&Document::markdown(after)),
+            );
+            assert!(
+                changes.removed.is_empty() && changes.added.is_empty(),
+                "{before} → {after}: {changes:?}"
+            );
+        }
     }
 
     #[test]
