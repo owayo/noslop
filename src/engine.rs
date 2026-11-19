@@ -76,6 +76,18 @@ pub(crate) enum Coverage {
     Partial,
 }
 
+/// 有効なルールを、この文書に当てるか。`check` ([`Engine::lint_with`]) と `noslop calibrate` の
+/// 測定 (`Rule::measure`) で共有し、校正が `check` と同じ文書だけを測るようにする。
+///
+/// 断片の集まり (コードのコメント・セル) には、1 文ずつ判定するルール ([`RuleUnit::Sentence`]) だけを
+/// 当てる。全文が対象のときだけ実行するルール ([`Rule::requires_full_document`]) は、ひと続きの文章の
+/// 全文が対象のときだけ当てる。
+pub(crate) fn applies(rule: &dyn Rule, doc: &Document, coverage: Coverage) -> bool {
+    (doc.kind == DocumentKind::Prose || rule.unit() == RuleUnit::Sentence)
+        && (!rule.requires_full_document()
+            || (coverage == Coverage::Full && doc.kind == DocumentKind::Prose))
+}
+
 /// エンジンが持つルール 1 つ。
 pub struct RuleEntry {
     pub rule: Box<dyn Rule>,
@@ -321,16 +333,10 @@ impl Engine {
                 scope: self.options.scope,
                 morph: morph.as_ref(),
             };
-            // 断片の集まり (コードのコメント・セル) には、1 文ずつ判定するルールだけを当てる
-            let applies = |rule: &dyn Rule| {
-                (doc.kind == DocumentKind::Prose || rule.unit() == RuleUnit::Sentence)
-                    && (!rule.requires_full_document()
-                        || (coverage == Coverage::Full && doc.kind == DocumentKind::Prose))
-            };
             for entry in self
                 .entries
                 .iter()
-                .filter(|e| e.enabled && applies(e.rule.as_ref()))
+                .filter(|e| e.enabled && applies(e.rule.as_ref(), &doc, coverage))
             {
                 let start = diagnostics.len();
                 entry.rule.check(&ctx, &mut diagnostics);

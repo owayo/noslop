@@ -39,8 +39,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::config::ConfigError;
 use crate::diagnostic::{Diagnostic, Lane, Metric, Severity, Signal};
 use crate::document::{Document, SourceFormat};
-use crate::engine::{Engine, EngineOptions};
-use crate::rules::{Fires, Measure, RuleContext, RuleMeta};
+use crate::engine::{self, Coverage, Engine, EngineOptions};
+use crate::genre::Genre;
+use crate::rules::{self, Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::walk::{self, WalkOptions};
 
 /// JSON 出力のスキーマの版。互換性のない変更をしたら上げる。
@@ -684,12 +685,27 @@ struct Evaluated {
     options: Vec<(&'static str, f64)>,
     /// 校正の基準 (`Rule::calibration_basis`)。
     basis: Severity,
+    /// 設定で重大度を上書きしたか (`[rules.<ID>] severity`)。上書きすると指摘はすべてその重大度に
+    /// なり、重大度の切り替えを決める閾値は指摘の重大度を変えない。
+    severity_overridden: bool,
+    /// エンジンのジャンル (閾値の候補が設定に書ける値かを、既定の設定のルールで確かめるときに使う)。
+    genre: Genre,
 }
 
 impl Evaluated {
     /// 見直しと手掛かりの強さの対象か (組み込みの、AI 臭さのレーンのルール)。
     fn judged(&self) -> bool {
         self.builtin && self.meta.lane == Lane::Slop
+    }
+
+    /// 閾値の候補を当てて確かめる、既定の設定のルールの実体。組み込みのルールでなければ (独自ルールや
+    /// テスト用のルール) 作らず、候補を絞らない。
+    fn probe(&self) -> Option<Box<dyn Rule>> {
+        if self.builtin {
+            rules::builtin_rule(self.genre, self.meta.id)
+        } else {
+            None
+        }
     }
 
     fn current(&self, key: &str) -> Option<f64> {
@@ -718,6 +734,8 @@ fn evaluated_rules(engine: &Engine) -> Vec<Evaluated> {
                 .filter_map(|(k, v)| v.parse::<f64>().ok().map(|v| (k, v)))
                 .collect(),
             basis: rule.calibration_basis(),
+            severity_overridden: entry.severity.is_some(),
+            genre: engine.options().genre,
         });
     }
     out
@@ -977,7 +995,16 @@ impl Scan<'_> {
             };
             self.evaluated
                 .iter()
-                .map(|ev| self.engine.entries()[ev.entry].rule.measure(&ctx))
+                .map(|ev| {
+                    let rule = self.engine.entries()[ev.entry].rule.as_ref();
+                    // check がこの文書に当てないルール (コードのような断片の集まりに当てる文書単位の
+                    // ルールなど) は測らない。測ると、check が指摘しない文書を閾値の行で数えてしまう
+                    if engine::applies(rule, &doc, Coverage::Full) {
+                        rule.measure(&ctx)
+                    } else {
+                        Vec::new()
+                    }
+                })
                 .collect()
         };
 
@@ -1223,9 +1250,16 @@ fn outcome(
 type SweepKey = (&'static str, &'static str, Fires, Option<Severity>);
 
 /// ルールの測定値に出てくる設定キー。`Rule::options` の順に並べる。
+///
+/// 重大度を上書きしたルールでは、重大度の切り替えを決める閾値 (R05 の `error_above`) を掃引しない。
+/// 指摘はすべて上書きした重大度になり、この閾値を動かしても指摘の重大度は変わらないため
+/// (掃引すると、出ていない重大度の指摘を測定値だけで数えてしまう)。
 fn sweep_keys(docs: &[DocResult], rule: usize, ev: &Evaluated) -> Vec<SweepKey> {
     let mut keys: Vec<SweepKey> = Vec::new();
     for m in docs.iter().flat_map(|d| &d.measures[rule]) {
+        if ev.severity_overridden && m.switches_to.is_some() {
+            continue;
+        }
         if !keys.iter().any(|(k, ..)| *k == m.threshold_key) {
             keys.push((m.threshold_key, m.name, m.fires, m.switches_to));
         }
@@ -1284,8 +1318,30 @@ fn sweep(
     values.dedup();
     let integer =
         values.iter().all(|v| v.fract() == 0.0) && current.is_none_or(|c| c.fract() == 0.0);
+    // 設定に書けない値 (ルールの `configure` が受け付けない値。R21 の `min_count` は 2 以上) は
+    // 提案しない。受け付けても別の値に丸めるルール (R08 の `min_count` は 1 を 2 にする) では、
+    // 書いた値の率にならないので、書いた値がそのまま設定値になる (`Rule::options` に出る) ことも
+    // 確かめる。候補は既定の設定のルール 1 つに順に当てる (書き換えるのはこのキーだけなので、
+    // 候補ごとに作り直さなくても結果は同じ)。今の値は今の設定で動いている値なので、確かめずに残す
+    let mut probe = ev.probe();
+    let mut writable = |t: f64| {
+        probe.as_mut().is_none_or(|rule| {
+            let value = if integer {
+                toml::Value::Integer(t as i64)
+            } else {
+                toml::Value::Float(t)
+            };
+            rule.configure(key, &value).is_ok()
+                && rule
+                    .options()
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .is_none_or(|(_, v)| v.parse::<f64>() == Ok(t))
+        })
+    };
     let suggested = candidates(&values, direction, integer, current)
         .into_iter()
+        .filter(|&t| current == Some(t) || writable(t))
         .map(|t| {
             let o = outcome(docs, Subset::Calibration, at_least, |d| fires_at(d, t));
             (t, o)
@@ -2342,6 +2398,8 @@ mod tests {
             builtin: true,
             options: Vec::new(),
             basis,
+            severity_overridden: false,
+            genre: Genre::General,
         }
     }
 
@@ -2595,6 +2653,8 @@ mod tests {
             builtin: true,
             options: vec![("k", current)],
             basis: Severity::Info,
+            severity_overridden: false,
+            genre: Genre::General,
         }
     }
 
@@ -2722,6 +2782,143 @@ mod tests {
         assert_eq!((current.all.human_fired, current.all.ai_fired), (1, 4));
         assert_eq!(fires_label(s.direction, s.switches_to), "閾値以上で重大");
         assert_eq!(fires_label(Fires::Below, None), "閾値未満で指摘");
+    }
+
+    #[test]
+    fn severity_switches_are_not_swept_when_the_severity_is_overridden() {
+        let dir = tempfile::tempdir().unwrap();
+        write_docs(&dir.path().join("human"), (0..4).map(contrast_doc));
+        write_docs(&dir.path().join("ai"), (0..4).map(contrast_doc));
+        // (重大の指摘が出た文書の数 (人, 生成), 重大度の切り替えの行, R05 の行のキー)
+        let r05 = |engine: EngineOptions| {
+            let report = calibrate(&corpus_options(dir.path(), engine)).unwrap();
+            let rule = report.rules.iter().find(|r| r.id == "R05").unwrap();
+            let errors = (
+                rule.human.at_least.error.fired,
+                rule.ai.at_least.error.fired,
+            );
+            let rows = report.thresholds.iter().filter(|t| t.rule_id == "R05");
+            let switches: Vec<&str> = rows
+                .clone()
+                .filter(|t| t.switches_to.is_some())
+                .map(|t| t.key)
+                .collect();
+            let keys: Vec<&str> = rows.map(|t| t.key).collect();
+            (errors, switches, keys)
+        };
+        // 上書きしなければ、error_above の行は重大の指摘が出た文書を数える
+        let (errors, switches, _) = r05(only(&["R05"]));
+        assert_eq!(errors, (4, 4));
+        assert_eq!(switches, ["error_above"]);
+
+        // 警告に上書きすると重大の指摘は出ないので、重大への切り替えの閾値は掃引しない
+        let mut overridden = only(&["R05"]);
+        overridden.rule_tables.insert(
+            "R05".to_string(),
+            crate::config::RuleTable {
+                severity: Some(Severity::Warning),
+                ..Default::default()
+            },
+        );
+        let (errors, switches, keys) = r05(overridden);
+        assert_eq!(errors, (0, 0));
+        assert!(switches.is_empty(), "{switches:?}");
+        // 指摘するかどうかを決める閾値は、これまでどおり掃引する
+        assert_eq!(keys, ["min_count", "min_ratio"]);
+    }
+
+    /// 設定に書けない値は提案しない (R21 の `min_count` は 2 以上で、1 は `configure` が受け付けない)。
+    #[test]
+    fn suggestions_are_limited_to_values_the_rule_accepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let prose = "手順を見直した。窓口を一本化した。\n";
+        write_docs(
+            &dir.path().join("human"),
+            (0..4).map(|i| format!("{i}番目の報告だ。{prose}")),
+        );
+        // 読点で区切った短い見出しが 1 つの文書と 2 つの文書
+        let headings = [
+            "## 点検を、仕組みで続ける\n\n",
+            "## 小さな記録が示す、次の一手\n\n",
+        ];
+        write_docs(
+            &dir.path().join("ai"),
+            (0..4).map(|i| headings[..1 + i % 2].concat() + prose),
+        );
+        let options = CalibrateOptions {
+            holdout: 0.0,
+            ..corpus_options(dir.path(), only(&["R21"]))
+        };
+        let report = calibrate(&options).unwrap();
+        let sweep = report
+            .thresholds
+            .iter()
+            .find(|t| t.rule_id == "R21" && t.key == "min_count")
+            .unwrap();
+        // 見出しが 1 つだけの文書も、これまでどおり値を測れた文書として数える
+        assert_eq!((sweep.measured_human, sweep.measured_ai), (0, 4));
+        // 1 にすれば生成文書をすべて拾えるが、設定に書けないので、書ける値の中から 2 を提案する
+        let suggested = sweep.suggested.as_ref().unwrap();
+        assert_eq!(suggested.threshold, 2.0);
+        assert_eq!(
+            (
+                suggested.calibration.human_fired,
+                suggested.calibration.ai_fired
+            ),
+            (0, 2)
+        );
+        let mut r21 = rules::builtin_rule(Genre::General, "R21").unwrap();
+        assert!(
+            r21.configure("min_count", &toml::Value::Integer(1))
+                .is_err()
+        );
+        assert!(r21.configure("min_count", &toml::Value::Integer(2)).is_ok());
+    }
+
+    /// 受け付けても別の値に丸める値も提案しない (R08 の `min_count` は 1 を 2 にする)。
+    #[test]
+    fn suggestions_skip_values_the_rule_would_round() {
+        let r08 = rules::builtin_rule(Genre::General, "R08").unwrap();
+        let ev = Evaluated {
+            entry: 0,
+            meta: r08.meta(),
+            builtin: true,
+            options: vec![("min_count", 6.0), ("lead_chars", 4.0)],
+            basis: Severity::Info,
+            severity_overridden: false,
+            genre: Genre::General,
+        };
+        // 人の文書は値を測れず、生成文書は同じ書き出しが 1 回と 2 回
+        let doc = |group: Group, value: Option<f64>| DocResult {
+            group,
+            split: Split::Calibration,
+            characters: 1000,
+            line_per_paragraph: false,
+            hits: vec![Hits::default()],
+            measures: vec![
+                value
+                    .map(|v| Measure::new("max_lead_repeats", v, "min_count", Fires::AtOrAbove))
+                    .into_iter()
+                    .collect(),
+            ],
+            items: HashMap::new(),
+        };
+        let mut docs: Vec<DocResult> = (0..4).map(|_| doc(Group::Human, None)).collect();
+        docs.extend([1.0, 1.0, 2.0, 2.0].map(|v| doc(Group::Ai, Some(v))));
+        let key = ("min_count", "max_lead_repeats", Fires::AtOrAbove, None);
+        let s = sweep(&docs, 0, &ev, key, 0.05);
+        assert_eq!((s.measured_human, s.measured_ai), (0, 4));
+        assert_eq!(s.suggested.unwrap().threshold, 2.0);
+        // 組み込みのルールでなければ (テスト用のルールなど)、候補は絞らない
+        let mut stub = ev;
+        stub.meta = &STUB;
+        assert_eq!(
+            sweep(&docs, 0, &stub, key, 0.05)
+                .suggested
+                .unwrap()
+                .threshold,
+            1.0
+        );
     }
 
     #[test]
@@ -3071,6 +3268,89 @@ mod tests {
                 assert_eq!(r.measured_signal, None, "{}", r.id);
             }
         }
+    }
+
+    /// 書き出しと長さのそろった 1 行コメントを並べた Rust のコード。
+    fn code_comments(i: usize) -> String {
+        let comments: String = (0..10)
+            .map(|j| {
+                format!(
+                    "// この関数は{}番目の値を確かめてから次の処理へ進みます。\n",
+                    (i + j) % 10
+                )
+            })
+            .collect();
+        comments + "fn main() {}\n"
+    }
+
+    #[test]
+    fn rules_that_check_does_not_apply_are_not_measured() {
+        // コードの文言は断片の集まりなので、check は文書単位のルール (R01・R08 など) を当てない。
+        // 校正もそれらを測らず、check が指摘しない文書を閾値の行で数えない
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_docs(&root.join("human"), (0..2).map(varied_lengths));
+        write_docs(&root.join("ai"), (0..2).map(uniform_lengths));
+        for group in ["human", "ai"] {
+            for i in 0..3 {
+                fs::write(
+                    root.join(group).join(format!("code-{i}.rs")),
+                    code_comments(i),
+                )
+                .unwrap();
+            }
+        }
+        let mut options = corpus_options(root, EngineOptions::default());
+        options.walk.code_extensions = vec!["rs".to_string()];
+        let report = calibrate(&options).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!((report.corpus.human.docs, report.corpus.ai.docs), (5, 5));
+
+        let document_unit: HashSet<&str> = rules::builtin_rules(Genre::General)
+            .iter()
+            .filter(|r| r.unit() == rules::RuleUnit::Document)
+            .map(|r| r.meta().id)
+            .collect();
+        for t in &report.thresholds {
+            // 文書単位のルールを測れるのは Markdown の文書 (人と生成で 2 件ずつ) だけ
+            if document_unit.contains(t.rule_id) {
+                assert!(
+                    t.measured_human <= 2 && t.measured_ai <= 2,
+                    "{} {}: 人 {}・生成 {}",
+                    t.rule_id,
+                    t.key,
+                    t.measured_human,
+                    t.measured_ai
+                );
+            }
+            // 指摘するかどうかを決める閾値の、今の値での率は、ルール別の反応を超えない
+            let rule = report.rules.iter().find(|r| r.id == t.rule_id).unwrap();
+            if let (None, Some(current)) = (t.switches_to, &t.current) {
+                assert!(
+                    current.all.human_fired <= rule.human.fired
+                        && current.all.ai_fired <= rule.ai.fired,
+                    "{} {}: 閾値の行 人 {}・生成 {}、ルール別 人 {}・生成 {}",
+                    t.rule_id,
+                    t.key,
+                    current.all.human_fired,
+                    current.all.ai_fired,
+                    rule.human.fired,
+                    rule.ai.fired
+                );
+            }
+        }
+        // R01 は Markdown の文書ごとに、文数で決まる 1 つのキーで測る
+        let r01: Vec<(usize, usize)> = report
+            .thresholds
+            .iter()
+            .filter(|t| t.rule_id == "R01")
+            .map(|t| (t.measured_human, t.measured_ai))
+            .collect();
+        assert_eq!(
+            r01.iter().fold((0, 0), |(h, a), &(x, y)| (h + x, a + y)),
+            (2, 2),
+            "{r01:?}"
+        );
     }
 
     #[test]

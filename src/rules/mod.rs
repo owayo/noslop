@@ -269,6 +269,19 @@ pub fn builtin_rules(genre: Genre) -> Vec<Box<dyn Rule>> {
     rules
 }
 
+/// ID が `id` の組み込みルール 1 つを、そのジャンルの既定の閾値で作る。組み込みのルールの ID で
+/// なければ `None`。ID の頭の字 (`P`・`R`・`S`) の系統のルールだけを作る (語句ルールの照合器を
+/// 組み立てずに済むように)。
+pub fn builtin_rule(genre: Genre, id: &str) -> Option<Box<dyn Rule>> {
+    let family = match id.as_bytes().first() {
+        Some(b'P') => phrases::rules(genre),
+        Some(b'R') => rhythm::rules(genre),
+        Some(b'S') => structure::rules(genre),
+        _ => return None,
+    };
+    family.into_iter().find(|r| r.meta().id == id)
+}
+
 /// 設定値を数値として読む。
 pub fn option_f64(key: &str, value: &toml::Value) -> Result<f64, String> {
     match value {
@@ -367,6 +380,21 @@ mod tests {
             assert!(names.insert(m.name), "duplicate name {}", m.name);
             assert!(!m.title.is_empty() && !m.summary.is_empty());
         }
+    }
+
+    /// どの組み込みルールも、ID から 1 つだけ作り直せる (ID の頭の字の系統の一覧に入っている)。
+    #[test]
+    fn each_builtin_rule_can_be_built_by_its_id() {
+        for genre in Genre::ALL {
+            for rule in builtin_rules(genre) {
+                let id = rule.meta().id;
+                let built = builtin_rule(genre, id).unwrap_or_else(|| panic!("{id}"));
+                assert_eq!(built.meta().id, id);
+                assert_eq!(built.options(), rule.options(), "{id}");
+            }
+        }
+        assert!(builtin_rule(Genre::General, "X01").is_none());
+        assert!(builtin_rule(Genre::General, "").is_none());
     }
 
     #[test]
