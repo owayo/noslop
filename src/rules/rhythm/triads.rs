@@ -64,14 +64,18 @@ fn triads(ctx: &RuleContext<'_>) -> Vec<(Span, Span)> {
             let hit = TRIAD.find_iter(value).find(|m| {
                 let before = value[..m.start()].trim_end().chars().next_back();
                 let after = value[m.end()..].trim_start().chars().next();
-                let boundary = |c| text::is_nounish(c) || matches!(c, '、' | '，' | '・');
-                m.as_str()
-                    .chars()
-                    .filter(|c| matches!(c, '、' | '，' | '・'))
-                    .count()
-                    == 2
+                let separator = |c| matches!(c, '、' | '，' | '・');
+                let boundary = |c| text::is_nounish(c) || separator(c);
+                // 「直感的な操作」「迅速に対応」のように「に」「で」「な」まで取った一致は、最後の
+                // 語が終わっているので、後ろに名詞が続いてもよい (4 項目めの区切りだけを除く)
+                let after_boundary = if m.as_str().ends_with(['に', 'で', 'な']) {
+                    after.is_some_and(separator)
+                } else {
+                    after.is_some_and(boundary)
+                };
+                m.as_str().chars().filter(|&c| separator(c)).count() == 2
                     && !before.is_some_and(boundary)
-                    && !after.is_some_and(boundary)
+                    && !after_boundary
             })?;
             // 「直感的です」の「で」を連用形として飲み込んだ場合は評価語までに戻す。
             let end = if hit.as_str().ends_with('で') && value[hit.end()..].starts_with('す') {
@@ -166,6 +170,36 @@ mod tests {
         );
         let md = SAMPLE.replace("効率、品質、成長", "**効率**、品質、成長");
         assert_eq!(run(&RepeatedEvaluativeTriad::default(), &md).len(), 3);
+    }
+
+    #[test]
+    fn counts_triads_whose_last_item_takes_a_particle_before_a_noun() {
+        // 「に」「で」「な」を伴う最後の語の後ろに名詞が続く形も、三項列挙として数える
+        let md = "新しい画面は速く、柔軟で、直感的な操作を実現します。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。";
+        let d = run(&RepeatedEvaluativeTriad::default(), md);
+        assert_eq!(
+            matched(md, &d),
+            vec![
+                "速く、柔軟で、直感的な",
+                "効率、品質、成長",
+                "信頼、安心、価値"
+            ]
+        );
+        let md = "障害には迅速に、柔軟に、効率的に対応します。導入で効率、品質、成長を支えます。運用で信頼、安心、価値を届けます。";
+        assert_eq!(
+            matched(md, &run(&RepeatedEvaluativeTriad::default(), md))[0],
+            "迅速に、柔軟に、効率的に"
+        );
+        // 助詞を伴わない最後の語に名詞が続く形 (「成長率」) と、4 項目めの区切りが続く形は数えない
+        for s in [
+            "効率、品質、成長率を比べる。",
+            "速く、柔軟で、直感的な、使いやすい画面です。",
+        ] {
+            assert!(
+                run(&RepeatedEvaluativeTriad::default(), &s.repeat(3)).is_empty(),
+                "{s}"
+            );
+        }
     }
 
     #[test]

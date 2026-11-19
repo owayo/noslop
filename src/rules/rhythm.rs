@@ -63,14 +63,19 @@ pub fn rules(genre: Genre) -> Vec<Box<dyn Rule>> {
     ]
 }
 
-/// 原文の末尾まで確認し、文書の結びに当たる日本語の地の文を返す。
+/// 本文の末尾まで確認し、文書の結びに当たる日本語の地の文を返す。
+///
+/// 本文の範囲 ([`Document::body`]) の終わりまでに、空白のほかの原文 (コードブロック・区切り線など)
+/// がなければ結びとみなす。本文全体を ```` ```markdown ```` で包んだ文書の閉じのフェンスは、本文の
+/// 外にあるので結びを妨げない。
 fn final_prose_sentence(doc: &Document) -> Option<(&Sentence, &Block)> {
     let last = doc.sentences.last()?;
     let block = &doc.blocks[last.block];
+    let body_end = doc.body.range.end.max(block.span.end);
     (last.japanese
         && block.is_prose()
         && last.block + 1 == doc.blocks.len()
-        && doc.source[block.span.end..].trim().is_empty())
+        && doc.source[block.span.end..body_end].trim().is_empty())
     .then_some((last, block))
 }
 

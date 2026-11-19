@@ -350,10 +350,11 @@ pub(super) fn diagnostic(
 
 /// 語句辞書で動くルール。
 ///
-/// 同じブロック内で対応する引用符 (「」・『』・“”・二重引用符) の内側に完全に収まる一致と、
-/// 開き引用符の直後の一致は、語句への言及として除く ([`QuoteRanges`])。辞書の語句は書き手の
-/// 言い回しの癖を指すもので、引用した語句や発言は書き手の言い回しではないため。除いた一致は、
-/// 重なる後ろの一致を隠さない ([`Matcher::find_except`])。
+/// 同じブロック内で対応する引用符 (「」・『』・“”・二重引用符) の内側から始まる一致 (内側に
+/// 完全に収まる一致と、閉じた引用の途中から始まって閉じの外へはみ出す一致) と、開き引用符の
+/// 直後の一致は、語句への言及として除く ([`QuoteRanges`])。辞書の語句は書き手の言い回しの癖を
+/// 指すもので、引用した語句や発言は書き手の言い回しではないため。除いた一致は、重なる後ろの
+/// 一致を隠さず、引用の閉じから探し直す ([`Matcher::find_except`])。
 pub(super) struct PhraseRule {
     spec: &'static PhraseSpec,
     matcher: Matcher,
@@ -424,13 +425,15 @@ impl Rule for PhraseRule {
             for sentence in ctx.doc.block_sentences(idx) {
                 let text = &block.text[sentence.range.clone()];
                 let offset = sentence.range.start;
-                // 引用の中の一致は除き、引用の閉じ (閉じない引用は一致の末尾) から探し直す
+                // 引用の中から始まる一致は除き、引用の閉じ (閉じない引用は一致の末尾) から探し直す
                 let hits = self.matcher.find_except(text, |r| {
                     let quotes = quotes.as_ref()?;
                     let abs = offset + r.start..offset + r.end;
-                    quotes
-                        .excludes(&abs)
-                        .then(|| quotes.resume_after(&abs).saturating_sub(offset))
+                    let resume = quotes.resume_after(&abs);
+                    // 閉じた引用の途中から始まり、閉じの外へはみ出す一致 (`resume` が一致の末尾より
+                    // 前) も、引用の中の語句への言及として除く。残すと、引用の外の一致を飲み込む
+                    (quotes.excludes(&abs) || resume < abs.end)
+                        .then(|| resume.saturating_sub(offset))
                 });
                 for hit in hits {
                     let entry = &self.spec.entries[hit.entry];
@@ -642,6 +645,42 @@ mod tests {
         );
         assert_eq!(d[0].severity, Severity::Info);
         assert_eq!(d[2].severity, Severity::Warning);
+    }
+
+    static FRAMED_SPEC: PhraseSpec = PhraseSpec {
+        meta: RuleMeta {
+            id: "T91",
+            name: "TEST_FRAMED",
+            title: "テスト",
+            lane: crate::diagnostic::Lane::Slop,
+            signal: Some(Signal::Strong),
+            default_severity: Severity::Info,
+            summary: "テスト用",
+            explanation: "テスト用",
+        },
+        entries: &[Entry::re(r"単なる[^。]{1,25}?ではなく", Severity::Info)],
+        message: "「{m}」",
+        hint: "テスト用",
+    };
+
+    #[test]
+    fn hits_starting_inside_a_closed_quote_are_mentions_and_resume_at_the_closing() {
+        use crate::rules::testing::{matched, run};
+        let rule = PhraseRule::new(&FRAMED_SPEC);
+        // 閉じた引用の途中から始まり、閉じの外へはみ出す一致は言及として除き、引用の閉じから
+        // 探し直して、引用の外の一致を拾う (開き引用符の直後から始まる一致と同じ扱い)
+        for md in [
+            "「これは単なる作業」と、これは単なる道具ではなく、体験だ。\n",
+            "「単なる作業」と、これは単なる道具ではなく、体験だ。\n",
+            "『前置きの単なる作業』と、これは単なる道具ではなく、体験だ。\n",
+        ] {
+            assert_eq!(matched(md, &run(&rule, md)), ["単なる道具ではなく"], "{md}");
+        }
+        // 引用の外から始まる一致は、中に引用を含んでも拾う
+        let md = "これは単なる「作業」ではなく、体験だ。\n";
+        assert_eq!(matched(md, &run(&rule, md)), ["単なる「作業」ではなく"]);
+        // 引用の中から始まる一致しかなければ、何も拾わない
+        assert!(run(&rule, "「これは単なる作業」ではなく、体験だ。\n").is_empty());
     }
 
     #[test]

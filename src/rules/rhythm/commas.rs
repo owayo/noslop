@@ -25,7 +25,8 @@ static META: RuleMeta = RuleMeta {
 const EXPLANATION: &str = "\
 ### 何を見るか
 
-地の文が 20 文以上ある文書で、1 文あたりの読点 (「、」「，」) の数の平均が 2.0 以上なら 1 件出します。\
+地の文が 20 文以上ある文書で、1 文あたりの読点 (「、」「，」と半角の「､」) の数の平均が 2.0 以上なら \
+1 件出します。\
 あわせて読点の直前の 1〜2 字 (「は、」「ため、」など) を数え、多いものから 5 つを metrics の \
 `comma_leads` に載せます。直前の字は文字の並びで数えるだけで、品詞は判定しません。
 
@@ -262,6 +263,18 @@ mod tests {
                 "は、×20 / を、×20 / とに、×19 / 月、×1 / ます、×1".into()
             ))
         );
+    }
+
+    #[test]
+    fn counts_fullwidth_and_halfwidth_commas_alike() {
+        // 説明に書いたとおり、「，」と半角の「､」も「、」と同じく読点に数える
+        for comma in ['、', '，', '､'] {
+            let md = HEAVY.replace('、', &comma.to_string()).repeat(20) + "\n";
+            let m = measure_md(&rule(), &md);
+            assert_eq!(m.len(), 1, "{comma}");
+            assert!((m[0].value - 3.0).abs() < 1e-9, "{comma}: {}", m[0].value);
+            assert_eq!(run(&rule(), &md).len(), 1, "{comma}");
+        }
     }
 
     #[test]

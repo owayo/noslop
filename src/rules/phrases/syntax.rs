@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::diagnostic::{Diagnostic, Lane, Severity, Signal};
-use crate::document::BlockKind;
+use crate::document::{Block, BlockKind, Document};
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, quote};
 use crate::text;
 use crate::text::quotes::QuoteRanges;
@@ -410,7 +410,7 @@ static P20_META: RuleMeta = RuleMeta {
     summary: "「手順は以下の通りです：」のように、述語のあとにコロンを置いて箇条書きへつなぐ英語的な形を指摘する",
     explanation: r"### 何を見るか
 
-段落が「以下の通りです：」「次の手順で設定します:」のように、述語 (です・ます・ください・通り など) にコロンを付けて終わり、直後に箇条書きが続く箇所を探します。「使い方：」のような名詞とコロンの見出し語は拾いません。
+段落が「以下の通りです：」「次の手順で設定します:」のように、述語 (です・ます・ください・通り など) にコロンを付けて終わり、直後に箇条書きが続く箇所を探します。「使い方：」のような名詞とコロンの見出し語は拾いません。段落と箇条書きの間に挟めるのは、空行と、段落やリストの HTML のタグ (`</p>`・`<ul>` など) だけです。コードブロック・区切り線・`<hr>` などを挟む箇所と、コードのコメントで、間にコードを挟んだ別のコメントの箇条書きは、続いているとみなしません。
 
 ### なぜ問題か
 
@@ -462,6 +462,39 @@ impl ColonContinuation {
     }
 }
 
+/// 段落と箇条書きの間にあっても、箇条書きが段落に続くことを妨げない HTML のタグ (段落・リスト・
+/// 項目・区分の開きと閉じ)。`<hr>`・`<pre>` などの見えるものを挟む要素は含めない。
+static TRANSPARENT_TAG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)</?(?:p|ul|ol|li|div)(?:\s[^<>]*)?>").expect("transparent tag regex")
+});
+
+/// 段落 `block` の後ろに、ブロック `next` が空行だけを挟んで続くか。
+///
+/// 段落の終わりから `next` の行の頭までの原文が、空白と、段落の 1 行目の行頭にある記号 (引用の
+/// `>`、コメントの `//`・`#`・`*` など。英数字は除く) と、段落やリストの HTML のタグ
+/// ([`TRANSPARENT_TAG`]) だけでできていれば続くとみなす。ブロックに残らない内容 (コードブロック・
+/// 区切り線・そのほかの HTML の要素や、別のコメントとの間のコード) を挟んだ箇所はつながない。
+/// `next` が段落の終わりと同じ行から始まるなら、間の原文をそのまま見る。
+fn followed_directly(doc: &Document, block: &Block, next: &Block) -> bool {
+    let source = doc.source.as_str();
+    let line_start = |at: usize| source[..at].rfind('\n').map_or(0, |i| i + 1);
+    let Some(prefix) = source.get(line_start(block.span.start)..block.span.start) else {
+        return false;
+    };
+    let next_line = line_start(next.span.start);
+    let gap_end = if next_line >= block.span.end {
+        next_line
+    } else {
+        next.span.start
+    };
+    source.get(block.span.end..gap_end).is_some_and(|gap| {
+        TRANSPARENT_TAG
+            .replace_all(gap, "")
+            .chars()
+            .all(|c| c.is_whitespace() || (!c.is_alphanumeric() && prefix.contains(c)))
+    })
+}
+
 impl Rule for ColonContinuation {
     fn unit(&self) -> RuleUnit {
         RuleUnit::Sentence
@@ -477,9 +510,11 @@ impl Rule for ColonContinuation {
             if block.kind != BlockKind::Paragraph {
                 continue;
             }
-            let next_is_list = blocks
-                .get(idx + 1)
-                .is_some_and(|b| b.kind == BlockKind::ListItem);
+            // 箇条書きが段落の直後に続くときだけ。間にコードブロックや区切り線がある箇所、コードの
+            // コメントで間にコードを挟んだ別のコメントの箇条書きは、つながっていない
+            let next_is_list = blocks.get(idx + 1).is_some_and(|b| {
+                b.kind == BlockKind::ListItem && followed_directly(ctx.doc, block, b)
+            });
             if !next_is_list {
                 continue;
             }
@@ -783,6 +818,83 @@ mod tests {
         // リストの中の段落は既定では見ない
         let md = "- 項目は以下の通りです：\n  - 子の項目\n";
         assert!(run(&ColonContinuation, md).is_empty());
+    }
+
+    #[test]
+    fn p20_requires_the_list_to_follow_the_paragraph_directly() {
+        // 間にコードブロック・区切り線があれば、箇条書きは段落に続いていない
+        for md in [
+            "次のコマンドを実行します：\n\n```sh\nmake setup\n```\n\n- 設定を確かめる\n- 保存する\n",
+            "次のコマンドを実行します：\n```sh\nmake setup\n```\n- 設定を確かめる\n",
+            "次のコマンドを実行します：\n\n---\n\n- 設定を確かめる\n",
+            "次のコマンドを実行します：\n***\n- 設定を確かめる\n",
+            "次のコマンドを実行します：\n\n<hr>\n\n- 設定を確かめる\n",
+        ] {
+            assert!(run(&ColonContinuation, md).is_empty(), "{md}");
+        }
+        // 空行がいくつあっても、空行だけなら続いている
+        let md = "次のコマンドを実行します：\n\n\n- 設定を確かめる\n";
+        assert_eq!(matched(md, &run(&ColonContinuation, md)), vec!["ます："]);
+        // 段落・リストの HTML のタグだけを挟む HTML のリストも続いている
+        for md in [
+            "<p>次の手順で設定します：</p>\n<ul>\n  <li>画面を開く</li>\n</ul>\n",
+            "次の手順で設定します：\n\n<ul>\n<li>画面を開く</li>\n</ul>\n",
+            "<div>\n<p>次の手順で設定します：</p>\n<ol class=\"steps\">\n<li>\n画面を開く\n</li>\n</ol>\n</div>\n",
+        ] {
+            assert_eq!(
+                matched(md, &run(&ColonContinuation, md)),
+                vec!["ます："],
+                "{md}"
+            );
+        }
+        let md =
+            "<p>次の手順で設定します：</p>\n<pre>make setup</pre>\n<ul><li>画面を開く</li></ul>\n";
+        assert!(run(&ColonContinuation, md).is_empty(), "{md}");
+        let md = "次のコマンドを実行します：\r\n\r\n- 設定を確かめる\r\n";
+        assert_eq!(matched(md, &run(&ColonContinuation, md)), vec!["ます："]);
+        // 引用の中の空行 (`>` だけの行) も空行として扱う
+        let md = "> 次のコマンドを実行します：\n>\n> - 設定を確かめる\n";
+        let all = crate::rules::testing::Options {
+            scope: crate::rules::Scope::ALL,
+            ..Default::default()
+        };
+        assert_eq!(
+            matched(
+                md,
+                &crate::rules::testing::run_with(&ColonContinuation, md, all)
+            ),
+            vec!["ます："]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "code")]
+    fn p20_connects_lists_only_within_the_same_comment() {
+        use crate::code::CodeLanguage;
+        use crate::document::{Document, ParseOptions, SourceFormat};
+        use crate::rules::testing::{Options, run_doc};
+        let rust = |source: &str| {
+            let doc = Document::parse(
+                "<input>.rs",
+                source,
+                SourceFormat::Code(CodeLanguage::Rust),
+                &ParseOptions::default(),
+            );
+            run_doc(&ColonContinuation, &doc, Options::default())
+        };
+        // 間にコードを挟んだ別のコメントの箇条書きにはつながない
+        let source = "// 次の手順で設定します:\nfn setup() {}\n\n// - 画面を開く\nfn open() {}\n";
+        assert!(rust(source).is_empty());
+        // 同じコメントの中なら、空いたコメントの行 (`//`・`///`・` *`) を挟んでもつながる
+        for source in [
+            "// 手順は次のとおりです:\n// - 画面を開く\n// - 保存する\nfn save() {}\n",
+            "// 手順は次のとおりです:\n//\n// - 画面を開く\nfn close() {}\n",
+            "/// 手順は次のとおりです:\n///\n/// - 画面を開く\nfn doc() {}\n",
+            "/* 手順は次のとおりです:\n *\n * - 画面を開く\n */\nfn block() {}\n",
+        ] {
+            let d = rust(source);
+            assert_eq!(matched(source, &d), vec!["です:"], "{source}");
+        }
     }
 
     fn item(d: &Diagnostic) -> &str {

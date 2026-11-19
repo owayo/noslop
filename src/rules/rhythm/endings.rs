@@ -180,7 +180,8 @@ impl RepetitiveEnding {
     /// 地の文の段落ごとに、同じ文末が続く区間 (1 文だけの区間を含む) を並べる。
     ///
     /// 「ラベル: 値」の行 ([`Sentence::label_value`]) は文末の型を持たない区切りとして扱い、
-    /// 前後の文の連続をつながない (改行で並べた項目で、地の文の文末ではないため)。
+    /// 前後の文の連続をつながない (改行で並べた項目で、地の文の文末ではないため)。日本語を
+    /// 含まない「ラベル: 値」の行 (`Version: 1.2.3`) も区切りにする。
     fn runs<'a>(&self, doc: &'a Document) -> Vec<(Vec<&'a Sentence>, Ending)> {
         let mut out = Vec::new();
         for (idx, block) in doc.blocks.iter().enumerate() {
@@ -190,7 +191,7 @@ impl RepetitiveEnding {
             let sentences: Vec<&Sentence> = doc
                 .block_sentences(idx)
                 .iter()
-                .filter(|s| s.japanese)
+                .filter(|s| s.japanese || s.label_value)
                 .collect();
             let endings: Vec<Option<Ending>> = sentences
                 .iter()
@@ -458,6 +459,31 @@ mod tests {
         // 項目の行は連続を区切る (前後の文を 1 つの連続につながない)
         let md = "在庫を数えています。  \n**注記**: 週ごとの集計  \n差異を集計しています。原因を調べています。\n";
         assert!(run(&rule, md).is_empty());
+        // 日本語を含まない項目の行も同じく区切る
+        let md = "在庫を数えています。  \nVersion: 1.2.3  \n差異を集計しています。原因を調べています。\n";
+        assert!(run(&rule, md).is_empty());
+        assert_eq!(
+            measure_md(&rule, md)
+                .iter()
+                .map(|m| m.value)
+                .collect::<Vec<_>>(),
+            [2.0]
+        );
+        // 項目の行でない英文は区切りにせず、前後の文末を続けて数える (今まで通り)
+        let md = "在庫を数えています。See the log. 差異を集計しています。原因を調べています。\n";
+        let d = run(&rule, md);
+        assert_eq!(
+            matched(md, &d),
+            ["在庫を数えています。See the log. 差異を集計しています。原因を調べています。"]
+        );
+        // 項目の行で区切った後の連続は、今まで通り数える
+        let md =
+            "Version: 1.2.3  \n在庫を数えています。差異を集計しています。原因を調べています。\n";
+        let d = run(&rule, md);
+        assert_eq!(
+            matched(md, &d),
+            ["在庫を数えています。差異を集計しています。原因を調べています。"]
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! ジャンル business では既定で動かさない。S11・S12 は読みやすさのレーンで、明示された予告と
 //! 項目数、見出しと節の境界を照合する (`relations.rs`)。
 
+use std::ops::Range;
 use std::sync::LazyLock;
 
 mod relations;
@@ -460,7 +461,8 @@ static PHASE_META: RuleMeta = RuleMeta {
 ### 何を見るか
 
 「フェーズ1」「ステップ2」「ステージ3」のような番号付きの段階表現が、見出しや箇条書きを含む文書\
-全体で 3 回以上出てくるときに、最初の位置で 1 件出します。
+全体で 3 回以上出てくるときに、最初の位置で 1 件出します。「ステップ一つひとつ」「段階二つ」のように、\
+番号の後ろに「つ」「個」が続く数の表現は数えません。
 
 ### なぜ問題か
 
@@ -492,6 +494,8 @@ static PHASE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// 文書全体 (見出し・箇条書きを含む) の番号付きの段階表現の原文上の範囲。
+///
+/// 番号の後ろに「つ」「個」が続く数の表現 (「ステップ一つひとつ」「段階二つ」) は数えない。
 fn phase_spans(ctx: &RuleContext<'_>) -> Vec<Span> {
     ctx.doc
         .blocks
@@ -499,6 +503,15 @@ fn phase_spans(ctx: &RuleContext<'_>) -> Vec<Span> {
         .flat_map(|b| {
             PHASE_RE
                 .find_iter(&b.text)
+                .filter(|m| {
+                    // 番号の続きの桁 (「ステップ10個」) を飛ばしてから、数を数える語かを見る
+                    let rest = b.text[m.end()..].trim_start_matches(|c: char| {
+                        c.is_ascii_digit()
+                            || ('０'..='９').contains(&c)
+                            || "一二三四五六七八九十".contains(c)
+                    });
+                    !rest.starts_with(['つ', '個'])
+                })
                 .map(move |m| b.to_source(m.range()))
         })
         .collect()
@@ -581,8 +594,9 @@ static EMOJI_META: RuleMeta = RuleMeta {
 ### 何を見るか
 
 絵文字や装飾記号 (✅ ⭐ 📌 🚀 など) が 3 個以上あり、原文 1000 字あたり 2 個以上の密度で使われて\
-いる文書を指します。コードブロックの中は数えません。文字数は、文書の先頭の front matter を除いた\
-原文で数えます。
+いる文書を指します。コードブロックの中は数えません。ZWJ でつないだ絵文字 (家族の絵文字など) と、\
+肌の色を変えた絵文字は、表示されるとおり 1 個と数えます。文字数は、文書の先頭の front matter を\
+除いた原文で数えます。
 
 ### なぜ問題か
 
@@ -616,13 +630,39 @@ fn is_emoji_like(c: char) -> bool {
     )
 }
 
+/// 肌の色の修飾子 (U+1F3FB〜U+1F3FF)。前の絵文字と合わせて 1 つの絵文字として表示される。
+fn is_skin_tone_modifier(c: char) -> bool {
+    matches!(c, '\u{1F3FB}'..='\u{1F3FF}')
+}
+
 /// ブロック内の絵文字・装飾記号の原文上の範囲。
+///
+/// 見た目で 1 つの絵文字は 1 つと数える。ZWJ (U+200D) でつないだ後ろの字と、肌の色の修飾子は、
+/// 前の絵文字に合わせる (家族の絵文字 👨‍👩‍👧‍👦 は 1 つ。範囲は最初の字から最後につないだ字まで)。
+/// 異体字セレクタ (U+FE0F) は、絵文字の後ろで ZWJ の手前にあってもつなぎを切らない。
 fn block_emoji(block: &Block) -> impl Iterator<Item = Span> + '_ {
-    block
-        .text
-        .char_indices()
-        .filter(|&(_, c)| is_emoji_like(c))
-        .map(move |(i, c)| block.to_source(i..i + c.len_utf8()))
+    let mut clusters: Vec<Range<usize>> = Vec::new();
+    // 直前までが絵文字の並びの途中か (絵文字・修飾子・異体字セレクタの直後)
+    let mut open = false;
+    // 直前が、絵文字の並びに続く ZWJ か
+    let mut joined = false;
+    for (i, c) in block.text.char_indices() {
+        let end = i + c.len_utf8();
+        if is_emoji_like(c) {
+            match clusters.last_mut() {
+                Some(last) if open && (joined || is_skin_tone_modifier(c)) => last.end = end,
+                _ => clusters.push(i..end),
+            }
+            open = true;
+            joined = false;
+        } else if open && !joined && c == '\u{200D}' {
+            joined = true;
+        } else if !(open && !joined && c == '\u{FE0F}') {
+            open = false;
+            joined = false;
+        }
+    }
+    clusters.into_iter().map(move |r| block.to_source(r))
 }
 
 /// 文書中の絵文字・装飾記号の原文上の範囲 (コードブロックは解析用テキストに含まれない)。
@@ -1963,11 +2003,58 @@ mod tests {
     }
 
     #[test]
+    fn s04_does_not_count_quantities_of_steps() {
+        // 番号の後ろに「つ」「個」が続く数の表現は、番号付きの段階ではない
+        let rule = NumberedPhases::new();
+        for md in [
+            "ステップ一つひとつを確認し、段階一つずつ進め、フェーズ二つを並行させる。\n",
+            "ステップ3つで終わり、段階2個を飛ばし、ステージ10個を並べる。\n",
+        ] {
+            assert!(run(&rule, md).is_empty(), "{md}");
+            assert!(measure_md(&rule, md).is_empty(), "{md}");
+        }
+        // 番号付きの段階は、数の表現と並んでいても数える
+        let md = "フェーズ1で設計し、ステップ2で試し、ステージ3で広げる。段階二つは省く。\n";
+        let d = run(&rule, md);
+        assert_eq!(matched(md, &d), vec!["フェーズ1"]);
+        let related: Vec<&str> = d[0].related.iter().map(|s| &md[s.range()]).collect();
+        assert_eq!(related, ["フェーズ1", "ステップ2", "ステージ3"]);
+    }
+
+    #[test]
     fn s05_flags_emoji_but_not_in_code() {
         let md = "✅ 申請はオンラインで完結します 🚀 📌\n";
         assert_eq!(run(&EmojiDensity::new(), md).len(), 1);
         let code = "```\n✅ 🚀 📌 ⭐\n```\n\n本文です。\n";
         assert!(run(&EmojiDensity::new(), code).is_empty());
+    }
+
+    #[test]
+    fn s05_s08_count_joined_and_modified_emoji_once() {
+        // ZWJ でつないだ絵文字と肌の色の修飾子は、前の絵文字と合わせて 1 個と数える
+        let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
+        let thumbs = "👍🏽";
+        let runner = "🏃\u{200D}♀\u{FE0F}";
+        let md = format!("家族{family}と親指{thumbs}と走者{runner}を一つずつ置いた本文です。\n");
+        let d = run(&EmojiDensity::new(), &md);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].metrics["count"], 3usize.into());
+        let spans: Vec<&str> = d[0].related.iter().map(|s| &md[s.range()]).collect();
+        assert_eq!(spans, [family, thumbs, "🏃\u{200D}♀"]);
+        // 2 個だけなら最小の個数 (3 個) に届かない
+        let md = format!("家族{family}と親指{thumbs}を置いた本文です。\n");
+        assert!(run(&EmojiDensity::new(), &md).is_empty());
+        assert!(measure_md(&EmojiDensity::new(), &md).is_empty());
+        // 見出しの中の数も同じ
+        let md = format!("## 家族の{family}見出し\n");
+        let d = run(&HeadingEmphasis, &md);
+        assert_eq!(matched(&md, &d), vec![family]);
+        assert_eq!(d[0].metrics["emoji"], 1usize.into());
+        // つながない並び (ZWJ を挟まない絵文字・修飾子の前に絵文字がない) は別々に数える
+        let md = "👨👩 と 🏽 と 👨\u{200D} と ✅\u{FE0F}🚀 を並べた。\n";
+        let d = run(&EmojiDensity::new(), md);
+        let spans: Vec<&str> = d[0].related.iter().map(|s| &md[s.range()]).collect();
+        assert_eq!(spans, ["👨", "👩", "🏽", "👨", "✅", "🚀"]);
     }
 
     #[test]

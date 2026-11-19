@@ -56,6 +56,8 @@ fn comma(value: &str) -> Option<usize> {
         if let Some(close) = text::closing_bracket(c) {
             brackets.push(close);
         } else if text::is_closing_bracket(c) {
+            // `〝` は `〟` と `〞` のどちらでも閉じる (文分割と同じ)
+            let c = if c == '〞' { '〟' } else { c };
             if brackets.pop() != Some(c) {
                 return None;
             }
@@ -323,6 +325,41 @@ mod tests {
         }
         assert!(candidate("点検を，仕組みで続ける"));
         assert!(candidate("「赤、青」を、手掛かりにする"));
+        // `〝` は `〟` と `〞` のどちらでも閉じる
+        for close in ['〟', '〞'] {
+            assert!(
+                candidate(&format!("〝点検{close}を、仕組みで続ける")),
+                "{close}"
+            );
+            assert!(
+                candidate(&format!("〝赤、青{close}を、手掛かりにする")),
+                "{close}"
+            );
+            assert!(
+                !candidate(&format!("〝点検を、仕組みで続ける{close}")),
+                "{close}"
+            );
+        }
+        assert!(!candidate("〝点検を、仕組みで続ける"));
+    }
+
+    #[test]
+    fn double_prime_quotation_marks_close_with_either_closing_mark() {
+        for close in ['〟', '〞'] {
+            let md = format!(
+                "## 〝点検{close}を、仕組みで続ける\n\n小さな〝記録{close}が示す、次の一手\n\n待っている間に、〝機会{close}は失われる\n"
+            );
+            let d = run(&RepeatedShortSlogan::default(), &md);
+            assert_eq!(
+                matched(&md, &d),
+                [
+                    format!("〝点検{close}を、仕組みで続ける"),
+                    format!("小さな〝記録{close}が示す、次の一手"),
+                    format!("待っている間に、〝機会{close}は失われる"),
+                ],
+                "{close}"
+            );
+        }
     }
 
     #[test]

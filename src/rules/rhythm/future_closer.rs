@@ -19,7 +19,7 @@ static META: RuleMeta = RuleMeta {
     summary: "文書の結びで「課題は残る」から「今後の発展が期待される」へ流す型を指摘する",
     explanation: r"### 何を見るか
 
-文書の最後の地の文で、「課題は残ります」「課題がある」などの文の直後に、「今後」「将来」「これから」を含み、「発展」「進展」「成長」「改善」「活用」「普及」への期待で終わる文が続く型を探します。同じ文の中で読点を挟んで続く型も拾います。別段落の場合は最後の 2 段落が空白だけを挟んで隣接している必要があります。見出し・箇条書き・コード・引用を挟んでつなぎません。
+文書の最後の地の文で、「課題は残ります」「課題がある」などの文の直後に、「今後」「将来」「これから」で始まり (文頭の「しかし」「それでも」「一方で」の後ろに置いた形を含みます)、「発展」「進展」「成長」「改善」「活用」「普及」への期待で終わる文が続く型を探します。同じ文の中で、読点の後ろに同じ形の期待が続く型も拾います。別段落の場合は最後の 2 段落が空白だけを挟んで隣接している必要があります。見出し・箇条書き・コード・引用を挟んでつなぎません。
 
 否定や問い、具体的な数値を含む結び、コードやリンクなどを含む結びは対象外です。文書の途中の展望や「課題」「期待」という語だけでは指摘しません。
 
@@ -162,6 +162,40 @@ mod tests {
             let md = format!("[ref]: https://example.com\n\n{body}");
             assert!(run(&FormulaicFutureCloser, &md).is_empty(), "{md}");
         }
+    }
+
+    #[test]
+    fn the_expectation_must_start_with_the_future_word() {
+        // 説明に書いたとおり、期待の文は「今後」「将来」「これから」で始まる (「しかし、」などの後ろも可)
+        for s in [
+            "運用には課題が残ります。それでも、将来の改善が期待されます。",
+            "運用には課題が残ります。一方でこれからの活用が期待されます。",
+        ] {
+            assert_eq!(run(&FormulaicFutureCloser, s).len(), 1, "{s}");
+        }
+        for s in [
+            "運用には課題が残ります。普及の面では、今後の発展が期待されます。",
+            "課題は残るが、普及の面では今後の発展が期待される。",
+        ] {
+            assert!(run(&FormulaicFutureCloser, s).is_empty(), "{s}");
+        }
+    }
+
+    #[test]
+    fn reads_the_closer_of_a_document_wrapped_in_a_markdown_fence() {
+        // 本文全体を ```markdown で包んだ文書は、閉じのフェンスの手前までを本文として結びを見る
+        for md in [
+            format!("```markdown\n{PAIR}\n```\n"),
+            format!("```md\n{PAIR}\n\n```\n\n"),
+        ] {
+            let d = run(&FormulaicFutureCloser, &md);
+            assert_eq!(matched(&md, &d), ["運用には課題が残ります。"], "{md}");
+            let related: Vec<&str> = d[0].related.iter().map(|s| &md[s.range()]).collect();
+            assert_eq!(related, ["しかし、今後の普及が期待されます。"]);
+        }
+        // 包んだ本文の中でも、結びの後ろにコードがあれば文書の結びではない
+        let md = format!("```markdown\n{PAIR}\n\n```text\n作業\n```\n```\n");
+        assert!(run(&FormulaicFutureCloser, &md).is_empty(), "{md}");
     }
 
     #[test]

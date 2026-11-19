@@ -64,12 +64,18 @@ const LITERAL_ITEM: &str = "文字のまま残った強調の記法";
 pub(super) struct MarkupResidue;
 
 impl MarkupResidue {
-    /// 1 行のテキストから、ちょうど 2 個の `*` の対で挟まれた範囲 (記号を含む) を返す。
+    /// 1 行のテキストから、ちょうど 2 個の `*` の対で挟まれた範囲 (記号を含む) を、`accept` が
+    /// 返した値と組にして返す。
     ///
     /// `*` の連なりを左から見て、2 個の連なりと、その次の 2 個の連なりを対にする。次の連なりが
-    /// 2 個でないか、中身が条件に合わなければ、その開きは捨てて次の連なりから続ける
-    /// (`***` のような 3 個以上の連なりは開きにも閉じにもならない)。
-    fn find_pairs(line: &str) -> Vec<Range<usize>> {
+    /// 2 個でないか、中身が条件に合わないか、`accept` が対の範囲を受け付けない (`None` を返す)
+    /// なら、その開きだけを捨て、次の連なりを開きにして続ける (`***` のような 3 個以上の連なりは
+    /// 開きにも閉じにもならない)。受け付けなかった対の閉じを消費すると、同じ行の後ろの本物の対を
+    /// 組めなくなるため、原文での確かめも対を組む段階で行う。
+    fn find_pairs<T>(
+        line: &str,
+        mut accept: impl FnMut(Range<usize>) -> Option<T>,
+    ) -> Vec<(Range<usize>, T)> {
         let mut runs: Vec<Range<usize>> = Vec::new();
         for (i, c) in line.char_indices() {
             if c != '*' {
@@ -84,8 +90,12 @@ impl MarkupResidue {
         let mut i = 0;
         while i + 1 < runs.len() {
             let (open, close) = (&runs[i], &runs[i + 1]);
-            if open.len() == 2 && close.len() == 2 && eligible(&line[open.end..close.start]) {
-                out.push(open.start..close.end);
+            let accepted =
+                (open.len() == 2 && close.len() == 2 && eligible(&line[open.end..close.start]))
+                    .then(|| accept(open.start..close.end))
+                    .flatten();
+            if let Some(value) = accepted {
+                out.push((open.start..close.end, value));
                 i += 2;
             } else {
                 i += 1;
@@ -145,17 +155,20 @@ impl Rule for MarkupResidue {
         // 記号の残骸は置き場所を問わず見えるので、語句ルールのスコープに従わず全ブロックを見る
         for (idx, block) in doc.blocks.iter().enumerate() {
             for (line_start, line) in line_offsets(&block.text) {
-                for pair in Self::find_pairs(line) {
+                // 原文でも `**` で始まり `**` で終わる、1 行の中の範囲に限る (エスケープした
+                // `\*\*` や、解析用テキストでだけ隣り合った記号を外す)。外した対の閉じは、
+                // 次の対の開きとして使う
+                let pairs = Self::find_pairs(line, |pair| {
                     let range = (line_start + pair.start)..(line_start + pair.end);
-                    let Some(span) = single_line_span(doc, block, range.clone()) else {
-                        continue;
-                    };
-                    // 原文でも `**` で始まり `**` で終わる、1 行の中の範囲に限る
-                    // (エスケープした `\*\*` や、解析用テキストでだけ隣り合った記号を外す)
+                    let span = single_line_span(doc, block, range)?;
                     let source = doc.slice(span);
-                    if !source.starts_with("**") || !source.ends_with("**") || !seen.insert(span) {
+                    (source.starts_with("**") && source.ends_with("**")).then_some(span)
+                });
+                for (pair, span) in pairs {
+                    if !seen.insert(span) {
                         continue;
                     }
+                    let range = (line_start + pair.start)..(line_start + pair.end);
                     let matched = &block.text[range.clone()];
                     let context = sentence_context(doc, idx, range.start);
                     let message = if markdown {
@@ -299,6 +312,31 @@ mod tests {
                 "{}",
                 d.message
             );
+        }
+    }
+
+    #[test]
+    fn a_rejected_pair_leaves_its_closing_marker_for_the_next_pair() {
+        // 解析用テキストでは前の行の `**` と対になるが、原文では行をまたぐ。その閉じを次の対の
+        // 開きに使い、同じ行の本物の対を拾う
+        let md = "前の行の**「語句」\n次の行は**「別」**に決めた。\n";
+        let d = run(&MarkupResidue, md);
+        assert_eq!(matched(md, &d), ["**「別」**"]);
+        assert_eq!(d[0].severity, Severity::Warning);
+        let context = d[0].context.expect("context");
+        assert_eq!(
+            &md[context.range()],
+            "前の行の**「語句」\n次の行は**「別」**に決めた。"
+        );
+        // エスケープした `\*\*` は原文で `**` にならないので開きにせず、後ろの対を拾う
+        let md = "エスケープ \\*\\*強調と**「語」**に決めた。\n";
+        assert_eq!(matched(md, &run(&MarkupResidue, md)), ["**「語」**"]);
+        // 対にできる相手がなければ、外した開きの後ろは拾わない
+        for md in [
+            "前の行の**「語句」\n次の行は**「別」に決めた。\n",
+            "エスケープ \\*\\*強調と**「語」に決めた。\n",
+        ] {
+            assert!(run(&MarkupResidue, md).is_empty(), "{md}");
         }
     }
 

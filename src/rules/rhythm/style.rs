@@ -55,7 +55,9 @@ fn outside_brackets(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
         let inside = !stack.is_empty();
-        if stack.last() == Some(&c) {
+        // `〝` は `〟` と `〞` のどちらでも閉じる (文分割と同じ)
+        let closing = if c == '〞' { '〟' } else { c };
+        if stack.last() == Some(&closing) {
             stack.pop();
         } else if let Some(close) = match c {
             '"' => Some('"'),
@@ -289,6 +291,31 @@ mod tests {
         }
         assert_eq!(run(&rule, "設定は「正常だ」です。内容は『適切だ』です。\n\n処理する（説明です）。表示する（説明です）。").len(), 1);
     }
+    #[test]
+    fn double_prime_quotation_marks_close_with_either_closing_mark() {
+        // `〝` は `〟` と `〞` のどちらでも閉じ、閉じた後ろの文末を見る
+        for close in ['〟', '〞'] {
+            let value = format!("設定を〝最初{close}に読み込みます。");
+            let hidden = "〝最初".len() + close.len_utf8();
+            assert_eq!(
+                outside_brackets(&value),
+                format!("設定を{}に読み込みます。", " ".repeat(hidden)),
+                "{close}"
+            );
+            let text = format!(
+                "設定を〝最初{close}に読み込みます。項目を〝一つずつ{close}確認します。\n\n処理を開始する。結果は画面に表示される。\n"
+            );
+            let found = run(&MixedWritingStyle::default(), &text);
+            assert_eq!(found.len(), 1, "{close}");
+            assert_eq!(found[0].metrics["polite_sentences"], 2usize.into());
+            assert_eq!(found[0].metrics["plain_sentences"], 2usize.into());
+            assert_eq!(&text[found[0].span.range()], "する");
+            assert_eq!(&text[found[0].related[0].range()], "ます");
+        }
+        // 閉じない `〝` の後ろは、今まで通り括弧の内側として文末を見ない
+        assert_eq!(outside_brackets("〝最初に読み込みます。").trim(), "");
+    }
+
     #[test]
     fn minimum_each_is_configurable_and_measures_agree() {
         let mut rule = MixedWritingStyle::default();

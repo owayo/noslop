@@ -12,6 +12,9 @@ use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit};
 
 /// パターン文字列の長さの上限 (文字数)。
 const MAX_PATTERN_CHARS: usize = 1_000;
+
+/// 独自ルールの説明に添える、探す範囲の説明 ([`CustomRule::check`] の動き)。
+const SCOPE_NOTE: &str = "語句パターン系ルールと同じブロック (既定は段落だけで、`[scope]` の設定でリスト・表・引用にも広げられます。見出しは見ません) を、1 文ずつ探します。文の区切りをまたぐ一致は拾いません。";
 /// 正規表現のコンパイル後の大きさの上限 (バイト)。
 const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
@@ -98,7 +101,7 @@ impl CustomRule {
             "文字列"
         };
         let explanation = format!(
-            "### 何を見るか\n\n設定ファイルの `[[custom]]` で定義した独自ルール。{kind} `{}` に一致する箇所を指します。\n\n### 直し方\n\n{}\n",
+            "### 何を見るか\n\n設定ファイルの `[[custom]]` で定義した独自ルール。{kind} `{}` に一致する箇所を指します。{SCOPE_NOTE}\n\n### 直し方\n\n{}\n",
             cfg.pattern,
             cfg.hint.as_deref().unwrap_or(&cfg.message)
         );

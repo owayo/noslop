@@ -18,7 +18,7 @@ static META: RuleMeta = RuleMeta {
     summary: "誰の研究・主張かを示さずに権威を借りる文頭の型を、出典の確認候補として指摘する",
     explanation: r"### 何を見るか
 
-文頭の「専門家は〜と指摘しています」「研究者によると」「研究によって明らかになっています」「調査では〜が示されています」などを探します。「一部の」「多くの」「複数の」「最近の」を冠する形も含みます。主語から述語までの間は 40 字以内で、引用符をまたぎません。単なる「研究では」や「と言われています」は拾いません。
+文頭の「専門家は〜と指摘しています」「研究者によると」「研究によって明らかになっています」「調査では〜が示されています」などを探します。「一部の」「多くの」「複数の」「最近の」を冠する形も含みます。主語から述語までの間は 40 字以内で、引用符をまたぎません。述語は、直後が句点・読点か文の終わりのものに限ります (「指摘するとは限らない」は拾わず、「指摘した上で、〜と主張しています。」は後ろの「主張しています」までを指します)。単なる「研究では」や「と言われています」は拾いません。
 
 同じ文にリンク・URL・脚注参照・著者年形式の引用がある場合は除きます。同じ段落の直前・直後の文が「出典」「参考文献」「参照」「詳しくは」で始まり、これらの参照を含む場合も除きます。「青葉大学の研究では」のように具体名から始まる文はこの型に含みません。リンクが主張を裏付けるか、別の節に出典があるかまでは判断しません。
 
@@ -42,11 +42,18 @@ static META: RuleMeta = RuleMeta {
 人の文書 440 本と生成文書 390 本では反応がなく (人 0 本・生成 0 本) 強さを測れないため、手掛かりの強さは中程度としています。",
 };
 
+/// 文頭の権威付けの型。指す範囲は名前付きグループ `according` (「専門家によると、」) か `claim`
+/// (述語で終わる形) で、`claim` は述語の直後が句読点か文の終わりのときだけ一致する (問い・否定・
+/// 表現そのものへの言及は、肯定的な権威付けとは扱わない)。直後の条件を正規表現の中に置くので、
+/// 最初の述語の候補 (「指摘した上で」) が条件に合わなくても、後ろの述語 (「主張しています。」) を
+/// 調べる。
 static ATTRIBUTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-    r"^(?:(?:一部|多く|複数|最近)の)?(?:",
-    r"(?:専門家|研究者|識者)(?:によると[、，]|(?:は|が)[^。！？!?「」『』\n]{0,40}?(?:指摘|主張|説明|強調)(?:しています|している|しました|した|する))",
-    r"|(?:研究|調査)(?:によって|により|では|から)[^。！？!?「」『』\n]{0,40}?(?:明らかになっています|明らかになっている|示されています|示されている|確認されています|確認されている))",
+    r"^(?:(?P<according>(?:(?:一部|多く|複数|最近)の)?(?:専門家|研究者|識者)によると[、，])",
+    r"|(?P<claim>(?:(?:一部|多く|複数|最近)の)?(?:",
+    r"(?:専門家|研究者|識者)(?:は|が)[^。！？!?「」『』\n]{0,40}?(?:指摘|主張|説明|強調)(?:しています|している|しました|した|する)",
+    r"|(?:研究|調査)(?:によって|により|では|から)[^。！？!?「」『』\n]{0,40}?(?:明らかになっています|明らかになっている|示されています|示されている|確認されています|確認されている)",
+    r"))(?:[。、，]|$))",
 )).expect("attribution regex")
 });
 
@@ -94,17 +101,12 @@ impl Rule for VagueAttribution {
             let sentences = ctx.doc.block_sentences(idx);
             for (i, sentence) in sentences.iter().enumerate() {
                 let value = ctx.doc.sentence_text(sentence);
-                let Some(hit) = ATTRIBUTION.find(value) else {
+                let Some(hit) = ATTRIBUTION
+                    .captures(value)
+                    .and_then(|c| c.name("according").or_else(|| c.name("claim")))
+                else {
                     continue;
                 };
-                // 問い・否定・表現そのものへの言及は、肯定的な権威付けとは扱わない。
-                let rest = &value[hit.end()..];
-                if !rest.is_empty()
-                    && !rest.starts_with(['。', '、', '，'])
-                    && !hit.as_str().contains("によると")
-                {
-                    continue;
-                }
                 if value.contains(['?', '？'])
                     || value.ends_with("でしょうか。")
                     || has_reference(ctx.doc, block, sentences, i)
@@ -125,7 +127,8 @@ impl Rule for VagueAttribution {
                     .with_hint("誰の研究・発言か、本文から出典をたどれるか確認してください")
                     .with_context(sentence.span)
                     .with_metric("item", "匿名の研究・専門家への帰属")
-                    .with_metric("matched", hit.as_str()),
+                    // ほかの語句ルールと同じく、プレースホルダ (コード・URL の跡) を「…」にする
+                    .with_metric("matched", quote(hit.as_str())),
                 );
             }
         }
@@ -157,6 +160,51 @@ mod tests {
         ] {
             assert_eq!(run(&VagueAttribution, s).len(), 1, "{s}");
         }
+    }
+
+    #[test]
+    fn looks_past_a_predicate_that_does_not_end_the_claim() {
+        // 最初の述語の候補 (「指摘した上で」) の後ろに句読点がなくても、後ろの述語を調べる
+        let md = "専門家は、手順を指摘した上で、改善が要ると主張しています。\n";
+        let d = run(&VagueAttribution, md);
+        assert_eq!(
+            matched(md, &d),
+            vec!["専門家は、手順を指摘した上で、改善が要ると主張しています"]
+        );
+        let md = "調査では効果が示されている点を踏まえ、改善が確認されています。\n";
+        assert_eq!(
+            matched(md, &run(&VagueAttribution, md)),
+            vec!["調査では効果が示されている点を踏まえ、改善が確認されています"]
+        );
+        // 最初の候補で句読点が続くなら、そこまでを指す (今まで通り)
+        let md = "専門家は有効だと指摘しています。改善も主張しています。\n";
+        assert_eq!(
+            matched(md, &run(&VagueAttribution, md)),
+            vec!["専門家は有効だと指摘しています"]
+        );
+        // 後ろに句読点が続く述語がなければ拾わない
+        for s in [
+            "専門家は、手順を指摘した上で、改善を求めていない。",
+            "専門家は有効だと指摘するとは限らない。",
+        ] {
+            assert!(run(&VagueAttribution, s).is_empty(), "{s}");
+        }
+    }
+
+    #[test]
+    fn the_matched_metric_hides_placeholders_like_other_phrase_rules() {
+        let md = "専門家は`config`の扱いを指摘しています。\n";
+        let d = run(&VagueAttribution, md);
+        assert_eq!(
+            matched(md, &d),
+            vec!["専門家は`config`の扱いを指摘しています"]
+        );
+        assert_eq!(
+            d[0].metrics.get("matched"),
+            Some(&crate::diagnostic::Metric::Text(
+                "専門家は…の扱いを指摘しています".into()
+            ))
+        );
     }
 
     #[test]
