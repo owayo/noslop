@@ -713,6 +713,27 @@ fn quoted_ruby_heredocs_and_lua_initial_newlines_follow_raw_string_rules() {
     exact(&d);
 }
 
+/// 構文の誤りから回復した木には、開きと閉じの段数が合わない長い文字列のノードができる。
+/// 閉じを確かめずに切ると、範囲の終わりが文字の途中を指して panic していた。
+#[test]
+fn lua_long_strings_recovered_with_another_closing_level_do_not_panic() {
+    for src in [
+        "x = [==[]==]\\[[語]]",
+        "s = [==[\n検査語]==]\n  \"\n-- 検査語\n  --[[ 検査語 ]]\n",
+    ] {
+        exact(&doc(src, CodeLanguage::Lua));
+    }
+    // 段数のそろった長い文字列は、これまでどおり読む
+    assert_eq!(
+        texts("local x = [==[日本語]==]", CodeLanguage::Lua),
+        ["日本語"]
+    );
+    assert_eq!(
+        texts("local x = [[]]", CodeLanguage::Lua),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn html_case_insensitivity_does_not_treat_jsx_components_as_intrinsic_tags() {
     assert_eq!(
@@ -855,5 +876,58 @@ fn escaped_backslashes_in_c_strings_are_not_reinterpreted_as_hex_escapes() {
             texts(r#"const char *x = "前の文\351後の文";"#, lang),
             ["前の文", "後の文"]
         );
+    }
+}
+
+/// 言語の仕様にある 1 字のエスケープは、不明なエスケープとして文言を切らない。
+#[test]
+fn standard_escapes_of_each_language_keep_the_literal_in_one_fragment() {
+    use CodeLanguage::*;
+    for (lang, src, expected) in [
+        (
+            Kotlin,
+            r#"val s = "これは\$100の商品です。""#,
+            "これは$100の商品です。",
+        ),
+        (
+            CSharp,
+            r#"class C { string s = "これは\a100の商品です。"; }"#,
+            "これは\u{7}100の商品です。",
+        ),
+        (
+            CSharp,
+            r#"class C { string s = "これは\0の商品です。"; }"#,
+            "これは\0の商品です。",
+        ),
+        (
+            CSharp,
+            r#"class C { string s = "これは\v100の商品です。"; }"#,
+            "これは\u{b}100の商品です。",
+        ),
+        (
+            Java,
+            r#"class C { String s = "これは\s100の商品です。"; }"#,
+            "これは 100の商品です。",
+        ),
+        (
+            Php,
+            r#"<?php $s = "これは\f100の商品です。";"#,
+            "これは\u{c}100の商品です。",
+        ),
+        (
+            Yaml,
+            r#"k: "これは\_100の商品です。""#,
+            "これは\u{a0}100の商品です。",
+        ),
+        (
+            Yaml,
+            r#"k: "これは\N100の\ 商品です。""#,
+            "これは\u{85}100の 商品です。",
+        ),
+    ] {
+        let d = doc(src, lang);
+        assert_eq!(d.blocks.len(), 1, "{lang:?}: {src}");
+        assert_eq!(d.blocks[0].text, expected, "{lang:?}: {src}");
+        exact(&d);
     }
 }

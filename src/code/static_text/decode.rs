@@ -132,23 +132,38 @@ fn escape(s: &str, lang: CodeLanguage, prefix_len: usize) -> Option<(usize, Stri
         'v' => Some('\u{b}'),
         'a' => Some('\u{7}'),
         'e' => Some('\u{1b}'),
-        '\\' | '\'' | '"' | '`' | '/' | '$' => Some(c),
+        // Java の \s は空白。YAML の \_ \N \L \P は、改行しない空白・次行・行区切り・段落区切り
+        's' => Some(' '),
+        '_' => Some('\u{a0}'),
+        'N' => Some('\u{85}'),
+        'L' => Some('\u{2028}'),
+        'P' => Some('\u{2029}'),
+        '\\' | '\'' | '"' | '`' | '/' | '$' | ' ' | '\t' => Some(c),
         _ => None,
     };
+    // 言語の仕様にある 1 字のエスケープ。ここにない字は不明なエスケープとして文言を切る。
     let allowed = match lang {
         Rust => "nrt0\\\"'",
-        Java | CSharp | Kotlin => "nrtbf\\\"'",
+        Java => "nrtbfs\\\"'",
+        CSharp => "nrtbfave\\\"'",
+        Kotlin => "nrtbf\\\"'$",
         Toml => "nrtbf\\\"",
         Go => "abfnrtv\\\"'",
         Swift => "nrt0\\\"'",
-        Php => "nrtve\\\"$",
+        Php => "nrtvef\\\"$",
         Python => "abfnrtv\\\"'",
+        Yaml => "abefnrtv\\\"/ \t_NLP",
         _ => "abefnrtv\\\"'`/$",
     };
     if let Some(value) = basic.filter(|_| allowed.contains(c)) {
         return Some((prefix_len + 1, value.to_string()));
     }
-    if c == '0' && matches!(lang, Rust | Swift | JavaScript | TypeScript | Tsx) {
+    if c == '0'
+        && matches!(
+            lang,
+            Rust | Swift | JavaScript | TypeScript | Tsx | CSharp | Yaml
+        )
+    {
         return Some((prefix_len + 1, "\0".to_string()));
     }
     if c == '\n' {

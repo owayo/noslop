@@ -267,17 +267,21 @@ fn body(source: &str, lang: CodeLanguage, node: Node<'_>) -> Option<(Span, Mode)
             return None;
         }
         let open = level + 2;
-        let close = open;
+        // 構文の誤りから回復した木では、開きと閉じの段数が合わない文字列のノード
+        // (`[==[` で始まり `]]` で終わるもの) ができる。閉じを確かめずに長さだけで切ると、
+        // 範囲の終わりが文字の途中を指す。
+        let closing = format!("]{}]", "=".repeat(level));
+        if s.len() < open + closing.len() || !s.ends_with(&closing) {
+            return None;
+        }
         let mut begin = start + open;
         if source[begin..].starts_with("\r\n") {
             begin += 2;
         } else if source[begin..].starts_with('\n') {
             begin += 1;
         }
-        return Some((
-            Span::new(begin, node.end_byte().checked_sub(close)?),
-            Mode::Raw,
-        ));
+        let end = node.end_byte() - closing.len();
+        return (begin <= end).then(|| (Span::new(begin, end), Mode::Raw));
     }
     if lang == Ruby && s.starts_with('%') {
         let open = node.child(0)?;
