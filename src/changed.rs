@@ -135,8 +135,15 @@ fn git_in(dir: &Path) -> Command {
         // 差分を取るついでに index の日時の情報を書き直さない。並んで動くほかのフック (自動の
         // コミットなど) の git と index.lock を取り合わないように
         .args(["-c", "diff.autoRefreshIndex=false"])
-        // パスの * や ? をパターンとして読ませない
+        // パスの * や ? をパターンとして読ませない。パスの書き方のほかの既定 (glob・noglob・icase) は
+        // literal とぶつかって git を止めるので外す
         .env("GIT_LITERAL_PATHSPECS", "1")
+        .env_remove("GIT_GLOB_PATHSPECS")
+        .env_remove("GIT_NOGLOB_PATHSPECS")
+        .env_remove("GIT_ICASE_PATHSPECS")
+        // GIT_DIFF_OPTS (`-u3` など) は差分の `-U0` より優先され、変えていない前後の行まで差分に入れる。
+        // 外部の差分 (GIT_EXTERNAL_DIFF・diff.external) は、差分の呼び出しに付ける --no-ext-diff で止める
+        .env_remove("GIT_DIFF_OPTS")
         // 誤りの文言で「リポジトリの外」を見分けるので、英語にそろえる
         .env("LC_ALL", "C")
         .stdin(Stdio::null());

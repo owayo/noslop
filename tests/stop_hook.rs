@@ -483,6 +483,71 @@ fn check_git_diff_before_the_first_commit_and_outside_scopes() {
     assert!(stderr.contains("同じ git の作業ツリー"), "{stderr}");
 }
 
+/// 手元の git の環境変数で、変わった行の求め方が変わらない。`GIT_DIFF_OPTS` は `-U0` より優先されて
+/// 変えていない前後の行まで差分に入れ、`GIT_EXTERNAL_DIFF` は差分の形を変える。パスの書き方の既定
+/// (`GIT_GLOB_PATHSPECS` など) は、noslop が付ける `GIT_LITERAL_PATHSPECS` とぶつかって git を止める。
+#[test]
+fn git_environment_does_not_change_the_changed_lines() {
+    let Some(dir) = repository() else { return };
+    // 指摘のある 3 行目から 2 行離れた 5 行目だけを変える
+    fs::write(
+        dir.path().join("docs/guide.md"),
+        DOC.replace("問題のない段落です。", "問題のない段落を直しました。"),
+    )
+    .unwrap();
+    let run = |env: Option<(&str, &str)>| {
+        let command = |args: &[&str]| {
+            let mut cmd = noslop(dir.path());
+            if let Some((name, value)) = env {
+                cmd.env(name, value);
+            }
+            cmd.args(args);
+            output(&mut cmd)
+        };
+        let (code, report, stderr) = command(&[
+            "check",
+            "--git-diff",
+            "--no-readability",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(code, Some(0), "{env:?}: {stderr}");
+        let report: Value = serde_json::from_str(&report).unwrap();
+        let findings: Vec<(String, u64)> = report["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|file| file["diagnostics"].as_array().unwrap())
+            .map(|d| {
+                (
+                    d["ruleId"].as_str().unwrap().to_string(),
+                    d["range"]["start"]["line"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        (
+            findings,
+            command(&["hook", "git-diff"]),
+            command(&["hook", "file", "docs/guide.md"]),
+        )
+    };
+    let expected = run(None);
+    assert!(
+        !expected.0.iter().any(|(rule, _)| rule == "X01"),
+        "3 行目の指摘は変わった行に重ならない: {expected:?}"
+    );
+    for env in [
+        ("GIT_DIFF_OPTS", "-u3"),
+        ("GIT_DIFF_OPTS", "--unified=3"),
+        ("GIT_EXTERNAL_DIFF", "false"),
+        ("GIT_GLOB_PATHSPECS", "1"),
+        ("GIT_NOGLOB_PATHSPECS", "1"),
+        ("GIT_ICASE_PATHSPECS", "1"),
+    ] {
+        assert_eq!(run(Some(env)), expected, "{env:?}");
+    }
+}
+
 /// フックが案内したコマンドを、別のディレクトリからそのまま実行する。
 fn rerun(command: &str) -> (Option<i32>, String, String) {
     let mut cmd = StdCommand::new(if cfg!(windows) { "pwsh" } else { "sh" });
