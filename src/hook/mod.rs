@@ -296,7 +296,15 @@ fn shell_quote(value: &str) -> String {
 
 fn quote_for_shell(value: &str, powershell: bool) -> String {
     let escaped = if powershell {
-        value.replace('\'', "''")
+        // PowerShell は ‘ ’ ‚ ‛ も単一引用符として読み、どれも重ねると 1 字になる
+        let mut out = String::with_capacity(value.len());
+        for c in value.chars() {
+            if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+                out.push(c);
+            }
+            out.push(c);
+        }
+        out
     } else {
         value.replace('\'', "'\"'\"'")
     };
@@ -594,6 +602,15 @@ mod tests {
             quote_for_shell(value, true),
             "'案内 ''別名'' $HOME `date` $(command)'"
         );
+    }
+
+    /// PowerShell は ‘ ’ ‚ ‛ も単一引用符として読むので、ASCII の ' と同じく重ねる。POSIX のシェルでは
+    /// ASCII の ' だけが引用符。
+    #[test]
+    fn powershell_doubles_every_single_quote_character() {
+        assert_eq!(quote_for_shell("Don’t.md", true), "'Don’’t.md'");
+        assert_eq!(quote_for_shell("‘a’ ‚b‛ 'c'", true), "'‘‘a’’ ‚‚b‛‛ ''c'''");
+        assert_eq!(quote_for_shell("Don’t.md", false), "'Don’t.md'");
     }
 
     #[test]
