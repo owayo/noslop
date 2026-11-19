@@ -583,6 +583,15 @@ fn next_line_start(bytes: &[u8], pos: usize) -> usize {
         .map_or(bytes.len(), |i| pos + i + 1)
 }
 
+/// 行内の HTML が改行のタグ (`<br>`・`<br/>`・`<br />`・属性付き。大文字小文字を問わない) か。
+fn is_br_tag(html: &str) -> bool {
+    html.strip_prefix('<').is_some_and(|rest| {
+        rest.get(..2)
+            .is_some_and(|name| name.eq_ignore_ascii_case("br"))
+            && rest[2..].starts_with(|c: char| c == '>' || c == '/' || c.is_ascii_whitespace())
+    })
+}
+
 /// 組み立て途中のブロック。
 struct Current {
     kind: BlockKind,
@@ -809,7 +818,15 @@ impl<'a> Builder<'a> {
                 if !was_skipping && self.skipping() && self.skip_depth == 0 && self.inline_skip == 0
                 {
                     self.ensure_block(&range)
-                        .push_placeholder(range, MarkKind::Code);
+                        .push_placeholder(range.clone(), MarkKind::Code);
+                }
+                // 段落・表のセルの中の <br> は、HTML ブロックの <br> と同じく改行と文の区切りにする
+                // (区切らないと、前後の行が空白もなくつながる)
+                if !self.skipping()
+                    && is_br_tag(&t)
+                    && let Some(cur) = self.current.as_mut()
+                {
+                    cur.line_break(range, true);
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
@@ -1029,6 +1046,21 @@ mod tests {
 
     fn blocks(src: &str) -> Vec<Block> {
         parse(src).0
+    }
+
+    /// 段落・表のセルの中の `<br>` は、HTML ブロックの `<br>` と同じく改行と文の区切りにする。
+    #[test]
+    fn inline_br_tags_break_lines_like_html_blocks() {
+        let b = blocks("前の行<br>この案は重要です。\n\n| 列 |\n|---|\n| Run A<BR/>Run B |\n");
+        assert_eq!(b[0].text, "前の行この案は重要です。");
+        assert_eq!(b[0].line_breaks, ["前の行".len()]);
+        assert_eq!(b[0].sentence_breaks, ["前の行".len()]);
+        assert_eq!(b[2].text, "Run A Run B");
+        // 改行のタグでないもの (<b>・<bra>) は区切らない
+        let b = blocks("太字の<b>語</b>と<bra>の行\n");
+        assert!(b[0].line_breaks.is_empty(), "{:?}", b[0].line_breaks);
+        assert!(is_br_tag("<br>") && is_br_tag("<br />") && is_br_tag("<BR class=\"x\">"));
+        assert!(!is_br_tag("<b>") && !is_br_tag("<bra>") && !is_br_tag("</br>"));
     }
 
     #[test]
