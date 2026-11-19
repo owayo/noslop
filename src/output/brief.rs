@@ -56,6 +56,24 @@ const REVISION_RULES_COMPACT: &str = "主張・確信度・数字・固有名詞
 /// 指摘がないときの文言。指摘がないことは、文章の出来を保証しない。
 const NO_FINDINGS: &str = "指摘はありません。noslop の観点では直す必要はありません。内容の正しさや読み手への合い方は、このツールでは確かめていません。";
 
+/// 読めたファイルには指摘がないが、読めなかったファイルもあるときの文言。
+/// 読めなかったファイルは検査していないので、直す必要がないとは言わない。
+const NO_FINDINGS_IN_READ_FILES: &str = "読めたファイルには指摘がありません。読めなかったファイルは検査していないので、直す必要があるかは分かりません。内容の正しさや読み手への合い方は、このツールでは確かめていません。";
+
+/// 読めたファイルが 1 つもないときの文言。
+const NOTHING_CHECKED: &str = "検査できたファイルがありません。読めなかったファイルを確かめてから、もう一度実行してください。";
+
+/// 指摘のあるファイルがないときの断り書き。読めなかったファイルがあれば、結論を言い切らない。
+fn no_findings_note(report: &RunReport) -> &'static str {
+    if report.errors.is_empty() {
+        NO_FINDINGS
+    } else if report.files.is_empty() {
+        NOTHING_CHECKED
+    } else {
+        NO_FINDINGS_IN_READ_FILES
+    }
+}
+
 // ---------------------------------------------------------------------------
 // データ
 // ---------------------------------------------------------------------------
@@ -200,7 +218,7 @@ impl<'a> Brief<'a> {
             },
             revision_rules: &REVISION_RULES,
             editorial_questions: questions(opts.genre),
-            note: files.is_empty().then_some(NO_FINDINGS),
+            note: files.is_empty().then(|| no_findings_note(report)),
             files,
             clean_files: clean
                 .iter()
@@ -362,7 +380,7 @@ pub fn render(report: &RunReport, opts: &RenderOptions, out: &mut dyn Write) -> 
     writeln!(out)?;
 
     if brief.files.is_empty() {
-        writeln!(out, "{NO_FINDINGS}")?;
+        writeln!(out, "{}", brief.note.unwrap_or(NO_FINDINGS))?;
         render_clean_file_warnings(&brief, out)?;
         render_errors(&brief, out)?;
         return Ok(());
@@ -972,6 +990,37 @@ mod tests {
         let s = render_str(&report, &o);
         assert_eq!(s.matches("  - L1: ").count(), 3, "{s}");
         assert!(s.contains("  - ほか 5 件"), "{s}");
+    }
+
+    /// 読めなかったファイルがあるときは、指摘がなくても「直す必要はありません」と言い切らない。
+    #[test]
+    fn unreadable_files_keep_the_brief_from_concluding_nothing_needs_fixing() {
+        let e = engine();
+        let error = || FileError {
+            path: "missing.md".into(),
+            message: "ファイルまたはディレクトリが見つかりません".into(),
+        };
+        let nothing = RunReport {
+            files: Vec::new(),
+            errors: vec![error()],
+            morphology: Default::default(),
+        };
+        let s = render_str(&nothing, &opts(&e));
+        assert!(s.contains(NOTHING_CHECKED), "{s}");
+        assert!(!s.contains(NO_FINDINGS), "{s}");
+        assert!(s.contains("missing.md"), "{s}");
+        let partial = RunReport {
+            files: vec![e.lint(Document::markdown("問題のない文。\n"))],
+            errors: vec![error()],
+            morphology: Default::default(),
+        };
+        let s = render_str(&partial, &opts(&e));
+        assert!(s.contains(NO_FINDINGS_IN_READ_FILES), "{s}");
+        assert!(!s.contains(NO_FINDINGS), "{s}");
+        let mut buf = Vec::new();
+        render_json(&nothing, &opts(&e), &mut buf).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(v["note"], NOTHING_CHECKED);
     }
 
     #[test]
