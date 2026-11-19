@@ -236,6 +236,75 @@ fn display_name_is_private_and_not_a_review_condition_and_suppression_is_preserv
     assert!(blank.profile.purpose.is_none());
 }
 
+/// 判定器の文は Markdown の記法として読まれない。行頭の `~~~` でフェンスが開いて後ろの観点がすべて
+/// コードになったり、`---` の行で前の行が見出しになったりしない。
+#[test]
+fn reviewer_text_cannot_change_the_structure_of_the_report() {
+    use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+
+    let (request, mut response) = fixture("# 案内\n\n申込みを受け付けます。\n");
+    let texts = [
+        "理由です\n~~~\nここから先",
+        "前の行\n---",
+        "前の行\n===",
+        "```\nコード",
+        "- 項目\n+ 項目\n1. 項目\n2) 項目",
+        "    字下げ\n\t字下げ",
+        "> 引用 | 表 |\n<div>",
+        "[^1]: 脚注 $x$ &copy; \\ *強調* _強調_ **太字** ~~消す~~",
+    ];
+    for (item, text) in response.observations.iter_mut().zip(texts.iter().cycle()) {
+        item.reason = (*text).to_string();
+    }
+    let markdown = render(&request, &response);
+
+    // 2 段目の見出しと、段落の本文 (行の区切りは改行) を読む
+    let mut headings = Vec::new();
+    let mut paragraphs = Vec::new();
+    let mut current: Option<String> = None;
+    for event in Parser::new_ext(&markdown, crate::markdown::options()) {
+        match event {
+            Event::Start(Tag::Heading {
+                level: HeadingLevel::H2,
+                ..
+            })
+            | Event::Start(Tag::Paragraph) => current = Some(String::new()),
+            Event::Text(text) => {
+                if let Some(c) = current.as_mut() {
+                    c.push_str(&text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(c) = current.as_mut() {
+                    c.push('\n');
+                }
+            }
+            Event::End(TagEnd::Heading(HeadingLevel::H2)) => headings.extend(current.take()),
+            Event::End(TagEnd::Paragraph) => paragraphs.extend(current.take()),
+            _ => {}
+        }
+    }
+    let expected: Vec<String> = std::iter::once("構造lint".to_string())
+        .chain(
+            request
+                .techniques
+                .iter()
+                .map(|t| format!("{} — 判断不能", t.title)),
+        )
+        .collect();
+    assert_eq!(expected.len(), 19);
+    assert_eq!(headings, expected, "{markdown}");
+    // 判定器の文は、同じ文字の段落として読める (行頭の字下げは段落では表示されない)
+    for text in texts {
+        let shown = text
+            .lines()
+            .map(|line| line.trim_start_matches([' ', '\t']))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(paragraphs.contains(&shown), "{shown:?}\n{markdown}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn timeout_kills_the_reviewers_descendants() {

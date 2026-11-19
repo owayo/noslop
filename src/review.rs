@@ -674,13 +674,24 @@ fn render(request: &Request, response: &Response) -> String {
     out
 }
 
+/// 判定器の文や引用した原文を、Markdown の記法として読まれない本文にする。
+///
+/// 改行とタブのほかの制御文字を落とし、ASCII の記号はすべてバックスラッシュで打ち消す (CommonMark
+/// ではどの ASCII の記号も打ち消せる)。行頭の `~~~` のフェンス・`---` や `===` の見出しの下線・
+/// リストの記号も記法にならない。行頭の半角空白とタブは、字下げのコードブロックにならないよう外す
+/// (段落の行頭の空白は表示されない)。
 fn plain(text: &str) -> String {
     let mut out = String::new();
+    let mut line_start = true;
     for c in text
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
     {
-        if "\\`*_{}[]<>#!|".contains(c) {
+        if line_start && matches!(c, ' ' | '\t') {
+            continue;
+        }
+        line_start = c == '\n';
+        if c.is_ascii_punctuation() {
             out.push('\\');
         }
         out.push(c);
