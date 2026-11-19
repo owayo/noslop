@@ -10,7 +10,7 @@ use hasami::CoarsePos;
 use regex::{Regex, RegexSet};
 
 use crate::diagnostic::{Diagnostic, Lane, Severity};
-use crate::document::MarkKind;
+use crate::document::{Block, MarkKind};
 use crate::morph::MorphToken;
 use crate::rules::{Rule, RuleContext, RuleMeta, RuleUnit, option_usize, quote, unknown_option};
 use crate::text::quotes::QuoteRanges;
@@ -93,8 +93,10 @@ impl Default for KanjiRun {
 }
 
 impl KanjiRun {
-    /// `breaks` は原文の改行があった位置 (`text` 上のバイト位置)。連なりは改行をまたがない。
+    /// `breaks` は原文の改行などの語の切れ目の位置 (`text` 上のバイト位置、昇順)。連なりは切れ目を
+    /// またがない。
     fn find(&self, text: &str, breaks: &[usize]) -> Vec<(Range<usize>, usize)> {
+        debug_assert!(breaks.is_sorted(), "切れ目は昇順で渡す");
         let mut out = Vec::new();
         let mut run: Option<(usize, usize, usize)> = None; // (start, end, chars)
         let mut flush = |run: &mut Option<(usize, usize, usize)>| {
@@ -109,10 +111,15 @@ impl KanjiRun {
                 }
             }
         };
+        // 次に見る切れ目 (文字の位置を進めながら追う。字ごとに切れ目の一覧を探さない)
+        let mut next = 0;
         for (i, c) in text.char_indices() {
             // 段落内の改行は解析用テキストでは何も挟まずにつながるが、1 行 1 語の並び
             // (「対談」「面談」の行) を 1 つの連なりとして数えないよう、改行の位置で切る
-            if breaks.contains(&i) {
+            while breaks.get(next).is_some_and(|&at| at < i) {
+                next += 1;
+            }
+            if breaks.get(next) == Some(&i) {
                 flush(&mut run);
             }
             if text::is_kanji(c) {
@@ -163,31 +170,12 @@ impl Rule for KanjiRun {
     fn check(&self, ctx: &RuleContext<'_>, out: &mut Vec<Diagnostic>) {
         for (idx, block) in ctx.scoped_blocks() {
             let first = block.sentences.start;
+            // 切れ目はブロックごとに 1 度だけ並べ、文ごとには二分探索で切り出す (文ごとにブロックの
+            // 改行をすべて見ると、空行のない長い段落で文の数 × 改行の数の時間がかかる)
+            let cuts = word_breaks(block);
             for (i, sentence) in ctx.doc.block_sentences(idx).iter().enumerate() {
                 let text = &block.text[sentence.range.clone()];
-                // 改行と、太字・斜体・リンクの境目 (読み手には語の切れ目として見える)
-                let marks = block
-                    .marks
-                    .iter()
-                    .filter(|m| {
-                        matches!(
-                            m.kind,
-                            MarkKind::Strong
-                                | MarkKind::Emphasis
-                                | MarkKind::Strikethrough
-                                | MarkKind::Link
-                        )
-                    })
-                    .flat_map(|m| [m.range.start, m.range.end]);
-                let breaks: Vec<usize> = block
-                    .line_breaks
-                    .iter()
-                    .copied()
-                    .chain(marks)
-                    .filter(|&at| sentence.range.start < at && at < sentence.range.end)
-                    .map(|at| at - sentence.range.start)
-                    .collect();
-                let candidates = self.find(text, &breaks);
+                let candidates = self.find(text, &breaks_within(&cuts, &sentence.range));
                 // 中国語の文 (かながなく、日本語では使わない簡体字を含む) の漢字の連なりは、
                 // 語の切れ目を補って開く日本語の連続漢字ではない
                 if candidates.is_empty() || text::is_chinese_sentence(text) {
@@ -221,6 +209,35 @@ impl Rule for KanjiRun {
             }
         }
     }
+}
+
+/// ブロックの中の語の切れ目 (解析用テキスト上の位置、昇順・重複なし)。原文の改行と、太字・斜体・
+/// 取り消し線・リンクの境目は、読み手には語の切れ目として見える。
+fn word_breaks(block: &Block) -> Vec<usize> {
+    let marks = block
+        .marks
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.kind,
+                MarkKind::Strong | MarkKind::Emphasis | MarkKind::Strikethrough | MarkKind::Link
+            )
+        })
+        .flat_map(|m| [m.range.start, m.range.end]);
+    let mut cuts: Vec<usize> = block.line_breaks.iter().copied().chain(marks).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts
+}
+
+/// 切れ目 `cuts` (昇順) のうち、文 `range` の内側 (文の頭と終わりを除く) にあるものを、文の中の
+/// 位置にして返す。
+fn breaks_within(cuts: &[usize], range: &Range<usize>) -> Vec<usize> {
+    cuts[cuts.partition_point(|&at| at <= range.start)..]
+        .iter()
+        .take_while(|&&at| at < range.end)
+        .map(|&at| at - range.start)
+        .collect()
 }
 
 /// `range` に重なる形態素に固有名詞があるか。
@@ -682,6 +699,8 @@ AI らしさの判定ではなく、読みやすさの指摘です。辞書を�
 
 形の上では否定が 2 つあっても、読み手が符号を計算しない次の形は拾いません。義務・許可の定型 (「〜ないといけない」「〜なければならない」「〜ざるを得ない」「〜なくても構わない」)、必要条件を述べる条件形 (「〜ないと動かない」「〜なければ意味がない」)、推量 (「〜ないかもしれない」)、否定の連体修飾に否定の述語が続くだけの形 (「〜ない人間ではない」)、読点で区切った別々の否定 (「〜ず、〜ない」) です。「〜ないのではないか」「〜ないではないか」「〜ない人はいないか」のように文末が問いや念押しになる形も、否定を 2 回計算させないので除きます。「危なくはない」「少ない人はいない」のように「ない」が否定でない形容詞も除きます。
 
+ただし、「何を見るか」の最初に挙げた「〜ないわけではない」から「〜ないこともない」までの形は、文末が問いや念押しでも指摘します (「知らないわけではないか」など)。前の否定が過去形の「〜なかったわけではない」などには、ほかの形と同じく 2 つの除外を当てます。「ない」が否定でない形容詞の除外も、これらの形では「なく」で始まる「〜なくはない」「〜なくもない」(「危なくはない」) にだけ当てます。「少ないわけではない」「危ないとは言えない」は指摘します。
+
 慣用の言い回しと引用符の内側を除くと、人の文書 176 本の指摘は 44 件から 23 件に、生成文書 1,729 本の指摘は 30 件から 20 件になりました。外れたのは「〜ずにはいられない」「〜ないわけにはいかない」「〜ないではいられない」の形 (人の文書 21 件・生成文書 7 件) と、引用符の内側の言い回し (生成文書 3 件) です。言い回しを「」で並べて説明する文書では、引用符の内側の 19 件が外れました。",
 };
 
@@ -892,6 +911,7 @@ impl Rule for DoubleNegative {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::Document;
     use crate::morph::testing::morphology;
     use crate::rules::testing::{matched, run, run_with_morphology};
 
@@ -933,6 +953,112 @@ mod tests {
             matched(md, &run(&KanjiRun::default(), md)),
             vec!["顧客情報統合管理基盤"]
         );
+    }
+
+    /// 切れ目をブロックごとに 1 度だけ並べて文ごとに切り出しても、文ごとにブロックの改行と装飾を
+    /// すべて見ていたときと同じ切れ目になる。
+    #[test]
+    fn p15_breaks_are_sliced_per_sentence_like_a_full_scan() {
+        for md in [
+            "今回は\n顧客情報統合管理基盤を移す。次は\n対談記事\n面談記録を読む。\n",
+            "目的:**売上計画**達成*期間*:[来年度計画](https://example.com)を作る。~~旧来計画~~は\n捨てる。\n",
+            "[**顧客情報**統合](https://example.com)管理基盤。*情報*\n統合**管理**基盤移行計画を作る。\n",
+            "今日は晴れた。\n今日は晴れた。\n今日は晴れた。\n",
+        ] {
+            let doc = Document::markdown(md);
+            for (idx, block) in doc.blocks.iter().enumerate() {
+                let cuts = word_breaks(block);
+                assert!(cuts.windows(2).all(|w| w[0] < w[1]), "{md}: {cuts:?}");
+                for s in doc.block_sentences(idx) {
+                    let range = &s.range;
+                    // 以前の数え方: 文ごとにブロックの改行と装飾をすべて見る
+                    let mut scanned: Vec<usize> = block
+                        .line_breaks
+                        .iter()
+                        .copied()
+                        .chain(
+                            block
+                                .marks
+                                .iter()
+                                .filter(|m| {
+                                    matches!(
+                                        m.kind,
+                                        MarkKind::Strong
+                                            | MarkKind::Emphasis
+                                            | MarkKind::Strikethrough
+                                            | MarkKind::Link
+                                    )
+                                })
+                                .flat_map(|m| [m.range.start, m.range.end]),
+                        )
+                        .filter(|&at| range.start < at && at < range.end)
+                        .map(|at| at - range.start)
+                        .collect();
+                    scanned.sort_unstable();
+                    scanned.dedup();
+                    assert_eq!(breaks_within(&cuts, range), scanned, "{md}: {range:?}");
+                }
+            }
+        }
+        // 空の範囲や、切れ目と重なる文の頭と終わりでも切り出せる
+        assert_eq!(breaks_within(&[3, 5, 9], &(5..5)), Vec::<usize>::new());
+        assert_eq!(breaks_within(&[3, 5, 9], &(3..9)), vec![2]);
+        assert_eq!(breaks_within(&[], &(0..4)), Vec::<usize>::new());
+    }
+
+    /// 切れ目を順に追っても、字ごとに切れ目の一覧を探していたときと同じ連なりになる
+    /// (文字の境目でない位置の切れ目は、どちらでも使われない)。
+    #[test]
+    fn p15_find_follows_sorted_breaks_like_a_lookup() {
+        let rule = KanjiRun { min_length: 3 };
+        let sample = "顧客情報、統合管理基盤を移行計画に。研究所運営委員会の会議資料。";
+        // 以前の探し方: 字ごとに切れ目の一覧を探す
+        let by_lookup = |breaks: &[usize]| {
+            let mut out = Vec::new();
+            let mut run: Option<(usize, usize, usize)> = None;
+            let mut flush = |run: &mut Option<(usize, usize, usize)>| {
+                if let Some((s, e, n)) = run.take()
+                    && n >= rule.min_length
+                {
+                    let word = &sample[s..e];
+                    if !(INSTITUTION_SUFFIXES.iter().any(|x| word.ends_with(x))
+                        || INSTITUTION_PREFIXES.iter().any(|x| word.starts_with(x)))
+                    {
+                        out.push((s..e, n));
+                    }
+                }
+            };
+            for (i, c) in sample.char_indices() {
+                if breaks.contains(&i) {
+                    flush(&mut run);
+                }
+                if text::is_kanji(c) {
+                    run = Some(match run {
+                        Some((s, _, n)) => (s, i + c.len_utf8(), n + 1),
+                        None => (i, i + c.len_utf8(), 1),
+                    });
+                } else {
+                    flush(&mut run);
+                }
+            }
+            flush(&mut run);
+            out
+        };
+        // 決まった種から作る切れ目の組 (字の境目と、字の途中の位置を混ぜる)
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..200 {
+            let mut breaks: Vec<usize> = (0..6)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    (seed % (sample.len() as u64 + 1)) as usize
+                })
+                .collect();
+            breaks.sort_unstable();
+            breaks.dedup();
+            assert_eq!(rule.find(sample, &breaks), by_lookup(&breaks), "{breaks:?}");
+        }
     }
 
     #[test]
@@ -1546,6 +1672,31 @@ mod tests {
         assert_eq!(
             matched(md, &run(&DoubleNegative, md)),
             vec!["なかった人はいません**でした"]
+        );
+    }
+
+    /// 説明文の「根拠」のとおり、はじめからある 4 つの定型 (`guarded` が偽の型) には文末の問いの
+    /// 除外を当てず、形容詞の除外は「なく」で始まる形にだけ当てる。
+    #[test]
+    fn p17_original_forms_apply_only_the_documented_exclusions() {
+        for (md, expected) in [
+            ("量が少ないわけではない。\n", vec!["ないわけではない"]),
+            ("この道が危ないとは言えない。\n", vec!["ないとは言えない"]),
+            ("知らないわけではないか。\n", vec!["ないわけではない"]),
+            ("できなくはないか。\n", vec!["なくはない"]),
+            ("この道は危なくはない。\n", vec![]),
+            ("量は少なくもない。\n", vec![]),
+            // 前の否定が過去形の形には、どちらの除外も当てる
+            ("知らなかったわけではないか。\n", vec![]),
+            ("量が少なかったわけではない。\n", vec![]),
+        ] {
+            assert_eq!(matched(md, &run(&DoubleNegative, md)), expected, "{md}");
+        }
+        let explanation = P17_META.explanation;
+        assert!(
+            explanation.contains("文末が問いや念押しでも指摘します")
+                && explanation.contains("「少ないわけではない」「危ないとは言えない」は指摘します"),
+            "{explanation}"
         );
     }
 

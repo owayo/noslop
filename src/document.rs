@@ -600,6 +600,8 @@ pub(crate) fn split_sentences(blocks: &mut [Block], options: &ParseOptions) -> V
     let mut sentences = Vec::new();
     for (idx, block) in blocks.iter_mut().enumerate() {
         let begin = sentences.len();
+        // ラベルの行の判定に使う改行と太字の位置 (要る文が出たときに、ブロックごとに 1 度だけ並べる)
+        let mut lines = None;
         for piece in segment::split(
             &block.text,
             &block.line_breaks,
@@ -613,7 +615,7 @@ pub(crate) fn split_sentences(blocks: &mut [Block], options: &ParseOptions) -> V
                 length: text::reading_length(body),
                 japanese: text::contains_japanese(body),
                 embedded_enders: piece.embedded_enders,
-                label_value: is_label_value(block, &piece.range),
+                label_value: is_label_value(block, &mut lines, &piece.range),
                 range: piece.range,
                 span,
             });
@@ -621,6 +623,52 @@ pub(crate) fn split_sentences(blocks: &mut [Block], options: &ParseOptions) -> V
         block.sentences = begin..sentences.len();
     }
     sentences
+}
+
+/// ラベルの行の判定に使う、ブロックの改行と太字の位置。ブロックごとに 1 度だけ並べ、文と行ごとには
+/// 二分探索で引く (文ごとにブロックの改行や太字をすべて見ると、空行のない長い段落で文や行の数の
+/// 2 乗の時間がかかる)。
+struct BlockLines {
+    /// 原文の改行の位置 (昇順・重複なし)。
+    breaks: Vec<usize>,
+    /// 太字の始まりの位置 (昇順)。
+    strong_starts: Vec<usize>,
+    /// `strong_starts` の同じ添字までに始まる太字の、終わりの位置の最大値。
+    strong_reach: Vec<usize>,
+}
+
+impl BlockLines {
+    fn new(block: &Block) -> Self {
+        let mut breaks = block.line_breaks.clone();
+        breaks.sort_unstable();
+        breaks.dedup();
+        let mut strong: Vec<(usize, usize)> = block
+            .marks
+            .iter()
+            .filter(|m| m.kind == MarkKind::Strong)
+            .map(|m| (m.range.start, m.range.end))
+            .collect();
+        strong.sort_unstable();
+        let strong_starts = strong.iter().map(|&(start, _)| start).collect();
+        let strong_reach = strong
+            .iter()
+            .scan(0, |reach, &(_, end)| {
+                *reach = end.max(*reach);
+                Some(*reach)
+            })
+            .collect();
+        Self {
+            breaks,
+            strong_starts,
+            strong_reach,
+        }
+    }
+
+    /// `start` 以前に始まり、`end` 以降まで続く太字があるか。
+    fn strong_covers(&self, start: usize, end: usize) -> bool {
+        let n = self.strong_starts.partition_point(|&at| at <= start);
+        n > 0 && self.strong_reach[n - 1] >= end
+    }
 }
 
 /// ラベルとみなす字数の上限 (コロンの前の字数)。
@@ -636,7 +684,9 @@ const MAX_LABEL_CHARS: usize = 20;
 /// - 文に含まれる行がどれも、ラベルとコロンに値が続く形 ([`labeled_line`])。ソフト改行で
 ///   つながった複数の行は、すべての行が項目のときだけ項目の並びとみなす (「担当：総務部」に
 ///   改行で続けた本文の行まで外さないため)
-fn is_label_value(block: &Block, range: &Range<usize>) -> bool {
+///
+/// `lines` はブロックの改行と太字の位置で、最初に要ったときに作ってブロックの中の文で使い回す。
+fn is_label_value(block: &Block, lines: &mut Option<BlockLines>, range: &Range<usize>) -> bool {
     let text = &block.text;
     let Some(body) = text.get(range.clone()) else {
         return false;
@@ -649,42 +699,29 @@ fn is_label_value(block: &Block, range: &Range<usize>) -> bool {
     {
         return false;
     }
+    let lines = lines.get_or_insert_with(|| BlockLines::new(block));
+    let breaks = &lines.breaks;
+    // 文の頭以前の改行の数と、文の終わりより前の改行の数
+    let before = breaks.partition_point(|&at| at <= range.start);
+    let within = breaks.partition_point(|&at| at < range.end).max(before);
     // 文の中の行の境目 (文の頭と終わりを含む)
-    let mut bounds: Vec<usize> = block
-        .line_breaks
-        .iter()
-        .copied()
-        .filter(|&at| range.start < at && at < range.end)
+    let bounds: Vec<usize> = std::iter::once(range.start)
+        .chain(breaks[before..within].iter().copied())
+        .chain(std::iter::once(range.end))
         .collect();
-    bounds.sort_unstable();
-    bounds.dedup();
-    bounds.insert(0, range.start);
-    bounds.push(range.end);
     // 先頭の行から見る (コロンのない大半の文は、改行の位置を調べずに済む)
-    if !labeled_line(block, bounds[0]..bounds[1]) {
+    if !labeled_line(block, lines, bounds[0]..bounds[1]) {
         return false;
     }
-    let line_start = block
-        .line_breaks
-        .iter()
-        .copied()
-        .filter(|&at| at <= range.start)
-        .max()
-        .unwrap_or(0);
-    let line_end = block
-        .line_breaks
-        .iter()
-        .copied()
-        .filter(|&at| at >= range.end)
-        .min()
-        .unwrap_or(text.len());
+    let line_start = before.checked_sub(1).map_or(0, |i| breaks[i]);
+    let line_end = breaks.get(within).copied().unwrap_or(text.len());
     let blank = |r: Range<usize>| text.get(r).is_some_and(|s| s.trim().is_empty());
     blank(line_start..range.start)
         && blank(range.end..line_end)
         && bounds
             .windows(2)
             .skip(1)
-            .all(|w| labeled_line(block, w[0]..w[1]))
+            .all(|w| labeled_line(block, lines, w[0]..w[1]))
 }
 
 /// ブロックの解析用テキストの `range` の 1 行 (前後の空白は除いて見る) が、ラベルとコロンに値が
@@ -694,7 +731,7 @@ fn is_label_value(block: &Block, range: &Range<usize>) -> bool {
 /// 250名）で〜」のような括弧の中のコロンを除く)。半角のコロンは、直後が空白か、ラベルが太字の中に
 /// あるとき (「**報告日**:」「**報告日:**」「**作成部署:経営企画部**」) だけ区切りとみなす
 /// (「id:cohalz」「10:00」「https://」のような語の中のコロンを除く)。
-fn labeled_line(block: &Block, range: Range<usize>) -> bool {
+fn labeled_line(block: &Block, lines: &BlockLines, range: Range<usize>) -> bool {
     let Some(raw) = block.text.get(range.clone()) else {
         return false;
     };
@@ -724,11 +761,7 @@ fn labeled_line(block: &Block, range: Range<usize>) -> bool {
     }
     if colon == ':' && !value.starts_with(char::is_whitespace) {
         // ラベルの頭からコロンまでを太字が覆うときだけ区切りとみなす
-        let at = start + at;
-        return block
-            .marks
-            .iter()
-            .any(|m| m.kind == MarkKind::Strong && m.range.start <= start && m.range.end >= at);
+        return lines.strong_covers(start, start + at);
     }
     true
 }
@@ -1017,6 +1050,142 @@ mod tests {
                 ("注意：再起動が必要".to_string(), false)
             ]
         );
+    }
+
+    /// 以前の判定 (文ごとにブロックの改行と太字をすべて見る)。結果が変わらないことを確かめるために残す。
+    fn label_value_by_full_scan(block: &Block, range: &Range<usize>) -> bool {
+        let labeled = |range: Range<usize>| {
+            let Some(raw) = block.text.get(range.clone()) else {
+                return false;
+            };
+            let line = raw.trim_start();
+            let start = range.start + (raw.len() - line.len());
+            let line = line.trim_end();
+            let Some((at, colon)) = line
+                .char_indices()
+                .take(MAX_LABEL_CHARS + 1)
+                .find(|&(_, c)| matches!(c, ':' | '：'))
+            else {
+                return false;
+            };
+            let label = &line[..at];
+            let value = &line[at + colon.len_utf8()..];
+            if label.is_empty()
+                || value.trim().is_empty()
+                || label.chars().any(|c| {
+                    c.is_whitespace() || text::is_comma(c) || matches!(c, '。' | '．' | ',')
+                })
+                || !label
+                    .chars()
+                    .any(|c| text::is_japanese(c) || c.is_ascii_alphabetic())
+                || !brackets_closed(label)
+            {
+                return false;
+            }
+            if colon == ':' && !value.starts_with(char::is_whitespace) {
+                let at = start + at;
+                return block.marks.iter().any(|m| {
+                    m.kind == MarkKind::Strong && m.range.start <= start && m.range.end >= at
+                });
+            }
+            true
+        };
+        let text = &block.text;
+        let Some(body) = text.get(range.clone()) else {
+            return false;
+        };
+        if body
+            .trim_end()
+            .chars()
+            .next_back()
+            .is_none_or(text::is_sentence_ender)
+        {
+            return false;
+        }
+        let mut bounds: Vec<usize> = block
+            .line_breaks
+            .iter()
+            .copied()
+            .filter(|&at| range.start < at && at < range.end)
+            .collect();
+        bounds.sort_unstable();
+        bounds.dedup();
+        bounds.insert(0, range.start);
+        bounds.push(range.end);
+        if !labeled(bounds[0]..bounds[1]) {
+            return false;
+        }
+        let line_start = block
+            .line_breaks
+            .iter()
+            .copied()
+            .filter(|&at| at <= range.start)
+            .max()
+            .unwrap_or(0);
+        let line_end = block
+            .line_breaks
+            .iter()
+            .copied()
+            .filter(|&at| at >= range.end)
+            .min()
+            .unwrap_or(text.len());
+        let blank = |r: Range<usize>| text.get(r).is_some_and(|s| s.trim().is_empty());
+        blank(line_start..range.start)
+            && blank(range.end..line_end)
+            && bounds.windows(2).skip(1).all(|w| labeled(w[0]..w[1]))
+    }
+
+    /// 改行と太字の位置をブロックごとに 1 度だけ並べて引いても、文ごとにすべて見ていたときと同じ
+    /// 文が「ラベル: 値」の行になる。
+    #[test]
+    fn label_values_match_the_full_scan() {
+        const LINES: &[&str] = &[
+            "**報告日**: 2026年10月1日",
+            "**作成者:** 総務部",
+            "**分類**:社内限定",
+            "**作成部署:経営企画部 業務改善推進課**",
+            "出典：社内の調査",
+            "特長（速さ）：待たずに済む",
+            "担当：総務部",
+            "担当はid:cohalzさん",
+            "開場は10:00から",
+            "今月は問い合わせ件数が増加",
+            "申請の手順を見直した。窓口は一本化する。",
+            "設定を保存した。注意：再起動が必要",
+            "全社（対象：250名）で集計した結果",
+            "**添付資料：**",
+            "**第一段階：個別連絡**",
+            "メール: you@example.com",
+        ];
+        const JOINS: &[&str] = &["\n", "\n", "  \n", "\n\n"];
+        let mut seed: u64 = 0xd1b5_4a32_d192_ed03;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let mut labels = 0;
+        for _ in 0..400 {
+            let mut src = String::new();
+            for _ in 0..1 + next(10) {
+                src.push_str(LINES[next(LINES.len())]);
+                src.push_str(JOINS[next(JOINS.len())]);
+            }
+            let doc = Document::markdown(&src);
+            for s in &doc.sentences {
+                let expected = label_value_by_full_scan(&doc.blocks[s.block], &s.range);
+                assert_eq!(
+                    s.label_value,
+                    expected,
+                    "{src:?}: {:?}",
+                    doc.sentence_text(s)
+                );
+                labels += usize::from(expected);
+            }
+        }
+        // 「ラベル: 値」の行も、そうでない行も含まれている
+        assert!(labels > 100, "{labels}");
     }
 
     #[test]

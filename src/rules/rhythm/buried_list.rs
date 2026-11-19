@@ -1,5 +1,6 @@
 //! R04 BURIED_LIST: 同格の項目が読点でつながれ、一文に埋まっている。
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::diagnostic::{Diagnostic, Lane, Severity};
@@ -100,45 +101,44 @@ impl BuriedList {
     }
 
     /// 文の中で最も項目の多い列挙 (区画の範囲, 項目数) を探す。
+    ///
+    /// 続いている項目の始まりと、項目の長さの最短・最長を持ち回る (項目が増えるたびに先頭の項目から
+    /// 長さを数え直すと、読点の多い文で区画の数の 2 乗の時間がかかる)。
     fn best_run(&self, sentence: &str) -> Option<(Range<usize>, usize)> {
         let segments = split_segments(sentence);
         if segments.len() < 3 {
             return None;
         }
-        let items: Vec<bool> = segments
-            .iter()
-            .map(|r| is_list_item(&sentence[r.clone()]))
-            .collect();
         let mut best: Option<(Range<usize>, usize)> = None;
-        let mut run_start: Option<usize> = None;
-        for idx in 0..segments.len() {
-            if items[idx] {
-                let start = *run_start.get_or_insert(idx);
-                let has_tail = idx + 1 < segments.len();
-                let run_len = idx - start + 1;
-                if has_tail && run_len >= 2 && self.parallel(sentence, &segments[start..=idx]) {
-                    let count = run_len + 1;
-                    if best.as_ref().is_none_or(|(_, n)| count > *n) {
-                        let tail = &segments[idx + 1];
-                        best = Some((segments[start].start..tail.end, count));
-                    }
+        // 続いている項目の (始まりの区画, 最短の字数, 最長の字数)
+        let mut run: Option<(usize, usize, usize)> = None;
+        for (idx, segment) in segments.iter().enumerate() {
+            let item = &sentence[segment.clone()];
+            if !is_list_item(item) {
+                run = None;
+                continue;
+            }
+            let length = item.trim().chars().count();
+            let (start, min, max) = match run {
+                Some((start, min, max)) => (start, min.min(length), max.max(length)),
+                None => (idx, length, length),
+            };
+            run = Some((start, min, max));
+            let has_tail = idx + 1 < segments.len();
+            let run_len = idx - start + 1;
+            if has_tail && run_len >= 2 && self.parallel(min, max) {
+                let count = run_len + 1;
+                if best.as_ref().is_none_or(|(_, n)| count > *n) {
+                    let tail = &segments[idx + 1];
+                    best = Some((segments[start].start..tail.end, count));
                 }
-            } else {
-                run_start = None;
             }
         }
         best
     }
 
-    /// 項目の長さがそろっているか (並列の列挙らしいか)。
-    fn parallel(&self, sentence: &str, items: &[Range<usize>]) -> bool {
-        let lengths: Vec<usize> = items
-            .iter()
-            .map(|r| sentence[r.clone()].trim().chars().count())
-            .collect();
-        let (Some(&min), Some(&max)) = (lengths.iter().min(), lengths.iter().max()) else {
-            return false;
-        };
+    /// 項目の長さ (字数) の最短 `min` と最長 `max` がそろっているか (並列の列挙らしいか)。
+    fn parallel(&self, min: usize, max: usize) -> bool {
         min > 0 && (max as f64) / (min as f64) <= self.max_length_ratio
     }
 }
@@ -148,7 +148,10 @@ impl BuriedList {
 /// 括弧の内側の読点では区切らない。括弧の中だけで完結する列挙を、外側の文の列挙と
 /// 取り違えないためである。対応の取れない括弧はただの文字として扱う。
 fn split_segments(sentence: &str) -> Vec<Range<usize>> {
-    let protected = bracket_ranges(sentence);
+    // 括弧の範囲は、重なるものをまとめて始まりの順に並べ、読点の位置に合わせて順に追う
+    // (読点ごとにすべての範囲を探すと、括弧と読点の多い文で 2 つの数の積の時間がかかる)
+    let protected = merge_ranges(bracket_ranges(sentence));
+    let mut next = 0;
     let mut out = Vec::new();
     let mut start = 0;
     let mut push = |range: Range<usize>| {
@@ -160,7 +163,13 @@ fn split_segments(sentence: &str) -> Vec<Range<usize>> {
         }
     };
     for (i, c) in sentence.char_indices() {
-        if text::is_comma(c) && !protected.iter().any(|r| r.contains(&i)) {
+        if !text::is_comma(c) {
+            continue;
+        }
+        while protected.get(next).is_some_and(|r| r.end <= i) {
+            next += 1;
+        }
+        if !protected.get(next).is_some_and(|r| r.contains(&i)) {
             push(start..i);
             start = i + c.len_utf8();
         }
@@ -169,18 +178,44 @@ fn split_segments(sentence: &str) -> Vec<Range<usize>> {
     out
 }
 
+/// 範囲を始まりの順に並べ、重なるか接するものを 1 つにまとめる (どれかの範囲に入る位置は変わらない)。
+fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_unstable_by_key(|r| r.start);
+    let mut out: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
 /// 対応の取れた括弧の範囲 (開き括弧から閉じ括弧まで)。
+///
+/// 閉じ括弧は、同じ種類で最も内側の (最後に開いた) 開き括弧と対にし、その内側で閉じていない
+/// 開き括弧は捨てる。
 fn bracket_ranges(sentence: &str) -> Vec<Range<usize>> {
     let mut stack: Vec<(char, usize)> = Vec::new();
+    // 閉じ括弧の字ごとの、その字で閉じる開き括弧の `stack` 上の添字 (昇順)。閉じ括弧ごとに `stack`
+    // 全体を探さないため (閉じていない開き括弧が積もった文で、括弧の数の 2 乗の時間がかかる)
+    let mut opened: HashMap<char, Vec<usize>> = HashMap::new();
     let mut ranges = Vec::new();
     for (i, c) in sentence.char_indices() {
         if let Some(close) = text::closing_bracket(c) {
+            opened.entry(close).or_default().push(stack.len());
             stack.push((close, i));
         } else if text::is_closing_bracket(c)
-            && let Some(k) = stack.iter().rposition(|&(close, _)| close == c)
+            && let Some(&k) = opened.get(&c).and_then(|at| at.last())
         {
             ranges.push(stack[k].1..i + c.len_utf8());
-            stack.truncate(k);
+            // 対にした開き括弧から上を捨て、字ごとの添字からも外す (上から順に外すので、どれも
+            // その字の添字の末尾にある)
+            for (close, _) in stack.drain(k..).rev() {
+                if let Some(at) = opened.get_mut(&close) {
+                    at.pop();
+                }
+            }
         }
     }
     ranges
@@ -203,7 +238,25 @@ fn is_list_item(segment: &str) -> bool {
 }
 
 /// 末尾の括弧のまとまり (「確認ポイント（前面に出るか）」の括弧部分) を取り除く。
+///
+/// 末尾の閉じ括弧ごとに、同じ種類の対応する開き括弧まで落とす (見つからなければ閉じ括弧だけを
+/// 落とす)。対応は同じ種類の括弧だけで数え、閉じ括弧より前の部分だけで決まる。
 fn strip_trailing_brackets(s: &str) -> &str {
+    if !s.chars().next_back().is_some_and(text::is_closing_bracket) {
+        return s;
+    }
+    // 閉じ括弧の位置 → 対応する開き括弧の位置。前から 1 度だけ求める (閉じ括弧ごとに後ろから
+    // 遡ると、対のない閉じ括弧が続く区画で、その数の 2 乗の時間がかかる)
+    let mut opened: HashMap<char, Vec<usize>> = HashMap::new();
+    let mut pairs: HashMap<usize, Option<usize>> = HashMap::new();
+    for (i, c) in s.char_indices() {
+        if let Some(close) = text::closing_bracket(c) {
+            opened.entry(close).or_default().push(i);
+        } else if text::is_closing_bracket(c) {
+            pairs.insert(i, opened.get_mut(&c).and_then(Vec::pop));
+        }
+    }
+    // 落とした後の文字列は、いつも元の文字列の先頭からの部分になる
     let mut s = s;
     loop {
         let Some(last) = s.chars().next_back() else {
@@ -212,22 +265,9 @@ fn strip_trailing_brackets(s: &str) -> &str {
         if !text::is_closing_bracket(last) {
             return s;
         }
-        // 同じ種類の開き括弧まで遡る (見つからなければ閉じ括弧だけを落とす)
-        let body = &s[..s.len() - last.len_utf8()];
-        let mut depth = 1usize;
-        let mut cut = None;
-        for (i, c) in body.char_indices().rev() {
-            if c == last {
-                depth += 1;
-            } else if text::closing_bracket(c) == Some(last) {
-                depth -= 1;
-                if depth == 0 {
-                    cut = Some(i);
-                    break;
-                }
-            }
-        }
-        s = match cut {
+        let at = s.len() - last.len_utf8();
+        let body = &s[..at];
+        s = match pairs.get(&at).copied().flatten() {
             Some(i) => body[..i].trim_end(),
             None => body.trim_end(),
         };
@@ -447,5 +487,195 @@ mod tests {
                 .is_err()
         );
         assert!(r.configure("z", &toml::Value::Integer(1)).is_err());
+    }
+
+    /// 以前の実装 (区画・括弧の数の 2 乗の時間がかかる)。結果が変わらないことを確かめるために残す。
+    mod before {
+        use super::super::*;
+
+        pub fn best_run(rule: &BuriedList, sentence: &str) -> Option<(Range<usize>, usize)> {
+            let segments = split_segments(sentence);
+            if segments.len() < 3 {
+                return None;
+            }
+            let items: Vec<bool> = segments
+                .iter()
+                .map(|r| is_list_item(&sentence[r.clone()]))
+                .collect();
+            let parallel = |items: &[Range<usize>]| {
+                let lengths: Vec<usize> = items
+                    .iter()
+                    .map(|r| sentence[r.clone()].trim().chars().count())
+                    .collect();
+                let (Some(&min), Some(&max)) = (lengths.iter().min(), lengths.iter().max()) else {
+                    return false;
+                };
+                min > 0 && (max as f64) / (min as f64) <= rule.max_length_ratio
+            };
+            let mut best: Option<(Range<usize>, usize)> = None;
+            let mut run_start: Option<usize> = None;
+            for idx in 0..segments.len() {
+                if items[idx] {
+                    let start = *run_start.get_or_insert(idx);
+                    let has_tail = idx + 1 < segments.len();
+                    let run_len = idx - start + 1;
+                    if has_tail && run_len >= 2 && parallel(&segments[start..=idx]) {
+                        let count = run_len + 1;
+                        if best.as_ref().is_none_or(|(_, n)| count > *n) {
+                            best = Some((segments[start].start..segments[idx + 1].end, count));
+                        }
+                    }
+                } else {
+                    run_start = None;
+                }
+            }
+            best
+        }
+
+        pub fn split_segments(sentence: &str) -> Vec<Range<usize>> {
+            let protected = bracket_ranges(sentence);
+            let mut out = Vec::new();
+            let mut start = 0;
+            let mut push = |range: Range<usize>| {
+                let s = &sentence[range.clone()];
+                let lead = s.len() - s.trim_start().len();
+                let trail = s.len() - s.trim_end().len();
+                if lead + trail < s.len() {
+                    out.push((range.start + lead)..(range.end - trail));
+                }
+            };
+            for (i, c) in sentence.char_indices() {
+                if text::is_comma(c) && !protected.iter().any(|r| r.contains(&i)) {
+                    push(start..i);
+                    start = i + c.len_utf8();
+                }
+            }
+            push(start..sentence.len());
+            out
+        }
+
+        pub fn bracket_ranges(sentence: &str) -> Vec<Range<usize>> {
+            let mut stack: Vec<(char, usize)> = Vec::new();
+            let mut ranges = Vec::new();
+            for (i, c) in sentence.char_indices() {
+                if let Some(close) = text::closing_bracket(c) {
+                    stack.push((close, i));
+                } else if text::is_closing_bracket(c)
+                    && let Some(k) = stack.iter().rposition(|&(close, _)| close == c)
+                {
+                    ranges.push(stack[k].1..i + c.len_utf8());
+                    stack.truncate(k);
+                }
+            }
+            ranges
+        }
+
+        fn is_list_item(segment: &str) -> bool {
+            let body = strip_trailing_brackets(segment.trim());
+            let chars = body.chars().count();
+            if body.is_empty() || chars > MAX_ITEM_CHARS {
+                return false;
+            }
+            if ADVERBIAL_NOUNS.contains(&body) || is_numeric_only(body) {
+                return false;
+            }
+            if chars >= CLAUSE_MIN_CHARS && CLAUSE_SUFFIXES.iter().any(|s| body.ends_with(s)) {
+                return false;
+            }
+            body.chars().next_back().is_some_and(is_nounish)
+        }
+
+        pub fn strip_trailing_brackets(s: &str) -> &str {
+            let mut s = s;
+            loop {
+                let Some(last) = s.chars().next_back() else {
+                    return s;
+                };
+                if !text::is_closing_bracket(last) {
+                    return s;
+                }
+                let body = &s[..s.len() - last.len_utf8()];
+                let mut depth = 1usize;
+                let mut cut = None;
+                for (i, c) in body.char_indices().rev() {
+                    if c == last {
+                        depth += 1;
+                    } else if text::closing_bracket(c) == Some(last) {
+                        depth -= 1;
+                        if depth == 0 {
+                            cut = Some(i);
+                            break;
+                        }
+                    }
+                }
+                s = match cut {
+                    Some(i) => body[..i].trim_end(),
+                    None => body.trim_end(),
+                };
+            }
+        }
+    }
+
+    /// 決まった種から、読点・括弧・名詞らしい字・空白を混ぜた文を作る。
+    fn generated_sentences() -> Vec<String> {
+        const CHARS: &[char] = &[
+            '東', '京', '大', '阪', '名', '屋', 'の', 'を', '回', 'る', 'ア', 'イ', 'A', '1', '２',
+            '年', '月', '、', '、', '、', '，', '､', '（', '）', '（', '）', '「', '」', '(', ')',
+            '〝', '〟', '〞', '［', '］', '【', '】', ' ', '　', '。',
+        ];
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        (0..1000)
+            .map(|_| {
+                let len = next(80);
+                (0..len).map(|_| CHARS[next(CHARS.len())]).collect()
+            })
+            .collect()
+    }
+
+    /// 項目の長さと括弧の対応を前から 1 度だけ求めても、以前の数え方と同じ結果になる。
+    #[test]
+    fn linear_scans_match_the_previous_implementation() {
+        let rules: Vec<BuriedList> = [4.0, 2.0, 1.0]
+            .into_iter()
+            .map(|ratio| BuriedList {
+                max_length_ratio: ratio,
+                ..rule()
+            })
+            .collect();
+        let mut runs = 0;
+        for sentence in generated_sentences() {
+            let s = sentence.as_str();
+            assert_eq!(bracket_ranges(s), before::bracket_ranges(s), "{s}");
+            assert_eq!(split_segments(s), before::split_segments(s), "{s}");
+            for part in [s, s.trim()] {
+                assert_eq!(
+                    strip_trailing_brackets(part),
+                    before::strip_trailing_brackets(part),
+                    "{part}"
+                );
+            }
+            for r in &rules {
+                let found = r.best_run(s);
+                assert_eq!(found, before::best_run(r, s), "{s}");
+                runs += usize::from(found.is_some());
+            }
+        }
+        // 列挙として見つかる文も含まれている
+        assert!(runs > 100, "{runs}");
+        // 閉じていない開き括弧が積もった後の閉じ括弧と、対のない閉じ括弧が続く区画
+        for s in [
+            "（（（「」」、東京、大阪、名古屋を回る。",
+            "東京）））、大阪（、名古屋」」を回る。",
+            "〝東京〞、〝大阪〟、（名古屋）（補足）、福岡を回る。",
+        ] {
+            assert_eq!(split_segments(s), before::split_segments(s), "{s}");
+            assert_eq!(rule().best_run(s), before::best_run(&rule(), s), "{s}");
+        }
     }
 }
