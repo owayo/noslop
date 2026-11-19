@@ -830,9 +830,14 @@ pub(crate) fn config_engine_options(cfg: &ConfigLayers, env: &Environment) -> En
 }
 
 /// 独自ルールを重ねる。両方の設定のものを使い、同じ ID (大文字小文字は区別しない) はプロジェクトの
-/// 定義で丸ごと置き換える。
+/// 定義で丸ごと置き換える。ID は、独自ルールを作るとき (`CustomRule::from_config`) と同じく前後の
+/// 空白を除いて比べる (`"X01"` と `"X01 "` は同じルール)。
 fn merge_custom(user: &[CustomRuleConfig], project: &[CustomRuleConfig]) -> Vec<CustomRuleConfig> {
-    let replaced = |c: &CustomRuleConfig| project.iter().any(|p| p.id.eq_ignore_ascii_case(&c.id));
+    let replaced = |c: &CustomRuleConfig| {
+        project
+            .iter()
+            .any(|p| p.id.trim().eq_ignore_ascii_case(c.id.trim()))
+    };
     user.iter()
         .filter(|c| !replaced(c))
         .chain(project)
@@ -2014,6 +2019,33 @@ mode = "required"
         assert_eq!(o.genre, Genre::General);
         assert_eq!(o.morphology.dictionary, DictionaryChoice::Auto);
         assert!(o.custom.is_empty());
+    }
+
+    /// 独自ルールの ID は、独自ルールを作るときと同じく前後の空白を除いて重ねる。
+    #[test]
+    fn custom_rule_ids_are_layered_without_surrounding_whitespace() {
+        let custom = |id: &str, message: &str| {
+            format!("[[custom]]\nid = \"{id}\"\npattern = \"{message}\"\nmessage = \"{message}\"\n")
+        };
+        let layers = ConfigLayers {
+            user: Some(loaded(
+                Path::new("home"),
+                "config.toml",
+                &custom("X01", "user"),
+            )),
+            project: Some(loaded(
+                Path::new("project"),
+                "noslop.toml",
+                &custom(" x01 ", "project"),
+            )),
+        };
+        let mut o = config_engine_options(&layers, &Environment::default());
+        let messages: Vec<&str> = o.custom.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(messages, ["project"]);
+        // 置き換えた後は ID が重ならないので、エンジンを作れる
+        o.selection.only = Some(vec!["X01".to_string()]);
+        let engine = Engine::new(o).unwrap();
+        assert_eq!(engine.active_ids(), ["x01"]);
     }
 
     /// ユーザーの設定は `<home>/.config/noslop/config.toml`。`--config` はプロジェクトの設定だけを
