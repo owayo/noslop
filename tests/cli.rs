@@ -1085,15 +1085,45 @@ fn rules_lists_builtin_and_custom_rules() {
     assert_eq!(x01["lane"], "custom");
     assert_eq!(x01["signal"], serde_json::Value::Null);
     assert_eq!(x01["calibrationBasis"], serde_json::Value::Null);
-    // 組み込みのルールはすべて既定で動き、AI 臭さのレーンだけが手掛かりの強さを持つ
+    // 組み込みのルールは、ジャンルが許す限り既定で動く (試験的に止めておく区分はない)。
+    // ジャンルを限ったルール (随筆だけの R22 など) は、ほかのジャンルでは止まる。
+    // AI 臭さのレーンだけが手掛かりの強さを持つ
     for rule in v["rules"].as_array().unwrap() {
         if rule["builtin"] == true {
-            assert_eq!(rule["enabled"], true, "{rule}");
+            assert_eq!(rule["enabled"], rule["allowedInGenre"], "{rule}");
+            // general で止まる組み込みのルールは、随筆だけの R22 のほかにない
+            if rule["id"] != "R22" {
+                assert_eq!(rule["enabled"], true, "{rule}");
+            }
             assert_eq!(rule["signal"].is_string(), rule["lane"] == "slop", "{rule}");
             assert!(rule["calibrationBasis"].is_string(), "{rule}");
             assert!(rule.get("status").is_none(), "{rule}");
         }
     }
+    let r22 = |v: &serde_json::Value| {
+        v["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "R22")
+            .unwrap()
+            .clone()
+    };
+    // 既定の general では止まる
+    let general = r22(&v);
+    assert_eq!(general["enabled"], false, "{general}");
+    assert_eq!(general["allowedInGenre"], false, "{general}");
+    let essay = noslop()
+        .current_dir(dir.path())
+        .args(["rules", "--format", "json", "--genre", "essay"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let essay = r22(&json(&essay));
+    assert_eq!(essay["enabled"], true, "{essay}");
+    assert_eq!(essay["allowedInGenre"], true, "{essay}");
     noslop()
         .current_dir(dir.path())
         .args(["rules", "--format", "markdown"])
