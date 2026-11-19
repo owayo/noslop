@@ -2,7 +2,49 @@
 //!
 //! 語句ルールが語句への言及を除くときと、`noslop diff` が引用の中の人・担当の語を取らないときに使う。
 
+use std::collections::HashMap;
 use std::ops::Range;
+
+/// まだ閉じていない開き括弧 (引用符) の並び。
+///
+/// 閉じは、対応する最も内側の開きまで戻って閉じる (内側に閉じない括弧が残っていても外側を閉じる)。
+/// 閉じの字ごとに、まだ閉じていない開きの数を持つので、対応する開きのない字では並びを探さない
+/// (閉じない括弧が積み上がった長い段落で、字ごとに並びを探すと二乗になる)。並びを探して閉じた
+/// ときに飛ばした開きは取り除くので、探す手間は全体で入力の長さに比例する。
+#[derive(Debug, Default)]
+pub(crate) struct OpenStack {
+    /// (開きの位置, 対応する閉じの字)。位置は呼び出し側が決める (開きの字の位置か、その直後)。
+    open: Vec<(usize, char)>,
+    waiting: HashMap<char, usize>,
+}
+
+impl OpenStack {
+    pub(crate) fn push(&mut self, at: usize, close: char) {
+        self.open.push((at, close));
+        *self.waiting.entry(close).or_default() += 1;
+    }
+
+    /// `c` で閉じる開きがあれば、それより内側の開きごと閉じて、その開きの位置を返す。
+    pub(crate) fn close(&mut self, c: char) -> Option<usize> {
+        if self.waiting.get(&c).is_none_or(|&n| n == 0) {
+            return None;
+        }
+        let position = self.open.iter().rposition(|&(_, close)| close == c)?;
+        let start = self.open[position].0;
+        for &(_, close) in &self.open[position..] {
+            if let Some(n) = self.waiting.get_mut(&close) {
+                *n -= 1;
+            }
+        }
+        self.open.truncate(position);
+        Some(start)
+    }
+
+    /// 閉じないまま残った開きの位置 (並びの順)。
+    pub(crate) fn unclosed(&self) -> impl Iterator<Item = usize> + '_ {
+        self.open.iter().map(|&(at, _)| at)
+    }
+}
 
 pub(crate) struct QuoteRanges {
     interiors: Vec<Range<usize>>,
@@ -15,17 +57,10 @@ impl QuoteRanges {
     pub(crate) fn new(text: &str) -> Self {
         let mut interiors = Vec::new();
         let mut openings = Vec::new();
-        let mut stack = Vec::new();
+        let mut stack = OpenStack::default();
         for (offset, c) in text.char_indices() {
-            // 非対称の引用符は、内側に別種の未対応の引用符があっても閉じる。閉じの引用符でない字は
-            // 開きの並びを探さない (閉じない引用符が積み上がった長い段落で、字ごとに探すと二乗になる)
-            let closing = matches!(c, '」' | '』' | '”' | '"');
-            if let Some(position) = closing
-                .then(|| stack.iter().rposition(|&(_, close)| close == c))
-                .flatten()
-            {
-                let (start, _) = stack[position];
-                stack.truncate(position);
+            // 非対称の引用符は、内側に別種の未対応の引用符があっても閉じる
+            if let Some(start) = stack.close(c) {
                 interiors.push(start..offset);
             } else if let Some(close) = match c {
                 '「' => Some('」'),
@@ -41,14 +76,14 @@ impl QuoteRanges {
                 _ => None,
             } {
                 let start = offset + c.len_utf8();
-                stack.push((start, close));
+                stack.push(start, close);
                 openings.push(start);
             }
         }
         Self {
             interiors,
             openings,
-            unclosed: stack.into_iter().map(|(start, _)| start).collect(),
+            unclosed: stack.unclosed().collect(),
         }
     }
 
@@ -88,6 +123,52 @@ impl QuoteRanges {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 開きの並びを素朴に探す閉じ方 (`rposition`) と、閉じた範囲・残った開きが同じになる。
+    /// 5 種の字の長さ 7 までの並びをすべて試す。
+    #[test]
+    fn open_stack_closes_like_a_nearest_search() {
+        let alphabet = ['「', '」', '（', '）', 'a'];
+        let close_of = |c: char| match c {
+            '「' => Some('」'),
+            '（' => Some('）'),
+            _ => None,
+        };
+        let mut words = vec![Vec::new()];
+        for _ in 0..7 {
+            let mut longer = Vec::new();
+            for w in &words {
+                for &c in &alphabet {
+                    let mut v: Vec<char> = w.clone();
+                    v.push(c);
+                    longer.push(v);
+                }
+            }
+            for w in &longer {
+                let (mut naive, mut naive_open) = (Vec::new(), Vec::<(usize, char)>::new());
+                let (mut fast, mut stack) = (Vec::new(), OpenStack::default());
+                for (at, &c) in w.iter().enumerate() {
+                    if let Some(close) = close_of(c) {
+                        naive_open.push((at, close));
+                        stack.push(at, close);
+                    } else {
+                        if let Some(p) = naive_open.iter().rposition(|&(_, close)| close == c) {
+                            naive.push(naive_open[p].0..at);
+                            naive_open.truncate(p);
+                        }
+                        if let Some(start) = stack.close(c) {
+                            fast.push(start..at);
+                        }
+                    }
+                }
+                assert_eq!(fast, naive, "{w:?}");
+                let rest: Vec<usize> = stack.unclosed().collect();
+                let naive_rest: Vec<usize> = naive_open.iter().map(|&(at, _)| at).collect();
+                assert_eq!(rest, naive_rest, "{w:?}");
+            }
+            words = longer;
+        }
+    }
 
     #[test]
     fn pairs_nested_quotes_and_recovers_from_unclosed_inner_quotes() {

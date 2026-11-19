@@ -10,6 +10,7 @@ use crate::document::{Block, Document, MarkKind, Sentence};
 use crate::genre::Genre;
 use crate::rules::{Fires, Measure, Rule, RuleContext, RuleMeta};
 use crate::text;
+use crate::text::quotes::OpenStack;
 
 use super::{option_count, unknown_option};
 
@@ -239,21 +240,17 @@ impl Disjoint {
 /// 外側の引用は閉じる。語句ルールの引用の範囲 `QuoteRanges` と同じ)。
 fn bracket_interiors(text: &str) -> Disjoint {
     let mut interiors = Vec::new();
-    let mut open: Vec<(usize, char)> = Vec::new();
+    let mut open = OpenStack::default();
     for (at, c) in text.char_indices() {
         // 〝 は 〟 と 〞 のどちらでも閉じる (文分割とラベルの行の判定と同じ)
         let c = if c == '〞' { '〟' } else { c };
         if let Some(close) = text::closing_bracket(c) {
-            open.push((at, close));
-        } else if !text::is_closing_bracket(c) {
-            // 閉じ括弧でない字は、開き括弧の並びを探さない (開き括弧の多い長い文で二乗になる)
-        } else if let Some(position) = open.iter().rposition(|&(_, close)| close == c) {
-            let (start, _) = open[position];
-            open.truncate(position);
+            open.push(at, close);
+        } else if let Some(start) = open.close(c) {
             interiors.push(start..at + c.len_utf8());
         }
     }
-    interiors.extend(open.into_iter().map(|(start, _)| start..text.len()));
+    interiors.extend(open.unclosed().map(|start| start..text.len()));
     Disjoint::new(interiors)
 }
 
