@@ -17,8 +17,13 @@ impl QuoteRanges {
         let mut openings = Vec::new();
         let mut stack = Vec::new();
         for (offset, c) in text.char_indices() {
-            // 非対称の引用符は、内側に別種の未対応の引用符があっても閉じる。
-            if let Some(position) = stack.iter().rposition(|&(_, close)| close == c) {
+            // 非対称の引用符は、内側に別種の未対応の引用符があっても閉じる。閉じの引用符でない字は
+            // 開きの並びを探さない (閉じない引用符が積み上がった長い段落で、字ごとに探すと二乗になる)
+            let closing = matches!(c, '」' | '』' | '”' | '"');
+            if let Some(position) = closing
+                .then(|| stack.iter().rposition(|&(_, close)| close == c))
+                .flatten()
+            {
                 let (start, _) = stack[position];
                 stack.truncate(position);
                 interiors.push(start..offset);
