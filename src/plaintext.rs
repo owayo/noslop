@@ -16,8 +16,10 @@ use crate::directive;
 use crate::document::{Block, BlockKind, Directive, TextMap};
 use crate::text;
 
+/// 箇条書きの項目とみなす行頭。番号は、直後が数字か小数点なら小数 (「3.5 倍」) とみなして外す
+/// (Markdown の記法にない箇条書きの判定 `markdown::ITEM_LINE` と同じ)。
 static BULLET_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:[・•●○◦▪■□◆◇※]|[-*+]\s|\d{1,3}[.)．）]\s?|[①-⑳]|[（(]\d{1,3}[)）])")
+    Regex::new(r"^(?:[・•●○◦▪■□◆◇※]|[-*+]\s|\d{1,3}[.)．）](?:[^\d.．]|$)|[①-⑳]|[（(]\d{1,3}[)）])")
         .expect("bullet regex")
 });
 
@@ -286,6 +288,27 @@ mod tests {
         assert_eq!(t[0].1, "最初の段落。");
         assert_eq!(t[1].1, "「会話だ」");
         assert_eq!(t[2].1, "次の段落。");
+    }
+
+    /// 行頭の小数 (「3.5 倍」「１２．５％」) は箇条書きの番号ではない。折り返した段落の続きとして読む。
+    #[test]
+    fn decimal_numbers_at_the_line_start_are_not_bullets() {
+        for src in [
+            "今期の売上は前年と比べて\n3.5 倍に伸びた。\n",
+            "比率は\n１２．５％に達した。\n",
+        ] {
+            let t = texts(src);
+            assert_eq!(t.len(), 1, "{src}: {t:?}");
+            assert_eq!(t[0].0, BlockKind::Paragraph, "{src}");
+        }
+        for src in [
+            "1. 次回の担当\n",
+            "1.次回の担当\n",
+            "２）日程の調整\n",
+            "3.\n",
+        ] {
+            assert_eq!(texts(src)[0].0, BlockKind::ListItem, "{src}");
+        }
     }
 
     #[test]
